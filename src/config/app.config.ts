@@ -1,5 +1,5 @@
 export default () => ({
-  port: parseInt(process.env.PORT, 10) || 3000,
+  port: parseInt(process.env.PORT, 10) || 8080,
   gcpProjectId: process.env.GCP_PROJECT_ID,
   gcpLocation: process.env.GCP_LOCATION || 'us-central1',
   gcpQueueName: process.env.GCP_QUEUE_NAME || 'zpl-conversion-queue',

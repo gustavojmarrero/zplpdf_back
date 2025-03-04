@@ -59,9 +59,9 @@ export class ZplController {
         },
         labelSize: {
           type: 'string',
-          enum: [LabelSize.TWO_BY_ONE, LabelSize.FOUR_BY_SIX],
+          enum: [LabelSize.TWO_BY_ONE, LabelSize.TWO_BY_FOUR, LabelSize.FOUR_BY_TWO, LabelSize.FOUR_BY_SIX],
           default: LabelSize.TWO_BY_ONE,
-          description: 'Tamaño de la etiqueta (2x1 o 4x6 pulgadas)',
+          description: 'Tamaño de la etiqueta (2x1, 2x4, 4x2 o 4x6 pulgadas)',
         },
         language: {
           type: 'string',

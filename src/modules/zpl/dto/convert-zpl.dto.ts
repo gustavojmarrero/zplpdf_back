@@ -13,7 +13,7 @@ export class ConvertZplDto {
   zplContent?: string;
 
   @ApiProperty({
-    description: 'Tamaño de la etiqueta (2x1 o 4x6 pulgadas)',
+    description: 'Tamaño de la etiqueta (2x1, 2x4, 4x2 o 4x6 pulgadas)',
     example: LabelSize.TWO_BY_ONE,
     enum: LabelSize,
     default: LabelSize.TWO_BY_ONE,

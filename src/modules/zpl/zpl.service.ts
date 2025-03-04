@@ -6,8 +6,10 @@ import { Storage } from '@google-cloud/storage';
 import { ConfigService } from '@nestjs/config';
 
 export enum LabelSize {
-  SMALL = '2x1',
-  LARGE = '4x6',
+  TWO_BY_ONE = '2x1',
+  TWO_BY_FOUR = '2x4',
+  FOUR_BY_TWO = '4x2',
+  FOUR_BY_SIX = '4x6',
 }
 
 // Interfaz para el estado de conversión
@@ -104,7 +106,7 @@ export class ZplService {
         );
       }
 
-      const size = labelSize === 'large' ? LabelSize.LARGE : LabelSize.SMALL;
+      const size = this.getLabelSize(labelSize);
       const jobId = uuidv4();
 
       // Crear y guardar el trabajo
@@ -160,7 +162,7 @@ export class ZplService {
       this.jobs.set(jobId, job);
 
       // Convertir ZPL a PDF
-      const size = labelSize === 'large' ? LabelSize.LARGE : LabelSize.SMALL;
+      const size = job.labelSize;
       const pdfBuffer = await this.convertZplToPdf(zplContent, size);
 
       // Generar nombres de archivo
@@ -546,6 +548,28 @@ export class ZplService {
         'Error al generar URL de descarga',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
+    }
+  }
+
+  /**
+   * Obtiene el tamaño de etiqueta correspondiente del enum
+   * @param labelSize Tamaño de etiqueta en string
+   * @returns LabelSize enum value
+   */
+  private getLabelSize(labelSize: string): LabelSize {
+    switch (labelSize.toLowerCase()) {
+      case 'small':
+      case '2x1':
+        return LabelSize.TWO_BY_ONE;
+      case '2x4':
+        return LabelSize.TWO_BY_FOUR;
+      case '4x2':
+        return LabelSize.FOUR_BY_TWO;
+      case 'large':
+      case '4x6':
+        return LabelSize.FOUR_BY_SIX;
+      default:
+        return LabelSize.TWO_BY_ONE;
     }
   }
 } 
