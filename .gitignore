@@ -1,7 +1,39 @@
-# compiled output
+# Dependencias
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Archivos de entorno
+.env
+.env.local
+.env.*.local
+
+# Archivos de construcción
 /dist
-/node_modules
 /build
+/out
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de IDE y editores
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Archivos de logs
+logs
+*.log
+
+# Archivos de cobertura de pruebas
+coverage/
+
+# Archivos temporales
+*.tmp
+*.temp
 
 # Logs
 logs
