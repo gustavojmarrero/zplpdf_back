@@ -1,9 +1,11 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import axios from 'axios';
+import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
 import PDFMerger from 'pdf-merger-js';
 import { Storage } from '@google-cloud/storage';
 import { ConfigService } from '@nestjs/config';
+import Bottleneck from 'bottleneck';
 
 export enum LabelSize {
   TWO_BY_ONE = '2x1',
@@ -47,6 +49,11 @@ interface UniqueBlocksResult {
   originalSequence: number[];
 }
 
+interface ZplPreviewItemDto {
+  img: string;
+  qty: number;
+}
+
 @Injectable()
 export class ZplService {
   private readonly logger = new Logger(ZplService.name);
@@ -56,6 +63,19 @@ export class ZplService {
   private readonly bucket: string;
   private readonly storageBasePath: string;
   private readonly URL_EXPIRATION_TIME = 15 * 60 * 1000; // 15 minutos en milisegundos
+  
+  // Limiter para la API de Labelary (3 llamadas por segundo con reintentos)
+  private readonly labelaryLimiter = new Bottleneck({
+    maxConcurrent: 1,
+    minTime: 350, // 350ms entre llamadas = ~3 llamadas por segundo
+    reservoir: 10, // Máximo 10 solicitudes en cola
+    reservoirRefreshAmount: 10,
+    reservoirRefreshInterval: 5 * 1000, // Refresca cada 5 segundos
+    
+    // Estrategia de reintentos
+    retryLimit: 3,
+    retryDelay: 1000 // 1 segundo entre reintentos
+  });
 
   constructor(private configService: ConfigService) {
     const credentials = JSON.parse(
@@ -570,6 +590,215 @@ export class ZplService {
         return LabelSize.FOUR_BY_SIX;
       default:
         return LabelSize.TWO_BY_ONE;
+    }
+  }
+
+  /**
+   * Cuenta el número total de etiquetas y copias en el contenido ZPL
+   * @param zplContent Contenido ZPL a analizar
+   * @returns Objeto con la respuesta formateada según estándares REST
+   */
+  async countLabels(zplContent: string): Promise<{
+    success: boolean;
+    message: string;
+    data: {
+      totalUniqueLabels: number;
+      totalLabels: number;
+    };
+  }> {
+    try {
+      // Extraer y normalizar bloques ZPL
+      const parsedBlocks = this.splitAndExtractCopies(zplContent);
+      
+      if (parsedBlocks.length === 0) {
+        throw new HttpException(
+          'No se encontraron etiquetas válidas en el contenido ZPL',
+          HttpStatus.BAD_REQUEST
+        );
+      }
+
+      // Calcular totales
+      const totalUniqueLabels = parsedBlocks.length;
+      const totalLabels = parsedBlocks.reduce((sum, block) => sum + block.copies, 0);
+
+      return {
+        success: true,
+        message: 'Conteo de etiquetas realizado exitosamente',
+        data: {
+          totalUniqueLabels,
+          totalLabels
+        }
+      };
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Error al contar las etiquetas ZPL',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Obtiene una imagen PNG de una etiqueta ZPL desde Labelary
+   * @param zplContent Contenido ZPL de una sola etiqueta
+   * @param labelSize Tamaño de la etiqueta
+   * @returns Buffer de la imagen PNG
+   */
+  private async getSingleLabelaryPngImage(zplContent: string, labelSize: LabelSize): Promise<Buffer> {
+    return this.labelaryLimiter.schedule(async () => {
+      try {
+        const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${labelSize}/0/`;
+        
+        this.logger.debug(`Enviando solicitud a Labelary para una etiqueta`);
+
+        const response = await axios({
+          method: 'post',
+          url: url,
+          data: zplContent,
+          headers: {
+            Accept: 'image/png',
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          responseType: 'arraybuffer',
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          transformRequest: [(data) => data],
+        });
+
+        if (response.status !== 200) {
+          throw new Error(`Labelary API respondió con estado ${response.status}`);
+        }
+
+        return Buffer.from(response.data);
+      } catch (error) {
+        this.logger.error(`Error en Labelary API: ${error.message}`);
+        if (error.response?.data) {
+          const errorText = Buffer.from(error.response.data).toString();
+          this.logger.error(`Respuesta de error de Labelary: ${errorText}`);
+        }
+        
+        // Si es un error 429 (rate limit), lanzar un error especial para que Bottleneck lo reintente
+        if (error.response?.status === 429) {
+          throw new Bottleneck.BottleneckError(`Rate limit excedido: ${error.message}`);
+        }
+        
+        throw new Error(`Error al obtener imagen de Labelary API: ${error.message}`);
+      }
+    });
+  }
+
+  /**
+   * Obtiene las imágenes PNG de las etiquetas desde Labelary
+   * @param zplContent Contenido ZPL a convertir
+   * @param labelSize Tamaño de la etiqueta
+   * @returns Array de buffers PNG
+   */
+  private async getLabelaryPngImages(zplContent: string, labelSize: LabelSize): Promise<Buffer[]> {
+    try {
+      // Extraer etiquetas individuales
+      const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
+      if (!labelMatches) {
+        throw new HttpException(
+          'No se encontraron etiquetas válidas en el contenido ZPL',
+          HttpStatus.BAD_REQUEST
+        );
+      }
+
+      this.logger.debug(`Procesando ${labelMatches.length} etiquetas individuales`);
+      
+      // Procesar cada etiqueta individualmente
+      const pngPromises = labelMatches.map(label => 
+        this.getSingleLabelaryPngImage(label, labelSize)
+      );
+      
+      // Esperar a que todas las solicitudes se completen
+      const pngBuffers = await Promise.all(pngPromises);
+      
+      this.logger.debug(`Imágenes PNG obtenidas: ${pngBuffers.length}`);
+      return pngBuffers;
+    } catch (error) {
+      this.logger.error(`Error al obtener imágenes: ${error.message}`);
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(
+        'Error al obtener imágenes de Labelary API',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
+    }
+  }
+
+  /**
+   * Obtiene las previsualizaciones de las etiquetas únicas con sus cantidades
+   * @param zplContent Contenido ZPL a analizar
+   * @param labelSize Tamaño de la etiqueta
+   * @returns Array de objetos con imagen y cantidad de cada etiqueta única
+   */
+  async getLabelsPreview(zplContent: string, labelSize: LabelSize): Promise<ZplPreviewItemDto[]> {
+    try {
+      // 1. Extraer etiquetas individuales (separar por ^XA...^XZ)
+      const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
+      if (!labelMatches) {
+        throw new HttpException(
+          'No se encontraron etiquetas válidas en el contenido ZPL',
+          HttpStatus.BAD_REQUEST
+        );
+      }
+
+      // 2. Procesar etiquetas y contar duplicados
+      const uniqueLabels = new Map<string, number>();
+      const normalizedLabels: string[] = [];
+
+      for (const label of labelMatches) {
+        let normalized = label
+          .replace(/[\r\n]+/g, '') // Eliminar saltos de línea
+          .replace(/\s+/g, ' ')    // Normalizar espacios
+          .trim();
+
+        // Extraer y eliminar ^PQ para contar copias
+        const pqMatch = normalized.match(/\^PQ(\d+)/);
+        const copies = pqMatch ? parseInt(pqMatch[1], 10) : 1;
+        normalized = normalized.replace(/\^PQ\d+,?\d*,?\d*,?\d*/g, '');
+
+        // Asegurar formato ZPL correcto
+        if (!normalized.startsWith('^XA')) normalized = '^XA' + normalized;
+        if (!normalized.endsWith('^XZ')) normalized += '^XZ';
+
+        uniqueLabels.set(normalized, (uniqueLabels.get(normalized) || 0) + copies);
+        if (!normalizedLabels.includes(normalized)) {
+          normalizedLabels.push(normalized);
+        }
+      }
+
+      this.logger.debug(`Total de etiquetas encontradas: ${labelMatches.length}`);
+      this.logger.debug(`Total de etiquetas únicas: ${normalizedLabels.length}`);
+
+      // 3. Procesar etiquetas y generar previsualizaciones
+      const labelPreviews: ZplPreviewItemDto[] = [];
+
+      // Procesar cada etiqueta única individualmente, pero secuencialmente para evitar errores de rate limit
+      for (const zpl of normalizedLabels) {
+        try {
+          const buffer = await this.getSingleLabelaryPngImage(zpl, labelSize);
+          labelPreviews.push({
+            img: `data:image/png;base64,${buffer.toString('base64')}`,
+            qty: uniqueLabels.get(zpl) || 0,
+          });
+        } catch (error) {
+          this.logger.error(`Error al procesar etiqueta: ${error.message}`);
+          // Continuar con la siguiente etiqueta
+        }
+      }
+
+      this.logger.debug(`Total de previsualizaciones generadas: ${labelPreviews.length}`);
+      return labelPreviews;
+    } catch (error) {
+      this.logger.error(`Error al obtener previsualizaciones: ${error.message}`);
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(
+        'Error al generar previsualizaciones de etiquetas',
+        HttpStatus.INTERNAL_SERVER_ERROR
+      );
     }
   }
 } 

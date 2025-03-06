@@ -23,6 +23,7 @@ import {
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { LabelSize } from './enums/label-size.enum.js';
+import { ZplPreviewItemDto, ZplPreviewResponseDto } from './dto/zpl-preview.dto.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -239,5 +240,175 @@ export class ZplController {
   async downloadPdf(@Param('jobId') jobId: string) {
     const { url, filename } = await this.zplService.getPdfDownloadUrl(jobId);
     return { url, filename };
+  }
+
+  @Post('count-labels')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ 
+    summary: 'Contar etiquetas en archivo ZPL',
+    description: 'Recibe un archivo ZPL y devuelve el número total de etiquetas que contiene',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Archivo ZPL a analizar (max 1MB)',
+        },
+        zplContent: {
+          type: 'string',
+          description: 'Contenido ZPL a analizar (opcional si se envía archivo)',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Conteo de etiquetas exitoso',
+    schema: {
+      properties: {
+        success: {
+          type: 'boolean',
+          example: true,
+          description: 'Indica si la operación fue exitosa',
+        },
+        message: {
+          type: 'string',
+          example: 'Conteo de etiquetas realizado exitosamente',
+          description: 'Mensaje descriptivo del resultado',
+        },
+        data: {
+          type: 'object',
+          properties: {
+            totalUniqueLabels: {
+              type: 'number',
+              example: 10,
+              description: 'Número de etiquetas únicas en el archivo (sin contar copias)',
+            },
+            totalLabels: {
+              type: 'number',
+              example: 25,
+              description: 'Número total de etiquetas incluyendo copias (considerando el comando ^PQ)',
+            },
+          },
+        },
+      },
+    },
+  })
+  async countLabels(
+    @Body() body: { zplContent?: string },
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 1024 * 1024 }), // 1MB max
+        ],
+        fileIsRequired: false,
+      }),
+    ) file?: Express.Multer.File,
+  ) {
+    const zplContent = file
+      ? file.buffer.toString('utf-8')
+      : body.zplContent;
+
+    this.validateZplContent(zplContent);
+    
+    return await this.zplService.countLabels(zplContent);
+  }
+
+  @Post('preview')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ 
+    summary: 'Obtener vista previa de etiquetas ZPL',
+    description: 'Recibe código ZPL y devuelve imágenes PNG de las etiquetas únicas con sus cantidades',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Archivo ZPL a previsualizar (max 1MB)',
+        },
+        zplContent: {
+          type: 'string',
+          description: 'Contenido ZPL a previsualizar (opcional si se envía archivo)',
+        },
+        labelSize: {
+          type: 'string',
+          enum: [LabelSize.TWO_BY_ONE, LabelSize.TWO_BY_FOUR, LabelSize.FOUR_BY_TWO, LabelSize.FOUR_BY_SIX],
+          default: LabelSize.TWO_BY_ONE,
+          description: 'Tamaño de la etiqueta (2x1, 2x4, 4x2 o 4x6 pulgadas)',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Vista previa generada correctamente',
+    schema: {
+      properties: {
+        success: {
+          type: 'boolean',
+          example: true,
+        },
+        message: {
+          type: 'string',
+          example: 'Vista previa generada correctamente',
+        },
+        data: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              img: {
+                type: 'string',
+                description: 'Imagen PNG en base64',
+                example: 'data:image/png;base64,...',
+              },
+              qty: {
+                type: 'number',
+                description: 'Cantidad de veces que se repite la etiqueta',
+                example: 5,
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Datos de entrada inválidos',
+  })
+  async previewZpl(
+    @Body() body: { zplContent?: string; labelSize?: string },
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 1024 * 1024 }), // 1MB max
+        ],
+        fileIsRequired: false,
+      }),
+    ) file?: Express.Multer.File,
+  ): Promise<ZplPreviewResponseDto> {
+    const zplContent = file
+      ? file.buffer.toString('utf-8')
+      : body.zplContent;
+
+    this.validateZplContent(zplContent);
+    
+    const size = body.labelSize || LabelSize.TWO_BY_ONE;
+    const previews = await this.zplService.getLabelsPreview(zplContent, size as LabelSize);
+
+    return {
+      success: true,
+      message: 'Vista previa generada correctamente',
+      data: previews,
+    };
   }
 }
