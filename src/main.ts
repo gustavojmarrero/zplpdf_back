@@ -8,7 +8,7 @@ async function bootstrap() {
   
   // Configurar CORS
   app.enableCors({
-    origin: 'http://localhost:8080',
+    origin: ['http://localhost:8080', 'https://zplpdf-gustavojmarreros-projects.vercel.ap', 'https://www.zplpdf.com', 'http://www.zplpdf.com'],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });
