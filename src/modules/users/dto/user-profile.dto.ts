@@ -1,0 +1,22 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { PlanType } from '../../../common/interfaces/index.js';
+
+export class UserProfileDto {
+  @ApiProperty({ description: 'User ID (Firebase UID)' })
+  id: string;
+
+  @ApiProperty({ description: 'User email' })
+  email: string;
+
+  @ApiProperty({ description: 'Display name', required: false })
+  displayName?: string;
+
+  @ApiProperty({ description: 'Current plan', enum: ['free', 'pro', 'enterprise'] })
+  plan: PlanType;
+
+  @ApiProperty({ description: 'Account creation date' })
+  createdAt: Date;
+
+  @ApiProperty({ description: 'Has active Stripe subscription' })
+  hasStripeSubscription: boolean;
+}

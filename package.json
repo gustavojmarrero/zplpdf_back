@@ -35,10 +35,12 @@
     "bottleneck": "^2.19.5",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "firebase-admin": "^13.6.0",
     "pdf-merger-js": "^5.1.2",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
     "sharp": "^0.33.5",
+    "stripe": "^20.0.0",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

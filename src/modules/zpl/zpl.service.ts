@@ -1,4 +1,4 @@
-import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef } from '@nestjs/common';
 import axios from 'axios';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
@@ -6,6 +6,8 @@ import PDFMerger from 'pdf-merger-js';
 import { Storage } from '@google-cloud/storage';
 import { ConfigService } from '@nestjs/config';
 import Bottleneck from 'bottleneck';
+import { FirestoreService, ConversionStatus } from '../cache/firestore.service.js';
+import { UsersService } from '../users/users.service.js';
 
 export enum LabelSize {
   TWO_BY_ONE = '2x1',
@@ -64,20 +66,25 @@ export class ZplService {
   private readonly storageBasePath: string;
   private readonly URL_EXPIRATION_TIME = 15 * 60 * 1000; // 15 minutos en milisegundos
   
-  // Limiter para la API de Labelary (3 llamadas por segundo con reintentos)
+  // Limiter para la API de Labelary (más conservador para evitar 429)
   private readonly labelaryLimiter = new Bottleneck({
     maxConcurrent: 1,
-    minTime: 350, // 350ms entre llamadas = ~3 llamadas por segundo
+    minTime: 500, // 500ms entre llamadas = ~2 llamadas por segundo (más conservador)
     reservoir: 10, // Máximo 10 solicitudes en cola
     reservoirRefreshAmount: 10,
     reservoirRefreshInterval: 5 * 1000, // Refresca cada 5 segundos
-    
+
     // Estrategia de reintentos
     retryLimit: 3,
-    retryDelay: 1000 // 1 segundo entre reintentos
+    retryDelay: 2000 // 2 segundos entre reintentos (más tiempo de espera)
   });
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private firestoreService: FirestoreService,
+    @Inject(forwardRef(() => UsersService))
+    private usersService: UsersService,
+  ) {
     const credentials = JSON.parse(
       this.configService.get<string>('GOOGLE_CREDENTIALS'),
     );
@@ -107,16 +114,18 @@ export class ZplService {
   }
 
   /**
-   * Inicia un proceso de conversión ZPL
+   * Inicia un proceso de conversion ZPL
    * @param zplContent Contenido ZPL a convertir
-   * @param labelSize Tamaño de la etiqueta
+   * @param labelSize Tamano de la etiqueta
    * @param language Idioma para los mensajes
+   * @param userId ID del usuario autenticado
    * @returns ID del trabajo creado
    */
   async startZplConversion(
     zplContent: string,
     labelSize: string,
     language = 'en',
+    userId: string,
   ): Promise<string> {
     try {
       if (!zplContent) {
@@ -126,35 +135,121 @@ export class ZplService {
         );
       }
 
+      // Count labels in ZPL content
+      const countResult = await this.countLabels(zplContent);
+      const labelCount = countResult.data.totalLabels;
+
+      // Check user limits before processing
+      const canConvert = await this.usersService.checkCanConvert(userId, labelCount);
+      if (!canConvert.allowed) {
+        throw new HttpException(
+          {
+            error: canConvert.errorCode,
+            message: canConvert.error,
+            data: canConvert.data,
+          },
+          HttpStatus.FORBIDDEN,
+        );
+      }
+
       const size = this.getLabelSize(labelSize);
       const jobId = uuidv4();
+      const now = new Date();
 
-      // Crear y guardar el trabajo
+      // Crear y guardar el trabajo en memoria (cache local)
       this.jobs.set(jobId, {
         id: jobId,
         zplContent,
         labelSize: size,
         status: 'pending',
         progress: 0,
-        createdAt: new Date(),
+        createdAt: now,
       });
 
-      // Encolar el trabajo para procesamiento asíncrono
-      // (En un caso real, esto podría ir a un sistema de colas como Bull/Redis)
+      // Guardar en Firestore para persistencia entre instancias
+      try {
+        await this.firestoreService.saveConversionStatus(jobId, {
+          status: 'pending',
+          progress: 0,
+          labelSize: labelSize,
+          createdAt: now.toISOString(),
+          updatedAt: now.toISOString(),
+        });
+      } catch (firestoreError) {
+        this.logger.error(`Error al guardar en Firestore: ${firestoreError.message}`);
+        // Continuar aunque falle Firestore - el job puede procesarse con el cache local
+      }
+
+      // Encolar el trabajo para procesamiento asincrono
       setTimeout(() => {
-        this.processZplConversion(zplContent, labelSize, jobId);
+        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount);
       }, 100);
 
       return jobId;
     } catch (error) {
-      this.logger.error(`Error al iniciar conversión ZPL: ${error.message}`);
+      this.logger.error(`Error al iniciar conversion ZPL: ${error.message}`);
       if (error instanceof HttpException) {
         throw error;
       }
       throw new HttpException(
-        'Error al iniciar la conversión ZPL',
+        'Error al iniciar la conversion ZPL',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
+    }
+  }
+
+  /**
+   * Procesa la conversion ZPL con tracking de usuario
+   */
+  private async processZplConversionWithUser(
+    zplContent: string,
+    labelSize: string,
+    jobId: string,
+    userId: string,
+    labelCount: number,
+  ): Promise<void> {
+    try {
+      await this.processZplConversion(zplContent, labelSize, jobId);
+
+      // Get the job to check if it completed successfully
+      const job = this.jobs.get(jobId);
+      if (job && job.status === 'completed') {
+        // Record successful conversion
+        await this.usersService.recordConversion(
+          userId,
+          jobId,
+          labelCount,
+          labelSize,
+          'completed',
+          'pdf',
+          job.resultUrl,
+        );
+      } else if (job && job.status === 'failed') {
+        // Record failed conversion
+        await this.usersService.recordConversion(
+          userId,
+          jobId,
+          labelCount,
+          labelSize,
+          'failed',
+          'pdf',
+        );
+      }
+    } catch (error) {
+      this.logger.error(`Error in processZplConversionWithUser: ${error.message}`);
+      // Record failed conversion
+      try {
+        await this.usersService.recordConversion(
+          userId,
+          jobId,
+          labelCount,
+          labelSize,
+          'failed',
+          'pdf',
+        );
+      } catch (recordError) {
+        this.logger.error(`Error recording failed conversion: ${recordError.message}`);
+      }
     }
   }
 
@@ -181,6 +276,12 @@ export class ZplService {
       job.progress = 10;
       this.jobs.set(jobId, job);
 
+      // Actualizar Firestore
+      this.firestoreService.updateConversionStatus(jobId, {
+        status: 'processing',
+        progress: 10,
+      }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
+
       // Convertir ZPL a PDF
       const size = job.labelSize;
       const pdfBuffer = await this.convertZplToPdf(zplContent, size);
@@ -206,14 +307,28 @@ export class ZplService {
       job.filename = downloadFilename;
       this.jobs.set(jobId, job);
 
+      // Actualizar Firestore con resultado
+      this.firestoreService.updateConversionStatus(jobId, {
+        status: 'completed',
+        progress: 100,
+        resultUrl: signedUrl,
+        filename: downloadFilename,
+      }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
+
       this.logger.log(`Conversión completada para trabajo ${jobId}`);
     } catch (error) {
       this.logger.error(`Error al procesar conversión ZPL: ${error.message}`);
-      
+
       // Actualizar estado a fallido
       job.status = 'failed';
       job.error = error.message;
       this.jobs.set(jobId, job);
+
+      // Actualizar Firestore con error
+      this.firestoreService.updateConversionStatus(jobId, {
+        status: 'error',
+        errorMessage: error.message,
+      }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
     }
   }
 
@@ -223,8 +338,25 @@ export class ZplService {
    * @returns Estado del trabajo
    */
   async getConversionStatus(jobId: string) {
-    const job = this.jobs.get(jobId);
+    // Primero buscar en caché local
+    let job = this.jobs.get(jobId);
+
+    // Si no está en caché, buscar en Firestore
     if (!job) {
+      try {
+        const firestoreStatus = await this.firestoreService.getConversionStatus(jobId);
+        if (firestoreStatus) {
+          // Mapear status de Firestore a formato interno
+          const mappedStatus = firestoreStatus.status === 'error' ? 'failed' : firestoreStatus.status;
+          return {
+            status: mappedStatus,
+            progress: firestoreStatus.progress || 0,
+            message: this.getStatusMessageFromFirestore(firestoreStatus),
+          };
+        }
+      } catch (firestoreError) {
+        this.logger.error(`Error al consultar Firestore: ${firestoreError.message}`);
+      }
       throw new HttpException('Trabajo no encontrado', HttpStatus.NOT_FOUND);
     }
 
@@ -236,26 +368,73 @@ export class ZplService {
   }
 
   /**
+   * Obtiene un mensaje de estado desde datos de Firestore
+   */
+  private getStatusMessageFromFirestore(status: ConversionStatus): string {
+    switch (status.status) {
+      case 'pending':
+        return 'Conversión en cola';
+      case 'processing':
+        return `Procesando (${status.progress || 0}%)`;
+      case 'completed':
+        return 'Conversión completada';
+      case 'error':
+        return `Error: ${status.errorMessage || 'Desconocido'}`;
+      default:
+        return 'Estado desconocido';
+    }
+  }
+
+  /**
    * Obtiene la URL de descarga del PDF convertido
    * @param jobId ID del trabajo
    * @returns URL y nombre del archivo
    */
   async getPdfDownloadUrl(jobId: string) {
-    const job = this.jobs.get(jobId);
+    // Primero buscar en caché local
+    let job = this.jobs.get(jobId);
+
+    // Si no está en caché, buscar en Firestore
     if (!job) {
+      try {
+        const firestoreStatus = await this.firestoreService.getConversionStatus(jobId);
+        if (firestoreStatus) {
+          if (firestoreStatus.status !== 'completed') {
+            throw new HttpException(
+              'La conversión no está completa',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          if (!firestoreStatus.resultUrl || !firestoreStatus.filename) {
+            throw new HttpException(
+              'No se encuentra el archivo de resultado',
+              HttpStatus.NOT_FOUND,
+            );
+          }
+          return {
+            url: firestoreStatus.resultUrl,
+            filename: firestoreStatus.filename,
+          };
+        }
+      } catch (error) {
+        if (error instanceof HttpException) {
+          throw error;
+        }
+        this.logger.error(`Error al consultar Firestore: ${error.message}`);
+      }
       throw new HttpException('Trabajo no encontrado', HttpStatus.NOT_FOUND);
     }
 
     if (job.status !== 'completed') {
       throw new HttpException(
-        'La conversión no está completa', 
+        'La conversión no está completa',
         HttpStatus.BAD_REQUEST,
       );
     }
 
     if (!job.resultUrl || !job.filename) {
       throw new HttpException(
-        'No se encuentra el archivo de resultado', 
+        'No se encuentra el archivo de resultado',
         HttpStatus.NOT_FOUND,
       );
     }
@@ -446,46 +625,54 @@ export class ZplService {
    * @returns Buffer del PDF
    */
   private async callLabelary(zplBatch: string, labelSize: LabelSize): Promise<Buffer> {
-    try {
-      const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${labelSize}`;
+    // Usar el limiter para controlar el rate de llamadas a Labelary
+    return this.labelaryLimiter.schedule(async () => {
+      try {
+        const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${labelSize}`;
 
-      const labelCount = (zplBatch.match(/\^XA/g) || []).length;
+        const labelCount = (zplBatch.match(/\^XA/g) || []).length;
 
-      if (labelCount > this.CHUNK_SIZE) {
+        if (labelCount > this.CHUNK_SIZE) {
+          throw new HttpException(
+            `El número de etiquetas (${labelCount}) excede el límite permitido (${this.CHUNK_SIZE} etiquetas por solicitud)`,
+            HttpStatus.PAYLOAD_TOO_LARGE
+          );
+        }
+
+        const response = await axios.post(url, zplBatch, {
+          headers: {
+            Accept: 'application/pdf',
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          responseType: 'arraybuffer',
+        });
+
+        if (response.status !== 200) {
+          throw new Error(`Labelary API error: ${response.status}`);
+        }
+
+        return Buffer.from(response.data);
+      } catch (error) {
+        if (error instanceof HttpException) {
+          throw error;
+        }
+        // Manejar rate limit de Labelary
+        if (error.response?.status === 429) {
+          this.logger.warn('Rate limit de Labelary alcanzado, reintentando...');
+          throw new Error('Rate limit exceeded');
+        }
+        if (error.response?.status === 413) {
+          throw new HttpException(
+            'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
+            HttpStatus.PAYLOAD_TOO_LARGE
+          );
+        }
         throw new HttpException(
-          `El número de etiquetas (${labelCount}) excede el límite permitido (${this.CHUNK_SIZE} etiquetas por solicitud)`,
-          HttpStatus.PAYLOAD_TOO_LARGE
+          'Error in Labelary API conversion',
+          HttpStatus.INTERNAL_SERVER_ERROR,
         );
       }
-
-      const response = await axios.post(url, zplBatch, {
-        headers: {
-          Accept: 'application/pdf',
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        responseType: 'arraybuffer',
-      });
-
-      if (response.status !== 200) {
-        throw new Error(`Labelary API error: ${response.status}`);
-      }
-
-      return Buffer.from(response.data);
-    } catch (error) {
-      if (error instanceof HttpException) {
-        throw error;
-      }
-      if (error.response?.status === 413) {
-        throw new HttpException(
-          'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
-          HttpStatus.PAYLOAD_TOO_LARGE
-        );
-      }
-      throw new HttpException(
-        'Error in Labelary API conversion',
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
-    }
+    });
   }
 
   /**
@@ -499,28 +686,58 @@ export class ZplService {
     originalSequence: number[],
   ): Promise<Buffer> {
     try {
+      // Validar que hay chunks para procesar
+      if (!chunkPdfs || chunkPdfs.length === 0) {
+        throw new Error('No hay PDFs para fusionar');
+      }
+
+      // Filtrar chunks válidos (no vacíos ni undefined)
+      const validChunks = chunkPdfs.filter(chunk => chunk && chunk.length > 0);
+      if (validChunks.length === 0) {
+        throw new Error('Todos los chunks PDF están vacíos o son inválidos');
+      }
+
+      if (validChunks.length !== chunkPdfs.length) {
+        this.logger.warn(`${chunkPdfs.length - validChunks.length} chunks PDF fueron descartados por estar vacíos`);
+      }
+
       const merger = new PDFMerger();
       let lastChunkUsed = -1;
-      let lastDocPages = 0;
+      let skippedPages = 0;
 
       for (const blockIdx of originalSequence) {
         const chunkNumber = Math.floor(blockIdx / this.CHUNK_SIZE);
         const pageInChunk = (blockIdx % this.CHUNK_SIZE) + 1;
 
-        if (chunkNumber !== lastChunkUsed) {
-          lastChunkUsed = chunkNumber;
-          const chunkPdfData = chunkPdfs[chunkNumber];
-          const tempMerger = new PDFMerger();
-          await tempMerger.add(chunkPdfData);
-          lastDocPages = (await tempMerger.saveAsBuffer()).length;
+        // Verificar que el chunk existe y es válido
+        const chunkPdfData = chunkPdfs[chunkNumber];
+        if (!chunkPdfData || chunkPdfData.length === 0) {
+          this.logger.warn(`Chunk ${chunkNumber} está vacío, saltando página ${pageInChunk}`);
+          skippedPages++;
+          continue;
         }
 
-        await merger.add(chunkPdfs[chunkNumber], pageInChunk.toString());
+        try {
+          await merger.add(chunkPdfData, pageInChunk.toString());
+        } catch (pageError) {
+          this.logger.warn(`Error al agregar página ${pageInChunk} del chunk ${chunkNumber}: ${pageError.message}`);
+          skippedPages++;
+          continue;
+        }
       }
 
-      return await merger.saveAsBuffer();
+      if (skippedPages > 0) {
+        this.logger.warn(`Se omitieron ${skippedPages} páginas durante la fusión`);
+      }
+
+      const result = await merger.saveAsBuffer();
+      if (!result || result.length === 0) {
+        throw new Error('El PDF resultante está vacío');
+      }
+
+      return result;
     } catch (error) {
-      this.logger.error('Error al fusionar PDFs:', error);
+      this.logger.error(`Error al fusionar PDFs: ${error.message}`);
       throw new HttpException(
         'Error merging PDF files',
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -535,7 +752,26 @@ export class ZplService {
    * @returns Objeto con nombres de archivo
    */
   private generateFilenames(jobId: string, labelSize: string): { storageFilename: string; downloadFilename: string } {
-    const size = labelSize === 'large' ? '4x6' : '2x1';
+    // Mapear el tamaño a un formato legible para el nombre del archivo
+    let size: string;
+    switch (labelSize.toLowerCase()) {
+      case 'small':
+      case '2x1':
+        size = '2x1';
+        break;
+      case '2x4':
+        size = '2x4';
+        break;
+      case '4x2':
+        size = '4x2';
+        break;
+      case 'large':
+      case '4x6':
+        size = '4x6';
+        break;
+      default:
+        size = labelSize; // Usar el valor tal cual si no coincide
+    }
     const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14); // YYYYMMDDHHmmss
     return {
       storageFilename: `label-${jobId}.pdf`,

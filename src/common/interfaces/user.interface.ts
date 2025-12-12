@@ -1,0 +1,23 @@
+export type PlanType = 'free' | 'pro' | 'enterprise';
+
+export interface PlanLimits {
+  maxLabelsPerPdf: number;
+  maxPdfsPerMonth: number;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  displayName?: string;
+  plan: PlanType;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+  planLimits?: PlanLimits;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export const DEFAULT_PLAN_LIMITS: Record<'free' | 'pro', PlanLimits> = {
+  free: { maxLabelsPerPdf: 100, maxPdfsPerMonth: 100 },
+  pro: { maxLabelsPerPdf: 500, maxPdfsPerMonth: 500 },
+};

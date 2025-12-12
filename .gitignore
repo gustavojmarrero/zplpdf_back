@@ -88,3 +88,6 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 docs/*
+
+zplpdf-guatever-firebase-adminsdk-fbsvc-6bbd67ac4b.json.env.local
+zplpdf-guatever-firebase-adminsdk-fbsvc-6bbd67ac4b.json
