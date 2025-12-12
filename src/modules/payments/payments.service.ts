@@ -44,6 +44,17 @@ export class PaymentsService {
     const user = await this.firestoreService.getUserById(userId);
     let customerId = user?.stripeCustomerId;
 
+    // Verify customer exists in current Stripe mode (test/live)
+    if (customerId) {
+      try {
+        await this.stripe.customers.retrieve(customerId);
+      } catch (error) {
+        // Customer doesn't exist in current mode, create new one
+        this.logger.warn(`Customer ${customerId} not found in current Stripe mode, creating new one`);
+        customerId = null;
+      }
+    }
+
     if (!customerId) {
       const customer = await this.stripe.customers.create({
         email,

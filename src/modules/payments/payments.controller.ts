@@ -14,7 +14,8 @@ import {
 } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
-import { CurrentUser, FirebaseUser } from '../../common/decorators/current-user.decorator.js';
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
+import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import {
   CreateCheckoutDto,
   CheckoutResponseDto,

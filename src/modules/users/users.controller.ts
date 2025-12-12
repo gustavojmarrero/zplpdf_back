@@ -16,8 +16,10 @@ import {
 } from '@nestjs/swagger';
 import { UsersService } from './users.service.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
-import { CurrentUser, FirebaseUser } from '../../common/decorators/current-user.decorator.js';
-import { UserProfileDto, UserLimitsDto } from './dto/index.js';
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
+import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
+import { UserProfileDto } from './dto/user-profile.dto.js';
+import { UserLimitsDto } from './dto/user-limits.dto.js';
 
 @ApiTags('users')
 @ApiBearerAuth()

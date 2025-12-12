@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { PlanType } from '../../../common/interfaces/index.js';
+import type { PlanType } from '../../../common/interfaces/user.interface.js';
 
 export class PlanLimitsDto {
   @ApiProperty({ description: 'Maximum labels per PDF' })
@@ -7,6 +7,9 @@ export class PlanLimitsDto {
 
   @ApiProperty({ description: 'Maximum PDFs per month' })
   maxPdfsPerMonth: number;
+
+  @ApiProperty({ description: 'Can download images (PNG/JPEG) - Pro and Enterprise only' })
+  canDownloadImages: boolean;
 }
 
 export class CurrentUsageDto {

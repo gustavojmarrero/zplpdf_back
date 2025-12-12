@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsOptional, IsEnum } from 'class-validator';
 import { LabelSize } from '../enums/label-size.enum.js';
+import { OutputFormat } from '../enums/output-format.enum.js';
 
 export class ConvertZplDto {
   @ApiProperty({
@@ -30,4 +31,15 @@ export class ConvertZplDto {
   @IsString()
   @IsOptional()
   language?: string;
+
+  @ApiProperty({
+    description: 'Formato de salida (pdf, png, jpeg). PNG y JPEG solo disponibles para usuarios Pro y Enterprise',
+    example: OutputFormat.PDF,
+    enum: OutputFormat,
+    default: OutputFormat.PDF,
+    required: false,
+  })
+  @IsEnum(OutputFormat)
+  @IsOptional()
+  outputFormat?: OutputFormat;
 } 

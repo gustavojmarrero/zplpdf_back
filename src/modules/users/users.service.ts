@@ -1,14 +1,11 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
-import {
-  User,
-  PlanType,
-  DEFAULT_PLAN_LIMITS,
-  PlanLimits,
-  ConversionHistory,
-} from '../../common/interfaces/index.js';
-import { UserProfileDto, UserLimitsDto } from './dto/index.js';
-import { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
+import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
+import type { User, PlanType, PlanLimits } from '../../common/interfaces/user.interface.js';
+import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
+import { UserProfileDto } from './dto/user-profile.dto.js';
+import { UserLimitsDto } from './dto/user-limits.dto.js';
+import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -88,6 +85,7 @@ export class UsersService {
       limits: {
         maxLabelsPerPdf: limits.maxLabelsPerPdf,
         maxPdfsPerMonth: limits.maxPdfsPerMonth,
+        canDownloadImages: limits.canDownloadImages,
       },
       currentUsage: {
         pdfCount: usage.pdfCount,
@@ -173,7 +171,7 @@ export class UsersService {
     outputFormat: 'pdf' | 'png' | 'jpeg' = 'pdf',
     fileUrl?: string,
   ): Promise<void> {
-    // Save to history
+    // Save to history (use null instead of undefined for Firestore)
     await this.firestoreService.saveConversionHistory({
       userId,
       jobId,
@@ -181,7 +179,7 @@ export class UsersService {
       labelSize,
       status,
       outputFormat,
-      fileUrl,
+      fileUrl: fileUrl || null,
       createdAt: new Date(),
     });
 

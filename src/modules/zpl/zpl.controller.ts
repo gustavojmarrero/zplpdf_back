@@ -25,9 +25,11 @@ import {
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { LabelSize } from './enums/label-size.enum.js';
+import { OutputFormat } from './enums/output-format.enum.js';
 import { ZplPreviewItemDto, ZplPreviewResponseDto } from './dto/zpl-preview.dto.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
-import { CurrentUser, FirebaseUser } from '../../common/decorators/current-user.decorator.js';
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
+import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -48,8 +50,8 @@ export class ZplController {
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
-    summary: 'Iniciar conversion de ZPL a PDF',
-    description: 'Recibe codigo ZPL (como texto o archivo) y comienza un proceso asincrono de conversion a PDF. Requiere autenticacion.',
+    summary: 'Iniciar conversion de ZPL a PDF/PNG/JPEG',
+    description: 'Recibe codigo ZPL (como texto o archivo) y comienza un proceso asincrono de conversion. PDF disponible para todos los usuarios. PNG y JPEG solo para usuarios Pro y Enterprise. Requiere autenticacion.',
   })
   @ApiBody({
     schema: {
@@ -74,6 +76,12 @@ export class ZplController {
           type: 'string',
           default: 'es',
           description: 'Idioma para los mensajes',
+        },
+        outputFormat: {
+          type: 'string',
+          enum: [OutputFormat.PDF, OutputFormat.PNG, OutputFormat.JPEG],
+          default: OutputFormat.PDF,
+          description: 'Formato de salida (pdf, png, jpeg). PNG y JPEG solo para Pro/Enterprise',
         },
       },
     },
@@ -147,6 +155,7 @@ export class ZplController {
       convertZplDto.labelSize,
       convertZplDto.language || 'en',
       user.uid,
+      convertZplDto.outputFormat || OutputFormat.PDF,
     );
 
     return {

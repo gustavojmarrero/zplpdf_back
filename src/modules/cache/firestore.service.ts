@@ -1,13 +1,12 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Firestore } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
-import {
-  User,
-  Usage,
-  ConversionHistory,
-  DEFAULT_PLAN_LIMITS,
-  PlanType,
-} from '../../common/interfaces/index.js';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
+import type { User, PlanType } from '../../common/interfaces/user.interface.js';
+import type { Usage } from '../../common/interfaces/usage.interface.js';
+import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 
 export interface ConversionStatus {
   status: 'pending' | 'processing' | 'completed' | 'error';
@@ -16,6 +15,7 @@ export interface ConversionStatus {
   filename?: string;
   zplContent?: string;
   labelSize?: string;
+  outputFormat?: string;
   zplHash?: string;
   createdAt: string;
   updatedAt: string;
@@ -31,11 +31,43 @@ export class FirestoreService {
   private readonly usageCollection = 'usage';
   private readonly historyCollection = 'conversion_history';
 
-  constructor(
-    private configService: ConfigService,
-    @Inject('GOOGLE_AUTH_OPTIONS') private googleAuthOptions: any,
-  ) {
-    this.firestore = new Firestore(this.googleAuthOptions);
+  constructor(private configService: ConfigService) {
+    let credentials: any = null;
+
+    // Opción 1: Intentar cargar desde archivo firebase-credentials.json
+    const credentialsPath = join(process.cwd(), 'firebase-credentials.json');
+    if (existsSync(credentialsPath)) {
+      try {
+        const fileContent = readFileSync(credentialsPath, 'utf-8');
+        credentials = JSON.parse(fileContent);
+        this.logger.log('Loaded Firebase credentials from file');
+      } catch (error) {
+        this.logger.error('Error loading firebase-credentials.json:', error);
+      }
+    } else {
+      // Opción 2: Usar variable de entorno FIREBASE_CREDENTIALS
+      const firebaseCredentials = this.configService.get<string>('FIREBASE_CREDENTIALS');
+      if (firebaseCredentials) {
+        try {
+          credentials = JSON.parse(firebaseCredentials);
+        } catch (error) {
+          this.logger.error('Error parsing FIREBASE_CREDENTIALS:', error);
+        }
+      }
+    }
+
+    // Inicializar Firestore con projectId explícito
+    const firestoreOptions: any = {};
+    if (credentials) {
+      firestoreOptions.credentials = credentials;
+      firestoreOptions.projectId = credentials.project_id;
+    }
+
+    this.firestore = new Firestore(firestoreOptions);
+
+    // Log para diagnóstico
+    const projectId = credentials?.project_id || 'default (ADC)';
+    this.logger.log(`Firestore initialized with project: ${projectId}`);
   }
 
   // ============== ZPL Conversions (existing) ==============

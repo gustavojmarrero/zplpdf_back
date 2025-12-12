@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { PlanType } from '../../../common/interfaces/index.js';
+import type { PlanType } from '../../../common/interfaces/user.interface.js';
 
 export class UserProfileDto {
   @ApiProperty({ description: 'User ID (Firebase UID)' })

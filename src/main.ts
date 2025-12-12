@@ -9,6 +9,11 @@ async function bootstrap() {
     rawBody: true,
   });
 
+  // Configurar límite de payload a 10MB
+  app.useBodyParser('json', { limit: '10mb' });
+  app.useBodyParser('urlencoded', { limit: '10mb', extended: true });
+  app.useBodyParser('text', { limit: '10mb' });
+
   // Configurar CORS
   app.enableCors({
     origin: [

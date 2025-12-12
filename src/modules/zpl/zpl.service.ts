@@ -6,8 +6,12 @@ import PDFMerger from 'pdf-merger-js';
 import { Storage } from '@google-cloud/storage';
 import { ConfigService } from '@nestjs/config';
 import Bottleneck from 'bottleneck';
+import archiver from 'archiver';
+import { Writable } from 'stream';
+import { pdfToPng, PngPageOutput } from 'pdf-to-png-converter';
 import { FirestoreService, ConversionStatus } from '../cache/firestore.service.js';
 import { UsersService } from '../users/users.service.js';
+import { OutputFormat } from './enums/output-format.enum.js';
 
 export enum LabelSize {
   TWO_BY_ONE = '2x1',
@@ -21,6 +25,7 @@ interface ConversionJob {
   id: string;
   zplContent: string;
   labelSize: LabelSize;
+  outputFormat: OutputFormat;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress: number;
   resultUrl?: string;
@@ -69,14 +74,14 @@ export class ZplService {
   // Limiter para la API de Labelary (más conservador para evitar 429)
   private readonly labelaryLimiter = new Bottleneck({
     maxConcurrent: 1,
-    minTime: 500, // 500ms entre llamadas = ~2 llamadas por segundo (más conservador)
-    reservoir: 10, // Máximo 10 solicitudes en cola
-    reservoirRefreshAmount: 10,
+    minTime: 1000, // 1000ms entre llamadas = 1 llamada por segundo
+    reservoir: 3, // Máximo 3 solicitudes antes de esperar
+    reservoirRefreshAmount: 3,
     reservoirRefreshInterval: 5 * 1000, // Refresca cada 5 segundos
 
     // Estrategia de reintentos
     retryLimit: 3,
-    retryDelay: 2000 // 2 segundos entre reintentos (más tiempo de espera)
+    retryDelay: 5000 // 5 segundos entre reintentos
   });
 
   constructor(
@@ -119,6 +124,7 @@ export class ZplService {
    * @param labelSize Tamano de la etiqueta
    * @param language Idioma para los mensajes
    * @param userId ID del usuario autenticado
+   * @param outputFormat Formato de salida (pdf, png, jpeg)
    * @returns ID del trabajo creado
    */
   async startZplConversion(
@@ -126,6 +132,7 @@ export class ZplService {
     labelSize: string,
     language = 'en',
     userId: string,
+    outputFormat: OutputFormat = OutputFormat.PDF,
   ): Promise<string> {
     try {
       if (!zplContent) {
@@ -152,6 +159,20 @@ export class ZplService {
         );
       }
 
+      // Validate Pro plan for image formats
+      if (outputFormat !== OutputFormat.PDF) {
+        const user = await this.usersService.getUserById(userId);
+        if (!user || user.plan === 'free') {
+          throw new HttpException(
+            {
+              error: 'IMAGE_FORMAT_PRO_ONLY',
+              message: 'PNG and JPEG formats are only available for Pro and Enterprise plans',
+            },
+            HttpStatus.FORBIDDEN,
+          );
+        }
+      }
+
       const size = this.getLabelSize(labelSize);
       const jobId = uuidv4();
       const now = new Date();
@@ -161,6 +182,7 @@ export class ZplService {
         id: jobId,
         zplContent,
         labelSize: size,
+        outputFormat,
         status: 'pending',
         progress: 0,
         createdAt: now,
@@ -172,6 +194,7 @@ export class ZplService {
           status: 'pending',
           progress: 0,
           labelSize: labelSize,
+          outputFormat: outputFormat,
           createdAt: now.toISOString(),
           updatedAt: now.toISOString(),
         });
@@ -182,7 +205,7 @@ export class ZplService {
 
       // Encolar el trabajo para procesamiento asincrono
       setTimeout(() => {
-        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount);
+        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat);
       }, 100);
 
       return jobId;
@@ -207,9 +230,10 @@ export class ZplService {
     jobId: string,
     userId: string,
     labelCount: number,
+    outputFormat: OutputFormat = OutputFormat.PDF,
   ): Promise<void> {
     try {
-      await this.processZplConversion(zplContent, labelSize, jobId);
+      await this.processZplConversion(zplContent, labelSize, jobId, outputFormat);
 
       // Get the job to check if it completed successfully
       const job = this.jobs.get(jobId);
@@ -221,7 +245,7 @@ export class ZplService {
           labelCount,
           labelSize,
           'completed',
-          'pdf',
+          outputFormat,
           job.resultUrl,
         );
       } else if (job && job.status === 'failed') {
@@ -232,7 +256,7 @@ export class ZplService {
           labelCount,
           labelSize,
           'failed',
-          'pdf',
+          outputFormat,
         );
       }
     } catch (error) {
@@ -245,7 +269,7 @@ export class ZplService {
           labelCount,
           labelSize,
           'failed',
-          'pdf',
+          outputFormat,
         );
       } catch (recordError) {
         this.logger.error(`Error recording failed conversion: ${recordError.message}`);
@@ -254,15 +278,17 @@ export class ZplService {
   }
 
   /**
-   * Procesa la conversión ZPL a PDF (método que sería llamado por un worker)
+   * Procesa la conversión ZPL a PDF/PNG/JPEG (método que sería llamado por un worker)
    * @param zplContent Contenido ZPL a convertir
    * @param labelSize Tamaño de la etiqueta
    * @param jobId ID del trabajo
+   * @param outputFormat Formato de salida
    */
   async processZplConversion(
     zplContent: string,
     labelSize: string,
     jobId: string,
+    outputFormat: OutputFormat = OutputFormat.PDF,
   ): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job) {
@@ -282,19 +308,32 @@ export class ZplService {
         progress: 10,
       }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
 
-      // Convertir ZPL a PDF
       const size = job.labelSize;
-      const pdfBuffer = await this.convertZplToPdf(zplContent, size);
+      let resultBuffer: Buffer;
+      let contentType: string;
+      let fileExtension: string;
+
+      // Convertir según el formato solicitado
+      if (outputFormat === OutputFormat.PDF) {
+        resultBuffer = await this.convertZplToPdf(zplContent, size);
+        contentType = 'application/pdf';
+        fileExtension = 'pdf';
+      } else {
+        // PNG o JPEG - crear archivo ZIP con las imágenes
+        resultBuffer = await this.convertZplToImages(zplContent, size, outputFormat);
+        contentType = 'application/zip';
+        fileExtension = 'zip';
+      }
 
       // Generar nombres de archivo
-      const { storageFilename, downloadFilename } = this.generateFilenames(jobId, labelSize);
+      const { storageFilename, downloadFilename } = this.generateFilenames(jobId, labelSize, outputFormat, fileExtension);
 
       // Guardar el archivo en Google Cloud Storage
       await this.storage
         .bucket(this.bucket)
         .file(storageFilename)
-        .save(pdfBuffer, {
-          contentType: 'application/pdf',
+        .save(resultBuffer, {
+          contentType,
         });
 
       // Generar URL firmada
@@ -315,7 +354,7 @@ export class ZplService {
         filename: downloadFilename,
       }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
 
-      this.logger.log(`Conversión completada para trabajo ${jobId}`);
+      this.logger.log(`Conversión completada para trabajo ${jobId} (formato: ${outputFormat})`);
     } catch (error) {
       this.logger.error(`Error al procesar conversión ZPL: ${error.message}`);
 
@@ -519,6 +558,162 @@ export class ZplService {
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
+  }
+
+  /**
+   * Convierte ZPL a imágenes PNG o JPEG y las empaqueta en un archivo ZIP
+   * Usa la misma lógica de batch que PDF para reducir llamadas a Labelary
+   * @param zplRaw Contenido ZPL
+   * @param labelSize Tamaño de etiqueta
+   * @param outputFormat Formato de imagen (png o jpeg)
+   * @returns Buffer del archivo ZIP
+   */
+  private async convertZplToImages(
+    zplRaw: string,
+    labelSize: LabelSize,
+    outputFormat: OutputFormat,
+  ): Promise<Buffer> {
+    try {
+      if (!zplRaw) {
+        throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
+      }
+
+      // 1. Extraer y normalizar bloques ZPL
+      const parsedBlocks = this.splitAndExtractCopies(zplRaw);
+      if (parsedBlocks.length === 0) {
+        throw new HttpException(
+          'No valid ZPL blocks found',
+          HttpStatus.BAD_REQUEST
+        );
+      }
+
+      // 2. Identificar bloques únicos y su secuencia original
+      const { uniqueBlocks, originalSequence } = this.identifyUniqueBlocks(parsedBlocks);
+
+      // 3. Dividir en chunks de 50 (mismo que PDF)
+      const chunkRanges = this.calculateChunkRanges(uniqueBlocks.length);
+
+      // 4. Obtener PDFs por chunks y convertir a imágenes
+      const allUniqueImages: Buffer[] = [];
+      for (const range of chunkRanges) {
+        const chunkBlocks = uniqueBlocks.slice(range.start, range.end);
+
+        const formattedBlocks = chunkBlocks.map(({ normalizedContent }) => {
+          let content = normalizedContent;
+          if (!content.startsWith('^XA')) content = '^XA' + content;
+          if (!content.endsWith('^XZ')) content += '^XZ';
+          return content;
+        });
+
+        const chunkZpl = formattedBlocks.join('\n');
+
+        // Obtener PDF del chunk desde Labelary
+        const pdfBuffer = await this.callLabelary(chunkZpl, labelSize);
+
+        // Convertir PDF a imágenes PNG
+        const images = await this.pdfToImages(pdfBuffer);
+        allUniqueImages.push(...images);
+      }
+
+      // 5. Crear ZIP con imágenes duplicadas según secuencia original
+      return this.createImagesZip(allUniqueImages, originalSequence, outputFormat);
+    } catch (error) {
+      this.logger.error(`Error converting ZPL to images: ${error.message}`);
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        'Error converting ZPL to images',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Convierte un PDF multi-página a un array de imágenes PNG
+   * @param pdfBuffer Buffer del PDF
+   * @returns Array de buffers PNG (uno por página)
+   */
+  private async pdfToImages(pdfBuffer: Buffer): Promise<Buffer[]> {
+    try {
+      const pages: PngPageOutput[] = await pdfToPng(pdfBuffer, {
+        disableFontFace: true,
+        useSystemFonts: true,
+        viewportScale: 2.0, // Mayor resolución
+      });
+
+      return pages.map(page => page.content);
+    } catch (error) {
+      this.logger.error(`Error converting PDF to images: ${error.message}`);
+      throw new HttpException(
+        'Error converting PDF to images',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Crea un archivo ZIP con las imágenes
+   * @param uniqueImages Array de buffers PNG de imágenes únicas
+   * @param sequence Secuencia de índices que representa el orden y repetición de las imágenes
+   * @param outputFormat Formato de imagen (png o jpeg)
+   * @returns Buffer del archivo ZIP
+   */
+  private async createImagesZip(
+    uniqueImages: Buffer[],
+    sequence: number[],
+    outputFormat: OutputFormat,
+  ): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const archive = archiver('zip', { zlib: { level: 9 } });
+
+      // Crear un writable stream para capturar el ZIP
+      const writableStream = new Writable({
+        write(chunk, encoding, callback) {
+          chunks.push(chunk);
+          callback();
+        },
+      });
+
+      writableStream.on('finish', () => {
+        resolve(Buffer.concat(chunks));
+      });
+
+      archive.on('error', (err) => {
+        reject(err);
+      });
+
+      archive.pipe(writableStream);
+
+      // Procesar imágenes secuencialmente para conversión JPEG
+      const processImages = async () => {
+        const extension = outputFormat === OutputFormat.JPEG ? 'jpg' : 'png';
+
+        for (let i = 0; i < sequence.length; i++) {
+          const blockIdx = sequence[i];
+          const pngBuffer = uniqueImages[blockIdx];
+
+          let imageBuffer: Buffer;
+          if (outputFormat === OutputFormat.JPEG) {
+            // Convertir PNG a JPEG usando sharp
+            imageBuffer = await sharp(pngBuffer)
+              .jpeg({ quality: 90 })
+              .toBuffer();
+          } else {
+            imageBuffer = pngBuffer;
+          }
+
+          // Nombre del archivo con índice secuencial (1-based)
+          const filename = `label_${String(i + 1).padStart(4, '0')}.${extension}`;
+          archive.append(imageBuffer, { name: filename });
+        }
+
+        await archive.finalize();
+      };
+
+      processImages().catch(reject);
+    });
   }
 
   /**
@@ -749,9 +944,16 @@ export class ZplService {
    * Genera un nombre de archivo para almacenamiento y descarga
    * @param jobId ID del trabajo
    * @param labelSize Tamaño de la etiqueta
+   * @param outputFormat Formato de salida
+   * @param fileExtension Extensión del archivo
    * @returns Objeto con nombres de archivo
    */
-  private generateFilenames(jobId: string, labelSize: string): { storageFilename: string; downloadFilename: string } {
+  private generateFilenames(
+    jobId: string,
+    labelSize: string,
+    outputFormat: OutputFormat = OutputFormat.PDF,
+    fileExtension: string = 'pdf',
+  ): { storageFilename: string; downloadFilename: string } {
     // Mapear el tamaño a un formato legible para el nombre del archivo
     let size: string;
     switch (labelSize.toLowerCase()) {
@@ -773,9 +975,10 @@ export class ZplService {
         size = labelSize; // Usar el valor tal cual si no coincide
     }
     const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14); // YYYYMMDDHHmmss
+    const formatSuffix = outputFormat !== OutputFormat.PDF ? `_${outputFormat}` : '';
     return {
-      storageFilename: `label-${jobId}.pdf`,
-      downloadFilename: `zplpdf_${size}_${timestamp}.pdf`
+      storageFilename: `label-${jobId}.${fileExtension}`,
+      downloadFilename: `zplpdf_${size}${formatSuffix}_${timestamp}.${fileExtension}`
     };
   }
 
