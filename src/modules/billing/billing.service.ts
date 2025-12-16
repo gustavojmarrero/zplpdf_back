@@ -131,15 +131,16 @@ export class BillingService {
     }
 
     try {
-      const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
-      const price = subscription.items.data[0]?.price;
+      const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId) as Stripe.Subscription;
+      const subscriptionItem = subscription.items.data[0];
+      const price = subscriptionItem?.price;
 
       return {
         id: subscription.id,
         status: subscription.status,
         plan: user.plan || 'free',
-        currentPeriodStart: subscription.current_period_start,
-        currentPeriodEnd: subscription.current_period_end,
+        currentPeriodStart: subscriptionItem?.current_period_start || subscription.start_date,
+        currentPeriodEnd: subscriptionItem?.current_period_end || null,
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
         canceledAt: subscription.canceled_at,
         priceAmount: price?.unit_amount || null,
