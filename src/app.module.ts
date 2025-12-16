@@ -6,6 +6,7 @@ import { ZplModule } from './modules/zpl/zpl.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { BillingModule } from './modules/billing/billing.module.js';
 import { WebhooksModule } from './modules/webhooks/webhooks.module.js';
 import { ContactModule } from './modules/contact/contact.module.js';
 import { CronModule } from './modules/cron/cron.module.js';
@@ -22,6 +23,7 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
     AuthModule,
     UsersModule,
     PaymentsModule,
+    BillingModule,
     WebhooksModule,
     ContactModule,
     CronModule,
