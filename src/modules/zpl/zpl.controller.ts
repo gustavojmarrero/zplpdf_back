@@ -15,6 +15,8 @@ import {
 } from '@nestjs/common';
 import { ZplService } from './zpl.service.js';
 import { ConvertZplDto } from './dto/convert-zpl.dto.js';
+import { ValidateZplDto } from './dto/validate-zpl.dto.js';
+import { ValidationResponseDto } from './dto/validation-response.dto.js';
 import {
   ApiTags,
   ApiOperation,
@@ -30,6 +32,7 @@ import { ZplPreviewItemDto, ZplPreviewResponseDto } from './dto/zpl-preview.dto.
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
+import { ZplValidatorService } from './validation/zpl-validator.service.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -41,7 +44,10 @@ interface ProcessZplDto {
 @ApiTags('zpl')
 @Controller('zpl')
 export class ZplController {
-  constructor(private readonly zplService: ZplService) {}
+  constructor(
+    private readonly zplService: ZplService,
+    private readonly zplValidatorService: ZplValidatorService,
+  ) {}
 
   @Post('convert')
   @HttpCode(HttpStatus.ACCEPTED)
@@ -148,7 +154,30 @@ export class ZplController {
       ? file.buffer.toString('utf-8')
       : convertZplDto.zplContent;
 
+    // Validacion basica
     this.validateZplContent(zplContent);
+
+    // Validacion robusta antes de procesar
+    const language = (convertZplDto.language || 'es') as 'es' | 'en';
+    const validation = await this.zplValidatorService.validate(zplContent, {
+      language,
+    });
+
+    // Si hay errores criticos, rechazar
+    if (!validation.isValid) {
+      throw new HttpException(
+        {
+          error: 'VALIDATION_FAILED',
+          message:
+            language === 'es'
+              ? 'El contenido ZPL tiene errores de sintaxis'
+              : 'ZPL content has syntax errors',
+          errors: validation.errors.slice(0, 5),
+          summary: validation.summary,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
     const jobId = await this.zplService.startZplConversion(
       zplContent,
@@ -158,11 +187,23 @@ export class ZplController {
       convertZplDto.outputFormat || OutputFormat.PDF,
     );
 
-    return {
+    // Incluir warnings en la respuesta si los hay
+    const response: {
+      jobId: string;
+      message: string;
+      statusUrl: string;
+      warnings?: typeof validation.warnings;
+    } = {
       jobId,
       message: 'Conversion iniciada. Use el endpoint /status para verificar el estado.',
       statusUrl: `/api/zpl/status/${jobId}`,
     };
+
+    if (validation.warnings.length > 0) {
+      response.warnings = validation.warnings.slice(0, 3);
+    }
+
+    return response;
   }
 
   private validateZplContent(content: string): void {
@@ -447,6 +488,99 @@ export class ZplController {
       success: true,
       message: 'Vista previa generada correctamente',
       data: previews,
+    };
+  }
+
+  @Post('validate')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Validar contenido ZPL sin convertir',
+    description:
+      'Analiza el ZPL y retorna errores/warnings sin enviarlo a Labelary. Util para pre-validacion antes de conversion.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Archivo ZPL a validar (max 1MB)',
+        },
+        zplContent: {
+          type: 'string',
+          description: 'Contenido ZPL a validar (opcional si se envia archivo)',
+        },
+        language: {
+          type: 'string',
+          enum: ['es', 'en'],
+          default: 'es',
+          description: 'Idioma para mensajes de error',
+        },
+        strictMode: {
+          type: 'boolean',
+          default: false,
+          description: 'Modo estricto: warnings se tratan como errores',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Resultado de validacion',
+    type: ValidationResponseDto,
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Contenido ZPL no proporcionado',
+  })
+  async validateZpl(
+    @Body() validateDto: ValidateZplDto,
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [new MaxFileSizeValidator({ maxSize: 1024 * 1024 })],
+        fileIsRequired: false,
+      }),
+    )
+    file?: Express.Multer.File,
+  ): Promise<ValidationResponseDto> {
+    const zplContent = file
+      ? file.buffer.toString('utf-8')
+      : validateDto.zplContent;
+
+    if (!zplContent) {
+      throw new HttpException(
+        validateDto.language === 'en'
+          ? 'ZPL content is required'
+          : 'El contenido ZPL es requerido',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const result = await this.zplValidatorService.validate(zplContent, {
+      language: validateDto.language || 'es',
+      strictMode: validateDto.strictMode || false,
+    });
+
+    const message =
+      validateDto.language === 'en'
+        ? result.isValid
+          ? 'Validation successful'
+          : 'Issues found in ZPL content'
+        : result.isValid
+          ? 'Validacion exitosa'
+          : 'Se encontraron problemas en el contenido ZPL';
+
+    return {
+      success: true,
+      message,
+      data: {
+        isValid: result.isValid,
+        errors: result.errors,
+        warnings: result.warnings,
+        summary: result.summary,
+      },
     };
   }
 }

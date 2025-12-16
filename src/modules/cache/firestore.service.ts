@@ -371,6 +371,15 @@ export class FirestoreService {
     }
   }
 
+  // ============== Database Access ==============
+
+  /**
+   * Obtiene la instancia de Firestore para operaciones personalizadas
+   */
+  getDb(): Firestore {
+    return this.firestore;
+  }
+
   // ============== Enterprise Contacts ==============
 
   async saveEnterpriseContact(contact: {
