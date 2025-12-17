@@ -3,27 +3,47 @@ import { AppModule } from './app.module.js';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import helmet from 'helmet';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });
 
-  // Configurar límite de payload a 10MB
-  app.useBodyParser('json', { limit: '10mb' });
-  app.useBodyParser('urlencoded', { limit: '10mb', extended: true });
-  app.useBodyParser('text', { limit: '10mb' });
+  // Configurar headers de seguridad con Helmet
+  app.use(helmet({
+    crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        scriptSrc: ["'self'"],
+      },
+    },
+  }));
 
-  // Configurar CORS
+  // Configurar límite de payload (reducido a 5MB por seguridad)
+  app.useBodyParser('json', { limit: '5mb' });
+  app.useBodyParser('urlencoded', { limit: '5mb', extended: true });
+  app.useBodyParser('text', { limit: '5mb' });
+
+  // Configurar CORS - solo HTTPS en producción
+  const isProduction = process.env.NODE_ENV === 'production';
   app.enableCors({
-    origin: [
-      'http://localhost:8080',
-      'http://localhost:3000',
-      'https://zplpdf-gustavojmarreros-projects.vercel.ap',
-      'https://www.zplpdf.com',
-      'http://www.zplpdf.com',
-    ],
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    origin: isProduction
+      ? [
+          'https://www.zplpdf.com',
+          'https://zplpdf.com',
+          'https://zplpdf-gustavojmarreros-projects.vercel.app',
+        ]
+      : [
+          'http://localhost:8080',
+          'http://localhost:3000',
+          'https://www.zplpdf.com',
+          'https://zplpdf.com',
+        ],
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE'],
     credentials: true,
   });
 

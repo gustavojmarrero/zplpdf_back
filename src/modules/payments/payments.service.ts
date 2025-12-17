@@ -9,21 +9,62 @@ export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
   private stripe: Stripe;
   private proPriceId: string;
+  private readonly MAX_RETRIES = 3;
+
+  /**
+   * Ejecuta una operación con reintentos
+   */
+  private async withRetry<T>(
+    operation: () => Promise<T>,
+    operationName: string,
+  ): Promise<T> {
+    for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        this.logger.error(
+          `${operationName} failed (attempt ${attempt}/${this.MAX_RETRIES}): ${error.message}`,
+        );
+        if (attempt === this.MAX_RETRIES) {
+          throw error;
+        }
+        // Exponential backoff: 1s, 2s, 4s
+        await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)));
+      }
+    }
+    throw new Error(`${operationName} failed after ${this.MAX_RETRIES} attempts`);
+  }
 
   constructor(
     private readonly configService: ConfigService,
     private readonly firestoreService: FirestoreService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+    const nodeEnv = this.configService.get<string>('NODE_ENV');
 
     if (!stripeSecretKey) {
       this.logger.warn('Stripe secret key not configured. Payment features disabled.');
       return;
     }
 
+    // Validate test vs live key based on environment
+    if (nodeEnv === 'production' && stripeSecretKey.startsWith('sk_test_')) {
+      this.logger.error('CRITICAL: Using Stripe TEST key in PRODUCTION environment!');
+      throw new Error('FATAL: Using Stripe test key in production! Check STRIPE_SECRET_KEY configuration.');
+    }
+
+    if (nodeEnv !== 'production' && stripeSecretKey.startsWith('sk_live_')) {
+      this.logger.warn('WARNING: Using Stripe LIVE key in non-production environment');
+    }
+
     this.stripe = new Stripe(stripeSecretKey);
 
     this.proPriceId = this.configService.get<string>('STRIPE_PRO_PRICE_ID');
+
+    // Validate price ID is configured
+    if (!this.proPriceId) {
+      this.logger.warn('STRIPE_PRO_PRICE_ID not configured');
+    }
   }
 
   async createCheckoutSession(
@@ -130,11 +171,14 @@ export class PaymentsService {
 
     const subscriptionId = session.subscription as string;
 
-    // Update user to Pro plan
-    await this.firestoreService.updateUser(userId, {
-      plan: 'pro',
-      stripeSubscriptionId: subscriptionId,
-    });
+    // Update user to Pro plan with retry
+    await this.withRetry(
+      () => this.firestoreService.updateUser(userId, {
+        plan: 'pro',
+        stripeSubscriptionId: subscriptionId,
+      }),
+      `handleCheckoutCompleted(${userId})`,
+    );
 
     this.logger.log(`User ${userId} upgraded to Pro plan`);
   }
@@ -148,18 +192,24 @@ export class PaymentsService {
       return;
     }
 
-    // Check subscription status
+    // Check subscription status with retry
     if (subscription.status === 'active') {
-      await this.firestoreService.updateUser(user.id, {
-        plan: 'pro',
-        stripeSubscriptionId: subscription.id,
-      });
+      await this.withRetry(
+        () => this.firestoreService.updateUser(user.id, {
+          plan: 'pro',
+          stripeSubscriptionId: subscription.id,
+        }),
+        `handleSubscriptionUpdated(${user.id})`,
+      );
       this.logger.log(`Subscription updated for user ${user.id}: active`);
     } else if (['canceled', 'unpaid', 'past_due'].includes(subscription.status)) {
-      await this.firestoreService.updateUser(user.id, {
-        plan: 'free',
-        stripeSubscriptionId: null,
-      });
+      await this.withRetry(
+        () => this.firestoreService.updateUser(user.id, {
+          plan: 'free',
+          stripeSubscriptionId: null,
+        }),
+        `handleSubscriptionUpdated(${user.id})`,
+      );
       this.logger.log(`Subscription updated for user ${user.id}: ${subscription.status}`);
     }
   }
@@ -173,12 +223,38 @@ export class PaymentsService {
       return;
     }
 
-    // Downgrade to free plan
-    await this.firestoreService.updateUser(user.id, {
-      plan: 'free',
-      stripeSubscriptionId: null,
-    });
+    // Downgrade to free plan with retry
+    await this.withRetry(
+      () => this.firestoreService.updateUser(user.id, {
+        plan: 'free',
+        stripeSubscriptionId: null,
+      }),
+      `handleSubscriptionDeleted(${user.id})`,
+    );
 
     this.logger.log(`User ${user.id} downgraded to Free plan`);
+  }
+
+  async handlePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
+    const customerId = invoice.customer as string;
+    const user = await this.firestoreService.getUserByStripeCustomerId(customerId);
+
+    if (!user) {
+      this.logger.error(`No user found for customer: ${customerId} on payment failed`);
+      return;
+    }
+
+    // Log the failed payment
+    this.logger.warn(`Payment failed for user ${user.id}, invoice: ${invoice.id}`);
+
+    // If this is not the first attempt and subscription is past_due, notify
+    const attemptCount = invoice.attempt_count || 1;
+    if (attemptCount >= 2) {
+      this.logger.warn(`Multiple payment failures (${attemptCount}) for user ${user.id}`);
+      // TODO: Implement email notification to user about failed payment
+    }
+
+    // Note: Don't immediately downgrade - Stripe will retry and send subscription.updated
+    // if the final retry fails. This handler is for logging and notifications only.
   }
 }

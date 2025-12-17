@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { ZplModule } from './modules/zpl/zpl.module.js';
@@ -20,6 +22,13 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
       load: [appConfig],
       envFilePath: ['.env.local', '.env'],
     }),
+    // Rate limiting global: 100 requests por minuto por IP
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000, // 1 minuto
+        limit: 100, // 100 requests
+      },
+    ]),
     AuthModule,
     UsersModule,
     PaymentsModule,
@@ -30,7 +39,14 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
     ZplModule,
   ],
   controllers: [AppController],
-  providers: [AppService, GoogleAuthProvider],
+  providers: [
+    AppService,
+    GoogleAuthProvider,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
   exports: [GoogleAuthProvider],
 })
 export class AppModule {}

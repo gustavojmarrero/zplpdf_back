@@ -301,9 +301,11 @@ export class ZplController {
   }
 
   @Get('download/:jobId')
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Descargar PDF convertido',
-    description: 'Obtiene la URL y nombre del archivo PDF generado para su descarga',
+    description: 'Obtiene la URL y nombre del archivo PDF generado para su descarga. Requiere autenticación.',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -325,17 +327,22 @@ export class ZplController {
     status: HttpStatus.NOT_FOUND,
     description: 'PDF no encontrado o conversion no completada',
   })
-  async downloadPdf(@Param('jobId') jobId: string) {
-    const { url, filename } = await this.zplService.getPdfDownloadUrl(jobId);
+  async downloadPdf(
+    @CurrentUser() user: FirebaseUser,
+    @Param('jobId') jobId: string,
+  ) {
+    const { url, filename } = await this.zplService.getPdfDownloadUrl(jobId, user.uid);
     return { url, filename };
   }
 
   @Post('count-labels')
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Contar etiquetas en archivo ZPL',
-    description: 'Recibe un archivo ZPL y devuelve el numero total de etiquetas que contiene',
+    description: 'Recibe un archivo ZPL y devuelve el numero total de etiquetas que contiene. Requiere autenticación.',
   })
   @ApiBody({
     schema: {
@@ -407,11 +414,13 @@ export class ZplController {
   }
 
   @Post('preview')
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Obtener vista previa de etiquetas ZPL',
-    description: 'Recibe codigo ZPL y devuelve imagenes PNG de las etiquetas unicas con sus cantidades',
+    description: 'Recibe codigo ZPL y devuelve imagenes PNG de las etiquetas unicas con sus cantidades. Requiere autenticación.',
   })
   @ApiBody({
     schema: {
@@ -501,12 +510,14 @@ export class ZplController {
   }
 
   @Post('validate')
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Validar contenido ZPL sin convertir',
     description:
-      'Analiza el ZPL y retorna errores/warnings sin enviarlo a Labelary. Util para pre-validacion antes de conversion.',
+      'Analiza el ZPL y retorna errores/warnings sin enviarlo a Labelary. Util para pre-validacion antes de conversion. Requiere autenticación.',
   })
   @ApiBody({
     schema: {
@@ -704,9 +715,11 @@ export class ZplController {
   }
 
   @Get('batch/status/:batchId')
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Verificar estado de conversion batch',
-    description: 'Consulta el estado actual de un trabajo de conversion batch',
+    description: 'Consulta el estado actual de un trabajo de conversion batch. Requiere autenticación.',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -717,8 +730,11 @@ export class ZplController {
     status: HttpStatus.NOT_FOUND,
     description: 'Batch no encontrado',
   })
-  async getBatchStatus(@Param('batchId') batchId: string): Promise<BatchStatusResponseDto> {
-    const result = await this.zplService.getBatchStatus(batchId);
+  async getBatchStatus(
+    @CurrentUser() user: FirebaseUser,
+    @Param('batchId') batchId: string,
+  ): Promise<BatchStatusResponseDto> {
+    const result = await this.zplService.getBatchStatus(batchId, user.uid);
 
     return {
       batchId: result.batchId,
@@ -736,9 +752,11 @@ export class ZplController {
   }
 
   @Get('batch/download/:batchId')
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Descargar archivos del batch completado',
-    description: 'Obtiene la URL y nombre del archivo ZIP con todos los archivos convertidos',
+    description: 'Obtiene la URL y nombre del archivo ZIP con todos los archivos convertidos. Requiere autenticación.',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -753,7 +771,10 @@ export class ZplController {
     status: HttpStatus.BAD_REQUEST,
     description: 'Batch aun en procesamiento',
   })
-  async getBatchDownload(@Param('batchId') batchId: string): Promise<BatchDownloadResponseDto> {
-    return await this.zplService.getBatchDownload(batchId);
+  async getBatchDownload(
+    @CurrentUser() user: FirebaseUser,
+    @Param('batchId') batchId: string,
+  ): Promise<BatchDownloadResponseDto> {
+    return await this.zplService.getBatchDownload(batchId, user.uid);
   }
 }

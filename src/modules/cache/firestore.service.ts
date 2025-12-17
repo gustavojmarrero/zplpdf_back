@@ -12,6 +12,7 @@ import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 export interface ConversionStatus {
   status: 'pending' | 'processing' | 'completed' | 'error';
   progress: number;
+  userId?: string;
   resultUrl?: string;
   filename?: string;
   zplContent?: string;

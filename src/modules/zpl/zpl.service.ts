@@ -1,4 +1,4 @@
-import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef, ForbiddenException } from '@nestjs/common';
 import axios from 'axios';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
@@ -203,6 +203,7 @@ export class ZplService {
         await this.firestoreService.saveConversionStatus(jobId, {
           status: 'pending',
           progress: 0,
+          userId: userId,
           labelSize: labelSize,
           outputFormat: outputFormat,
           createdAt: now.toISOString(),
@@ -446,7 +447,7 @@ export class ZplService {
    * @param jobId ID del trabajo
    * @returns URL y nombre del archivo
    */
-  async getPdfDownloadUrl(jobId: string) {
+  async getPdfDownloadUrl(jobId: string, userId: string) {
     // Primero buscar en caché local
     let job = this.jobs.get(jobId);
 
@@ -455,6 +456,10 @@ export class ZplService {
       try {
         const firestoreStatus = await this.firestoreService.getConversionStatus(jobId);
         if (firestoreStatus) {
+          // Validar propiedad del recurso
+          if (firestoreStatus.userId && firestoreStatus.userId !== userId) {
+            throw new ForbiddenException('No tienes acceso a este recurso');
+          }
           if (firestoreStatus.status !== 'completed') {
             throw new HttpException(
               'La conversión no está completa',
@@ -473,7 +478,7 @@ export class ZplService {
           };
         }
       } catch (error) {
-        if (error instanceof HttpException) {
+        if (error instanceof HttpException || error instanceof ForbiddenException) {
           throw error;
         }
         this.logger.error(`Error al consultar Firestore: ${error.message}`);
@@ -1340,6 +1345,35 @@ export class ZplService {
         }
       }
 
+      // Validar total de labels en todos los archivos del batch
+      let totalLabels = 0;
+      for (const file of files) {
+        try {
+          const countResult = await this.countLabels(file.content);
+          totalLabels += countResult.data.totalLabels;
+        } catch (error) {
+          this.logger.warn(`Error contando labels en ${file.fileName}: ${error.message}`);
+          // Asumir al menos 1 label si hay error
+          totalLabels += 1;
+        }
+      }
+
+      // Verificar límites de usuario
+      const userLimits = await this.usersService.checkCanConvert(userId, totalLabels);
+      if (!userLimits.allowed) {
+        throw new HttpException(
+          {
+            error: userLimits.errorCode || 'LIMIT_EXCEEDED',
+            message: userLimits.error,
+            data: {
+              ...userLimits.data,
+              totalLabelsInBatch: totalLabels,
+            },
+          },
+          HttpStatus.FORBIDDEN,
+        );
+      }
+
       // Generar IDs
       const batchId = `batch_${uuidv4()}`;
       const now = new Date();
@@ -1614,7 +1648,7 @@ export class ZplService {
    * @param batchId ID del batch
    * @returns Estado del batch con todos los jobs
    */
-  async getBatchStatus(batchId: string): Promise<{
+  async getBatchStatus(batchId: string, userId: string): Promise<{
     batchId: string;
     status: string;
     totalFiles: number;
@@ -1629,6 +1663,11 @@ export class ZplService {
         { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
         HttpStatus.NOT_FOUND,
       );
+    }
+
+    // Validar propiedad del recurso
+    if (batch.userId !== userId) {
+      throw new ForbiddenException('No tienes acceso a este recurso');
     }
 
     return {
@@ -1651,7 +1690,7 @@ export class ZplService {
    * @param batchId ID del batch
    * @returns URL de descarga y metadata
    */
-  async getBatchDownload(batchId: string): Promise<{
+  async getBatchDownload(batchId: string, userId: string): Promise<{
     url: string;
     filename: string;
     expiresAt: string;
@@ -1663,6 +1702,11 @@ export class ZplService {
         { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
         HttpStatus.NOT_FOUND,
       );
+    }
+
+    // Validar propiedad del recurso
+    if (batch.userId !== userId) {
+      throw new ForbiddenException('No tienes acceso a este recurso');
     }
 
     if (batch.status === 'processing') {

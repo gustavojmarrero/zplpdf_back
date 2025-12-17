@@ -199,10 +199,12 @@ export class UsersService {
   }
 
   private getPlanLimits(user: User): PlanLimits {
+    // Para enterprise con límites personalizados, usar esos
     if (user.plan === 'enterprise' && user.planLimits) {
       return user.planLimits;
     }
 
-    return DEFAULT_PLAN_LIMITS[user.plan as 'free' | 'pro'] || DEFAULT_PLAN_LIMITS.free;
+    // Usar límites por defecto del plan
+    return DEFAULT_PLAN_LIMITS[user.plan] || DEFAULT_PLAN_LIMITS.free;
   }
 }
