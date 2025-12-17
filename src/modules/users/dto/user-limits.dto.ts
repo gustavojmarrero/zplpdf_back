@@ -10,6 +10,15 @@ export class PlanLimitsDto {
 
   @ApiProperty({ description: 'Can download images (PNG/JPEG) - Pro and Enterprise only' })
   canDownloadImages: boolean;
+
+  @ApiProperty({ description: 'Batch processing allowed - Pro and Enterprise only' })
+  batchAllowed: boolean;
+
+  @ApiProperty({ description: 'Maximum files per batch' })
+  maxFilesPerBatch: number;
+
+  @ApiProperty({ description: 'Maximum file size in bytes for batch' })
+  maxFileSizeBytes: number;
 }
 
 export class CurrentUsageDto {

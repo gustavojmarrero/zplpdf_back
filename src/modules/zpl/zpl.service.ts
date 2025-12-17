@@ -12,6 +12,8 @@ import { pdfToPng, PngPageOutput } from 'pdf-to-png-converter';
 import { FirestoreService, ConversionStatus } from '../cache/firestore.service.js';
 import { UsersService } from '../users/users.service.js';
 import { OutputFormat } from './enums/output-format.enum.js';
+import type { BatchJob, BatchFileJob, BatchLimits } from './interfaces/batch.interface.js';
+import { BATCH_LIMITS } from './interfaces/batch.interface.js';
 
 export enum LabelSize {
   TWO_BY_ONE = '2x1',
@@ -32,6 +34,8 @@ interface ConversionJob {
   filename?: string;
   error?: string;
   createdAt: Date;
+  originalFilename?: string;
+  userPlan?: string;
 }
 
 interface ZplBlock {
@@ -133,6 +137,7 @@ export class ZplService {
     language = 'en',
     userId: string,
     outputFormat: OutputFormat = OutputFormat.PDF,
+    originalFilename?: string,
   ): Promise<string> {
     try {
       if (!zplContent) {
@@ -159,9 +164,12 @@ export class ZplService {
         );
       }
 
+      // Obtener información del usuario
+      const user = await this.usersService.getUserById(userId);
+      const userPlan = user?.plan || 'free';
+
       // Validate Pro plan for image formats
       if (outputFormat !== OutputFormat.PDF) {
-        const user = await this.usersService.getUserById(userId);
         if (!user || user.plan === 'free') {
           throw new HttpException(
             {
@@ -186,6 +194,8 @@ export class ZplService {
         status: 'pending',
         progress: 0,
         createdAt: now,
+        originalFilename,
+        userPlan,
       });
 
       // Guardar en Firestore para persistencia entre instancias
@@ -326,7 +336,14 @@ export class ZplService {
       }
 
       // Generar nombres de archivo
-      const { storageFilename, downloadFilename } = this.generateFilenames(jobId, labelSize, outputFormat, fileExtension);
+      const { storageFilename, downloadFilename } = this.generateFilenames(
+        jobId,
+        labelSize,
+        outputFormat,
+        fileExtension,
+        job.originalFilename,
+        job.userPlan,
+      );
 
       // Guardar el archivo en Google Cloud Storage
       await this.storage
@@ -636,7 +653,12 @@ export class ZplService {
    */
   private async pdfToImages(pdfBuffer: Buffer): Promise<Buffer[]> {
     try {
-      const pages: PngPageOutput[] = await pdfToPng(pdfBuffer, {
+      // Convert Buffer to ArrayBuffer for pdfToPng compatibility
+      const arrayBuffer = pdfBuffer.buffer.slice(
+        pdfBuffer.byteOffset,
+        pdfBuffer.byteOffset + pdfBuffer.byteLength,
+      );
+      const pages: PngPageOutput[] = await pdfToPng(arrayBuffer, {
         disableFontFace: true,
         useSystemFonts: true,
         viewportScale: 2.0, // Mayor resolución
@@ -946,6 +968,8 @@ export class ZplService {
    * @param labelSize Tamaño de la etiqueta
    * @param outputFormat Formato de salida
    * @param fileExtension Extensión del archivo
+   * @param originalFilename Nombre original del archivo (opcional)
+   * @param userPlan Plan del usuario (free, pro, enterprise)
    * @returns Objeto con nombres de archivo
    */
   private generateFilenames(
@@ -953,8 +977,22 @@ export class ZplService {
     labelSize: string,
     outputFormat: OutputFormat = OutputFormat.PDF,
     fileExtension: string = 'pdf',
+    originalFilename?: string,
+    userPlan?: string,
   ): { storageFilename: string; downloadFilename: string } {
-    // Mapear el tamaño a un formato legible para el nombre del archivo
+    const storageFilename = `label-${jobId}.${fileExtension}`;
+
+    // Para usuarios Pro/Enterprise con nombre original, usar ese nombre
+    if (originalFilename && userPlan && userPlan !== 'free') {
+      // Remover extensión original (.zpl, .txt, etc) y agregar la nueva
+      const baseName = originalFilename.replace(/\.(zpl|txt|ZPL|TXT)$/i, '');
+      return {
+        storageFilename,
+        downloadFilename: `${baseName}.${fileExtension}`,
+      };
+    }
+
+    // Para usuarios Free, usar formato estándar zplpdf_size_timestamp
     let size: string;
     switch (labelSize.toLowerCase()) {
       case 'small':
@@ -972,13 +1010,13 @@ export class ZplService {
         size = '4x6';
         break;
       default:
-        size = labelSize; // Usar el valor tal cual si no coincide
+        size = labelSize;
     }
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14); // YYYYMMDDHHmmss
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14);
     const formatSuffix = outputFormat !== OutputFormat.PDF ? `_${outputFormat}` : '';
     return {
-      storageFilename: `label-${jobId}.${fileExtension}`,
-      downloadFilename: `zplpdf_${size}${formatSuffix}_${timestamp}.${fileExtension}`
+      storageFilename,
+      downloadFilename: `zplpdf_${size}${formatSuffix}_${timestamp}.${fileExtension}`,
     };
   }
 
@@ -1239,5 +1277,417 @@ export class ZplService {
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
+  }
+
+  // ============== BATCH PROCESSING ==============
+
+  /**
+   * Inicia una conversión batch de múltiples archivos ZPL
+   * @param userId ID del usuario
+   * @param files Array de archivos ZPL
+   * @param labelSize Tamaño de etiqueta
+   * @param outputFormat Formato de salida
+   * @returns Objeto con batchId y array de jobs
+   */
+  async startBatchConversion(
+    userId: string,
+    files: { id: string; content: string; fileName: string }[],
+    labelSize: string,
+    outputFormat: 'pdf' | 'png' | 'jpeg' = 'pdf',
+  ): Promise<{ batchId: string; jobs: { fileId: string; jobId: string }[] }> {
+    try {
+      // Validar plan del usuario
+      const user = await this.usersService.getUserById(userId);
+      if (!user) {
+        throw new HttpException(
+          { error: 'USER_NOT_FOUND', message: 'Usuario no encontrado' },
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const planLimits = BATCH_LIMITS[user.plan] || BATCH_LIMITS.free;
+
+      if (!planLimits.batchAllowed) {
+        throw new HttpException(
+          { error: 'BATCH_NOT_ALLOWED', message: 'El procesamiento batch no está disponible para tu plan' },
+          HttpStatus.FORBIDDEN,
+        );
+      }
+
+      if (files.length > planLimits.maxFilesPerBatch) {
+        throw new HttpException(
+          {
+            error: 'BATCH_LIMIT_EXCEEDED',
+            message: `Excedes el límite de ${planLimits.maxFilesPerBatch} archivos por batch`,
+            data: { maxFiles: planLimits.maxFilesPerBatch, requestedFiles: files.length }
+          },
+          HttpStatus.FORBIDDEN,
+        );
+      }
+
+      // Validar tamaño de cada archivo
+      for (const file of files) {
+        const fileSize = Buffer.byteLength(file.content, 'utf8');
+        if (fileSize > planLimits.maxFileSizeBytes) {
+          throw new HttpException(
+            {
+              error: 'FILE_SIZE_EXCEEDED',
+              message: `El archivo ${file.fileName} excede el límite de ${planLimits.maxFileSizeBytes / (1024 * 1024)}MB`,
+              data: { fileName: file.fileName, fileSize, maxSize: planLimits.maxFileSizeBytes }
+            },
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+      }
+
+      // Generar IDs
+      const batchId = `batch_${uuidv4()}`;
+      const now = new Date();
+
+      // Crear jobs para cada archivo
+      const batchJobs: BatchFileJob[] = files.map((file) => ({
+        jobId: `job_${uuidv4()}`,
+        fileId: file.id,
+        fileName: file.fileName,
+        status: 'pending' as const,
+        progress: 0,
+      }));
+
+      // Crear el batch completo
+      const batch: BatchJob = {
+        id: batchId,
+        userId,
+        status: 'processing',
+        totalFiles: files.length,
+        completedFiles: 0,
+        failedFiles: 0,
+        outputFormat,
+        labelSize,
+        jobs: batchJobs,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      // Guardar en Firestore
+      await this.firestoreService.saveBatchJob(batch);
+
+      // Procesar archivos en paralelo (con límite)
+      const jobsMapping = batchJobs.map((job) => ({
+        fileId: job.fileId,
+        jobId: job.jobId,
+      }));
+
+      // Iniciar procesamiento asíncrono
+      this.processBatchFiles(batchId, files, batchJobs, labelSize, outputFormat);
+
+      return { batchId, jobs: jobsMapping };
+    } catch (error) {
+      this.logger.error(`Error al iniciar batch: ${error.message}`);
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(
+        'Error al iniciar procesamiento batch',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Procesa los archivos de un batch de forma asíncrona
+   */
+  private async processBatchFiles(
+    batchId: string,
+    files: { id: string; content: string; fileName: string }[],
+    jobs: BatchFileJob[],
+    labelSize: string,
+    outputFormat: 'pdf' | 'png' | 'jpeg',
+  ): Promise<void> {
+    const size = this.getLabelSize(labelSize);
+    let completedCount = 0;
+    let failedCount = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const job = jobs[i];
+
+      try {
+        // Actualizar estado a procesando
+        job.status = 'processing';
+        job.progress = 10;
+        await this.updateBatchJobProgress(batchId, jobs, completedCount, failedCount);
+
+        // Convertir el archivo
+        let resultBuffer: Buffer;
+        let contentType: string;
+        let fileExtension: string;
+
+        if (outputFormat === 'pdf') {
+          resultBuffer = await this.convertZplToPdf(file.content, size);
+          contentType = 'application/pdf';
+          fileExtension = 'pdf';
+        } else {
+          resultBuffer = await this.convertZplToImages(
+            file.content,
+            size,
+            outputFormat === 'png' ? OutputFormat.PNG : OutputFormat.JPEG,
+          );
+          contentType = 'application/zip';
+          fileExtension = 'zip';
+        }
+
+        // Guardar archivo temporal en GCS
+        const tempPath = `batches/${batchId}/temp/${job.jobId}.${fileExtension}`;
+        await this.storage.bucket(this.bucket).file(tempPath).save(resultBuffer, { contentType });
+
+        // Marcar como completado
+        job.status = 'completed';
+        job.progress = 100;
+        job.tempStoragePath = tempPath;
+        completedCount++;
+
+        this.logger.log(`Batch ${batchId}: Archivo ${file.fileName} completado`);
+      } catch (error) {
+        this.logger.error(`Batch ${batchId}: Error procesando ${file.fileName}: ${error.message}`);
+        job.status = 'failed';
+        job.error = error.message;
+        failedCount++;
+      }
+
+      await this.updateBatchJobProgress(batchId, jobs, completedCount, failedCount);
+    }
+
+    // Finalizar el batch
+    await this.finalizeBatch(batchId, jobs, completedCount, failedCount, outputFormat);
+  }
+
+  /**
+   * Actualiza el progreso del batch en Firestore
+   */
+  private async updateBatchJobProgress(
+    batchId: string,
+    jobs: BatchFileJob[],
+    completedCount: number,
+    failedCount: number,
+  ): Promise<void> {
+    await this.firestoreService.updateBatchJob(batchId, {
+      jobs,
+      completedFiles: completedCount,
+      failedFiles: failedCount,
+    });
+  }
+
+  /**
+   * Finaliza un batch creando el ZIP con todos los archivos
+   */
+  private async finalizeBatch(
+    batchId: string,
+    jobs: BatchFileJob[],
+    completedCount: number,
+    failedCount: number,
+    outputFormat: 'pdf' | 'png' | 'jpeg',
+  ): Promise<void> {
+    try {
+      const completedJobs = jobs.filter((j) => j.status === 'completed' && j.tempStoragePath);
+
+      if (completedJobs.length === 0) {
+        await this.firestoreService.updateBatchJob(batchId, {
+          status: 'failed',
+          jobs,
+          completedFiles: completedCount,
+          failedFiles: failedCount,
+        });
+        return;
+      }
+
+      // Crear ZIP con todos los archivos completados
+      const zipBuffer = await this.createBatchZip(batchId, completedJobs, outputFormat);
+
+      // Guardar ZIP en GCS
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14);
+      const zipFilename = `zpl-batch-${timestamp}.zip`;
+      const zipPath = `batches/${batchId}/${zipFilename}`;
+
+      await this.storage.bucket(this.bucket).file(zipPath).save(zipBuffer, {
+        contentType: 'application/zip',
+      });
+
+      // Generar URL firmada
+      const downloadUrl = await this.generateSignedUrl(zipPath, zipFilename);
+
+      // Determinar estado final
+      let status: 'completed' | 'partial' | 'failed' = 'completed';
+      if (failedCount > 0 && completedCount > 0) {
+        status = 'partial';
+      } else if (failedCount > 0 && completedCount === 0) {
+        status = 'failed';
+      }
+
+      await this.firestoreService.updateBatchJob(batchId, {
+        status,
+        jobs,
+        completedFiles: completedCount,
+        failedFiles: failedCount,
+        downloadUrl,
+        zipFilename,
+      });
+
+      // Limpiar archivos temporales
+      this.cleanupBatchTempFiles(batchId, completedJobs);
+
+      this.logger.log(`Batch ${batchId} finalizado con estado: ${status}`);
+    } catch (error) {
+      this.logger.error(`Error finalizando batch ${batchId}: ${error.message}`);
+      await this.firestoreService.updateBatchJob(batchId, {
+        status: 'failed',
+        jobs,
+        completedFiles: completedCount,
+        failedFiles: failedCount,
+      });
+    }
+  }
+
+  /**
+   * Crea un ZIP con todos los archivos del batch
+   */
+  private async createBatchZip(
+    batchId: string,
+    jobs: BatchFileJob[],
+    outputFormat: 'pdf' | 'png' | 'jpeg',
+  ): Promise<Buffer> {
+    return new Promise(async (resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const archive = archiver('zip', { zlib: { level: 9 } });
+
+      const writableStream = new Writable({
+        write(chunk, encoding, callback) {
+          chunks.push(chunk);
+          callback();
+        },
+      });
+
+      writableStream.on('finish', () => {
+        resolve(Buffer.concat(chunks));
+      });
+
+      archive.on('error', reject);
+      archive.pipe(writableStream);
+
+      // Agregar cada archivo al ZIP
+      for (const job of jobs) {
+        if (!job.tempStoragePath) continue;
+
+        try {
+          const file = this.storage.bucket(this.bucket).file(job.tempStoragePath);
+          const [fileBuffer] = await file.download();
+
+          // Determinar extensión según el formato
+          const extension = outputFormat === 'pdf' ? 'pdf' : 'zip';
+          const fileName = job.fileName.replace(/\.(zpl|txt)$/i, '') + `.${extension}`;
+
+          archive.append(fileBuffer, { name: fileName });
+        } catch (error) {
+          this.logger.error(`Error agregando archivo ${job.fileName} al ZIP: ${error.message}`);
+        }
+      }
+
+      await archive.finalize();
+    });
+  }
+
+  /**
+   * Limpia los archivos temporales de un batch
+   */
+  private async cleanupBatchTempFiles(batchId: string, jobs: BatchFileJob[]): Promise<void> {
+    try {
+      for (const job of jobs) {
+        if (job.tempStoragePath) {
+          await this.storage.bucket(this.bucket).file(job.tempStoragePath).delete().catch(() => {});
+        }
+      }
+      this.logger.log(`Archivos temporales del batch ${batchId} eliminados`);
+    } catch (error) {
+      this.logger.warn(`Error limpiando archivos temporales del batch ${batchId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Obtiene el estado de un batch
+   * @param batchId ID del batch
+   * @returns Estado del batch con todos los jobs
+   */
+  async getBatchStatus(batchId: string): Promise<{
+    batchId: string;
+    status: string;
+    totalFiles: number;
+    completedFiles: number;
+    jobs: { jobId: string; status: string; progress: number; error?: string }[];
+    downloadUrl?: string;
+  }> {
+    const batch = await this.firestoreService.getBatchJob(batchId);
+
+    if (!batch) {
+      throw new HttpException(
+        { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    return {
+      batchId: batch.id,
+      status: batch.status,
+      totalFiles: batch.totalFiles,
+      completedFiles: batch.completedFiles,
+      jobs: batch.jobs.map((j) => ({
+        jobId: j.jobId,
+        status: j.status,
+        progress: j.progress,
+        error: j.error,
+      })),
+      downloadUrl: batch.downloadUrl,
+    };
+  }
+
+  /**
+   * Obtiene la URL de descarga de un batch completado
+   * @param batchId ID del batch
+   * @returns URL de descarga y metadata
+   */
+  async getBatchDownload(batchId: string): Promise<{
+    url: string;
+    filename: string;
+    expiresAt: string;
+  }> {
+    const batch = await this.firestoreService.getBatchJob(batchId);
+
+    if (!batch) {
+      throw new HttpException(
+        { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    if (batch.status === 'processing') {
+      throw new HttpException(
+        { error: 'BATCH_PROCESSING', message: 'El batch aún está procesándose' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    if (!batch.downloadUrl || !batch.zipFilename) {
+      throw new HttpException(
+        { error: 'DOWNLOAD_NOT_AVAILABLE', message: 'No hay archivos disponibles para descargar' },
+        HttpStatus.NOT_FOUND,
+      );
+    }
+
+    // Regenerar URL firmada si es necesario
+    const zipPath = `batches/${batchId}/${batch.zipFilename}`;
+    const freshUrl = await this.generateSignedUrl(zipPath, batch.zipFilename);
+    const expiresAt = new Date(Date.now() + this.URL_EXPIRATION_TIME).toISOString();
+
+    return {
+      url: freshUrl,
+      filename: batch.zipFilename,
+      expiresAt,
+    };
   }
 } 

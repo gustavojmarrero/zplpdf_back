@@ -8,11 +8,13 @@ import {
   HttpCode,
   UseInterceptors,
   UploadedFile,
+  UploadedFiles,
   ParseFilePipe,
   MaxFileSizeValidator,
   HttpException,
   UseGuards,
 } from '@nestjs/common';
+import { v4 as uuidv4 } from 'uuid';
 import { ZplService } from './zpl.service.js';
 import { ConvertZplDto } from './dto/convert-zpl.dto.js';
 import { ValidateZplDto } from './dto/validate-zpl.dto.js';
@@ -25,7 +27,7 @@ import {
   ApiBody,
   ApiBearerAuth,
 } from '@nestjs/swagger';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { LabelSize } from './enums/label-size.enum.js';
 import { OutputFormat } from './enums/output-format.enum.js';
 import { ZplPreviewItemDto, ZplPreviewResponseDto } from './dto/zpl-preview.dto.js';
@@ -33,6 +35,12 @@ import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { ZplValidatorService } from './validation/zpl-validator.service.js';
+import {
+  BatchConvertDto,
+  BatchConvertResponseDto,
+  BatchStatusResponseDto,
+  BatchDownloadResponseDto,
+} from './dto/batch.dto.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -185,6 +193,7 @@ export class ZplController {
       convertZplDto.language || 'en',
       user.uid,
       convertZplDto.outputFormat || OutputFormat.PDF,
+      file?.originalname,
     );
 
     // Incluir warnings en la respuesta si los hay
@@ -582,5 +591,169 @@ export class ZplController {
         summary: result.summary,
       },
     };
+  }
+
+  // ============== BATCH PROCESSING ENDPOINTS ==============
+
+  @Post('batch/convert')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
+  @UseInterceptors(FilesInterceptor('files', 50))
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Iniciar conversion batch de multiples archivos ZPL',
+    description: 'Recibe multiples archivos ZPL y comienza un proceso asincrono de conversion. Solo disponible para usuarios Pro y Enterprise.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+          description: 'Archivos ZPL a convertir',
+        },
+        fileIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'IDs de cada archivo (opcional)',
+        },
+        labelSize: {
+          type: 'string',
+          example: '4x6',
+          description: 'Tamano de etiqueta',
+        },
+        outputFormat: {
+          type: 'string',
+          enum: ['pdf', 'png', 'jpeg'],
+          default: 'pdf',
+        },
+      },
+      required: ['files', 'labelSize'],
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.ACCEPTED,
+    description: 'Conversion batch iniciada correctamente',
+    type: BatchConvertResponseDto,
+  })
+  @ApiResponse({
+    status: HttpStatus.FORBIDDEN,
+    description: 'Plan no permite batch o limite excedido',
+    schema: {
+      properties: {
+        error: { type: 'string', example: 'BATCH_NOT_ALLOWED' },
+        message: { type: 'string', example: 'El procesamiento batch no esta disponible para tu plan' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Datos de entrada invalidos o archivo muy grande',
+  })
+  async batchConvert(
+    @CurrentUser() user: FirebaseUser,
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() body: { fileIds?: string | string[]; labelSize: string; outputFormat?: string },
+  ): Promise<BatchConvertResponseDto> {
+    // Validar que hay archivos
+    if (!files || files.length === 0) {
+      throw new HttpException(
+        { error: 'NO_FILES', message: 'Se requiere al menos un archivo' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Validar labelSize
+    if (!body.labelSize) {
+      throw new HttpException(
+        { error: 'INVALID_INPUT', message: 'labelSize es requerido' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Parsear fileIds (puede ser string o array según cómo llegue del FormData)
+    let fileIds: string[] = [];
+    if (body.fileIds) {
+      if (Array.isArray(body.fileIds)) {
+        fileIds = body.fileIds;
+      } else if (typeof body.fileIds === 'string') {
+        fileIds = [body.fileIds];
+      }
+    }
+
+    // Transformar archivos al formato interno
+    const batchFiles = files.map((file, index) => ({
+      id: fileIds[index] || uuidv4(),
+      content: file.buffer.toString('utf-8'),
+      fileName: file.originalname,
+    }));
+
+    const result = await this.zplService.startBatchConversion(
+      user.uid,
+      batchFiles,
+      body.labelSize,
+      (body.outputFormat as 'pdf' | 'png' | 'jpeg') || 'pdf',
+    );
+
+    return {
+      batchId: result.batchId,
+      jobs: result.jobs,
+    };
+  }
+
+  @Get('batch/status/:batchId')
+  @ApiOperation({
+    summary: 'Verificar estado de conversion batch',
+    description: 'Consulta el estado actual de un trabajo de conversion batch',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Estado del batch',
+    type: BatchStatusResponseDto,
+  })
+  @ApiResponse({
+    status: HttpStatus.NOT_FOUND,
+    description: 'Batch no encontrado',
+  })
+  async getBatchStatus(@Param('batchId') batchId: string): Promise<BatchStatusResponseDto> {
+    const result = await this.zplService.getBatchStatus(batchId);
+
+    return {
+      batchId: result.batchId,
+      status: result.status,
+      totalFiles: result.totalFiles,
+      completedFiles: result.completedFiles,
+      jobs: result.jobs.map((j) => ({
+        jobId: j.jobId,
+        status: j.status as 'pending' | 'processing' | 'completed' | 'failed',
+        progress: j.progress,
+        error: j.error,
+      })),
+      downloadUrl: result.downloadUrl,
+    };
+  }
+
+  @Get('batch/download/:batchId')
+  @ApiOperation({
+    summary: 'Descargar archivos del batch completado',
+    description: 'Obtiene la URL y nombre del archivo ZIP con todos los archivos convertidos',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'URL de descarga del ZIP',
+    type: BatchDownloadResponseDto,
+  })
+  @ApiResponse({
+    status: HttpStatus.NOT_FOUND,
+    description: 'Batch no encontrado o descarga no disponible',
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Batch aun en procesamiento',
+  })
+  async getBatchDownload(@Param('batchId') batchId: string): Promise<BatchDownloadResponseDto> {
+    return await this.zplService.getBatchDownload(batchId);
   }
 }

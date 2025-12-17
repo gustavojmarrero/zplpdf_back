@@ -7,6 +7,7 @@ import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType } from '../../common/interfaces/user.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
+import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 
 export interface ConversionStatus {
   status: 'pending' | 'processing' | 'completed' | 'error';
@@ -399,6 +400,66 @@ export class FirestoreService {
       this.logger.log(`Contacto enterprise guardado: ${contact.email}`);
     } catch (error) {
       this.logger.error(`Error al guardar contacto enterprise: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== Batch Processing ==============
+
+  private readonly batchCollection = 'zpl-batches';
+
+  async saveBatchJob(batch: BatchJob): Promise<void> {
+    try {
+      await this.firestore
+        .collection(this.batchCollection)
+        .doc(batch.id)
+        .set({
+          ...batch,
+          createdAt: batch.createdAt || new Date(),
+          updatedAt: new Date(),
+        });
+      this.logger.log(`Batch guardado: ${batch.id}`);
+    } catch (error) {
+      this.logger.error(`Error al guardar batch: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getBatchJob(batchId: string): Promise<BatchJob | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.batchCollection)
+        .doc(batchId)
+        .get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        ...data,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+      } as BatchJob;
+    } catch (error) {
+      this.logger.error(`Error al obtener batch: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async updateBatchJob(batchId: string, data: Partial<BatchJob>): Promise<void> {
+    try {
+      await this.firestore
+        .collection(this.batchCollection)
+        .doc(batchId)
+        .update({
+          ...data,
+          updatedAt: new Date(),
+        });
+      this.logger.log(`Batch actualizado: ${batchId}`);
+    } catch (error) {
+      this.logger.error(`Error al actualizar batch: ${error.message}`);
       throw error;
     }
   }

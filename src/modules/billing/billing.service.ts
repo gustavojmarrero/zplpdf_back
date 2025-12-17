@@ -85,10 +85,12 @@ export class BillingService {
         return { paymentMethods: [], defaultPaymentMethodId: null };
       }
 
+      // Cast to Customer type since we verified it's not deleted
+      const activeCustomer = customer as Stripe.Customer;
       const defaultPmId =
-        typeof customer.invoice_settings?.default_payment_method === 'string'
-          ? customer.invoice_settings.default_payment_method
-          : customer.invoice_settings?.default_payment_method?.id || null;
+        typeof activeCustomer.invoice_settings?.default_payment_method === 'string'
+          ? activeCustomer.invoice_settings.default_payment_method
+          : activeCustomer.invoice_settings?.default_payment_method?.id || null;
 
       const paymentMethods = await this.stripe.paymentMethods.list({
         customer: user.stripeCustomerId,

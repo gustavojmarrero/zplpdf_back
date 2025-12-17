@@ -6,6 +6,7 @@ import type { ConversionHistory } from '../../common/interfaces/conversion-histo
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
+import { BATCH_LIMITS } from '../zpl/interfaces/batch.interface.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -79,6 +80,7 @@ export class UsersService {
 
     const usage = await this.firestoreService.getOrCreateUsage(userId);
     const limits = this.getPlanLimits(user);
+    const batchLimits = BATCH_LIMITS[user.plan] || BATCH_LIMITS.free;
 
     return {
       plan: user.plan,
@@ -86,6 +88,9 @@ export class UsersService {
         maxLabelsPerPdf: limits.maxLabelsPerPdf,
         maxPdfsPerMonth: limits.maxPdfsPerMonth,
         canDownloadImages: limits.canDownloadImages,
+        batchAllowed: batchLimits.batchAllowed,
+        maxFilesPerBatch: batchLimits.maxFilesPerBatch,
+        maxFileSizeBytes: batchLimits.maxFileSizeBytes,
       },
       currentUsage: {
         pdfCount: usage.pdfCount,
