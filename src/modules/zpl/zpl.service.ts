@@ -1,4 +1,4 @@
-import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef, ForbiddenException, Optional } from '@nestjs/common';
 import axios from 'axios';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
@@ -93,19 +93,18 @@ export class ZplService {
     private firestoreService: FirestoreService,
     @Inject(forwardRef(() => UsersService))
     private usersService: UsersService,
+    @Inject('GOOGLE_AUTH_OPTIONS') @Optional() private googleAuthOptions: any,
   ) {
-    const credentials = JSON.parse(
-      this.configService.get<string>('GOOGLE_CREDENTIALS'),
-    );
-    // Inicializar el cliente de Storage
-    this.storage = new Storage({
-      credentials,
-      projectId: credentials.project_id,
-    });
-    // Nombre del bucket
-    this.bucket = 'zplpdf-app-files';
+    // Inicializar el cliente de Storage usando GoogleAuthProvider
+    // En Cloud Run, si no hay credenciales, usará ADC automáticamente
+    this.storage = new Storage(this.googleAuthOptions || {});
+
+    // Nombre del bucket desde configuración o valor por defecto
+    this.bucket = this.configService.get<string>('GCP_STORAGE_BUCKET') || 'zplpdf-app-files';
+
     // Configurar la URL base para acceder a los archivos
     this.storageBasePath = `https://storage.googleapis.com/${this.bucket}/`;
+
     // Verificar que el bucket existe
     this.storage
       .bucket(this.bucket)

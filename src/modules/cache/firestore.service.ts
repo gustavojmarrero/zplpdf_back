@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Firestore } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType } from '../../common/interfaces/user.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
@@ -36,29 +34,31 @@ export class FirestoreService {
   constructor(private configService: ConfigService) {
     let credentials: any = null;
 
-    // Opción 1: Intentar cargar desde archivo firebase-credentials.json
-    const credentialsPath = join(process.cwd(), 'firebase-credentials.json');
-    if (existsSync(credentialsPath)) {
+    // Cargar credenciales desde variable de entorno FIREBASE_CREDENTIALS
+    const firebaseCredentials = this.configService.get<string>('FIREBASE_CREDENTIALS');
+    if (firebaseCredentials) {
       try {
-        const fileContent = readFileSync(credentialsPath, 'utf-8');
-        credentials = JSON.parse(fileContent);
-        this.logger.log('Loaded Firebase credentials from file');
-      } catch (error) {
-        this.logger.error('Error loading firebase-credentials.json:', error);
-      }
-    } else {
-      // Opción 2: Usar variable de entorno FIREBASE_CREDENTIALS
-      const firebaseCredentials = this.configService.get<string>('FIREBASE_CREDENTIALS');
-      if (firebaseCredentials) {
-        try {
-          credentials = JSON.parse(firebaseCredentials);
-        } catch (error) {
-          this.logger.error('Error parsing FIREBASE_CREDENTIALS:', error);
+        credentials = JSON.parse(firebaseCredentials);
+        // Convertir \n literales a saltos de línea reales en la private_key
+        if (credentials.private_key) {
+          // Verificar si tiene \n literales (como string "\\n") o ya son saltos de línea
+          const hasLiteralNewlines = credentials.private_key.includes('\\n');
+          const hasRealNewlines = credentials.private_key.includes('\n');
+          this.logger.debug(`Private key: hasLiteralNewlines=${hasLiteralNewlines}, hasRealNewlines=${hasRealNewlines}`);
+
+          if (hasLiteralNewlines) {
+            credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
+            this.logger.debug('Converted literal \\n to real newlines');
+          }
         }
+        this.logger.log('Loaded Firebase credentials from environment variable');
+      } catch (error) {
+        this.logger.error('Error parsing FIREBASE_CREDENTIALS:', error);
       }
     }
 
-    // Inicializar Firestore con projectId explícito
+    // Inicializar Firestore
+    // Si hay credenciales, usarlas; si no, usar ADC (Application Default Credentials)
     const firestoreOptions: any = {};
     if (credentials) {
       firestoreOptions.credentials = credentials;

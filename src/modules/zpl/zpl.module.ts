@@ -8,6 +8,7 @@ import { QueueModule } from '../queue/queue.module.js';
 import { CacheModule } from '../cache/cache.module.js';
 import { UtilsModule } from '../../utils/utils.module.js';
 import { UsersModule } from '../users/users.module.js';
+import { GoogleAuthProvider } from '../../config/google-auth.provider.js';
 
 @Module({
   imports: [
@@ -18,7 +19,7 @@ import { UsersModule } from '../users/users.module.js';
     forwardRef(() => UsersModule),
   ],
   controllers: [ZplController],
-  providers: [ZplService, ZplValidatorService, ValidationMetricsService],
+  providers: [ZplService, ZplValidatorService, ValidationMetricsService, GoogleAuthProvider],
   exports: [ZplService, ZplValidatorService],
 })
 export class ZplModule {}
