@@ -41,6 +41,7 @@ import {
   BatchStatusResponseDto,
   BatchDownloadResponseDto,
 } from './dto/batch.dto.js';
+import { ErrorCodes } from '../../common/constants/error-codes.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -175,13 +176,15 @@ export class ZplController {
     if (!validation.isValid) {
       throw new HttpException(
         {
-          error: 'VALIDATION_FAILED',
+          error: ErrorCodes.INVALID_ZPL,
           message:
             language === 'es'
               ? 'El contenido ZPL tiene errores de sintaxis'
               : 'ZPL content has syntax errors',
-          errors: validation.errors.slice(0, 5),
-          summary: validation.summary,
+          data: {
+            errors: validation.errors.slice(0, 5),
+            summary: validation.summary,
+          },
         },
         HttpStatus.BAD_REQUEST,
       );
@@ -218,14 +221,23 @@ export class ZplController {
   private validateZplContent(content: string): void {
     if (!content || typeof content !== 'string') {
       throw new HttpException(
-        'El contenido ZPL es requerido y debe ser texto',
+        {
+          error: ErrorCodes.INVALID_ZPL,
+          message: 'El contenido ZPL es requerido y debe ser texto',
+        },
         HttpStatus.BAD_REQUEST
       );
     }
 
     if (!content.includes('^XA') || !content.includes('^XZ')) {
       throw new HttpException(
-        'El contenido ZPL no es valido. Debe contener al menos una etiqueta con ^XA y ^XZ',
+        {
+          error: ErrorCodes.INVALID_ZPL,
+          message: 'El contenido ZPL no es valido. Debe contener al menos una etiqueta con ^XA y ^XZ',
+          data: {
+            detail: 'Missing ^XA or ^XZ markers',
+          },
+        },
         HttpStatus.BAD_REQUEST
       );
     }
@@ -571,9 +583,12 @@ export class ZplController {
 
     if (!zplContent) {
       throw new HttpException(
-        validateDto.language === 'en'
-          ? 'ZPL content is required'
-          : 'El contenido ZPL es requerido',
+        {
+          error: ErrorCodes.INVALID_INPUT,
+          message: validateDto.language === 'en'
+            ? 'ZPL content is required'
+            : 'El contenido ZPL es requerido',
+        },
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -671,7 +686,7 @@ export class ZplController {
     // Validar que hay archivos
     if (!files || files.length === 0) {
       throw new HttpException(
-        { error: 'NO_FILES', message: 'Se requiere al menos un archivo' },
+        { error: ErrorCodes.NO_FILES, message: 'Se requiere al menos un archivo' },
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -679,7 +694,7 @@ export class ZplController {
     // Validar labelSize
     if (!body.labelSize) {
       throw new HttpException(
-        { error: 'INVALID_INPUT', message: 'labelSize es requerido' },
+        { error: ErrorCodes.INVALID_INPUT, message: 'labelSize es requerido' },
         HttpStatus.BAD_REQUEST,
       );
     }

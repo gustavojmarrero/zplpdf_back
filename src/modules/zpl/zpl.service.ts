@@ -1,4 +1,5 @@
 import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef, ForbiddenException, Optional } from '@nestjs/common';
+import { ErrorCodes } from '../../common/constants/error-codes.js';
 import axios from 'axios';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
@@ -172,7 +173,7 @@ export class ZplService {
         if (!user || user.plan === 'free') {
           throw new HttpException(
             {
-              error: 'IMAGE_FORMAT_PRO_ONLY',
+              error: ErrorCodes.IMAGE_FORMAT_PRO_ONLY,
               message: 'PNG and JPEG formats are only available for Pro and Enterprise plans',
             },
             HttpStatus.FORBIDDEN,
@@ -422,7 +423,10 @@ export class ZplService {
       } catch (firestoreError) {
         this.logger.error(`Error al consultar Firestore: ${firestoreError.message}`);
       }
-      throw new HttpException('Trabajo no encontrado', HttpStatus.NOT_FOUND);
+      throw new HttpException(
+        { error: ErrorCodes.JOB_NOT_FOUND, message: 'Trabajo no encontrado', data: { jobId } },
+        HttpStatus.NOT_FOUND,
+      );
     }
 
     return {
@@ -491,19 +495,22 @@ export class ZplService {
         }
         this.logger.error(`Error al consultar Firestore: ${error.message}`);
       }
-      throw new HttpException('Trabajo no encontrado', HttpStatus.NOT_FOUND);
+      throw new HttpException(
+        { error: ErrorCodes.JOB_NOT_FOUND, message: 'Trabajo no encontrado', data: { jobId } },
+        HttpStatus.NOT_FOUND,
+      );
     }
 
     if (job.status !== 'completed') {
       throw new HttpException(
-        'La conversión no está completa',
+        { error: ErrorCodes.JOB_NOT_COMPLETE, message: 'La conversión no está completa', data: { jobId, currentStatus: job.status } },
         HttpStatus.BAD_REQUEST,
       );
     }
 
     if (!job.resultUrl || !job.filename) {
       throw new HttpException(
-        'No se encuentra el archivo de resultado',
+        { error: ErrorCodes.DOWNLOAD_NOT_AVAILABLE, message: 'No se encuentra el archivo de resultado', data: { jobId } },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -1313,7 +1320,7 @@ export class ZplService {
       const user = await this.usersService.getUserById(userId);
       if (!user) {
         throw new HttpException(
-          { error: 'USER_NOT_FOUND', message: 'Usuario no encontrado' },
+          { error: ErrorCodes.USER_NOT_FOUND, message: 'Usuario no encontrado' },
           HttpStatus.NOT_FOUND,
         );
       }
@@ -1322,7 +1329,7 @@ export class ZplService {
 
       if (!planLimits.batchAllowed) {
         throw new HttpException(
-          { error: 'BATCH_NOT_ALLOWED', message: 'El procesamiento batch no está disponible para tu plan' },
+          { error: ErrorCodes.BATCH_NOT_ALLOWED, message: 'El procesamiento batch no está disponible para tu plan' },
           HttpStatus.FORBIDDEN,
         );
       }
@@ -1330,7 +1337,7 @@ export class ZplService {
       if (files.length > planLimits.maxFilesPerBatch) {
         throw new HttpException(
           {
-            error: 'BATCH_LIMIT_EXCEEDED',
+            error: ErrorCodes.BATCH_LIMIT_EXCEEDED,
             message: `Excedes el límite de ${planLimits.maxFilesPerBatch} archivos por batch`,
             data: { maxFiles: planLimits.maxFilesPerBatch, requestedFiles: files.length }
           },
@@ -1344,11 +1351,11 @@ export class ZplService {
         if (fileSize > planLimits.maxFileSizeBytes) {
           throw new HttpException(
             {
-              error: 'FILE_SIZE_EXCEEDED',
+              error: ErrorCodes.FILE_TOO_LARGE,
               message: `El archivo ${file.fileName} excede el límite de ${planLimits.maxFileSizeBytes / (1024 * 1024)}MB`,
-              data: { fileName: file.fileName, fileSize, maxSize: planLimits.maxFileSizeBytes }
+              data: { fileName: file.fileName, size: fileSize, maxSize: planLimits.maxFileSizeBytes }
             },
-            HttpStatus.BAD_REQUEST,
+            HttpStatus.PAYLOAD_TOO_LARGE,
           );
         }
       }
@@ -1716,14 +1723,17 @@ export class ZplService {
 
     if (!batch) {
       throw new HttpException(
-        { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
+        { error: ErrorCodes.BATCH_NOT_FOUND, message: 'Batch no encontrado', data: { batchId } },
         HttpStatus.NOT_FOUND,
       );
     }
 
     // Validar propiedad del recurso
     if (batch.userId !== userId) {
-      throw new ForbiddenException('No tienes acceso a este recurso');
+      throw new HttpException(
+        { error: ErrorCodes.ACCESS_DENIED, message: 'No tienes acceso a este recurso' },
+        HttpStatus.FORBIDDEN,
+      );
     }
 
     return {
@@ -1759,7 +1769,7 @@ export class ZplService {
 
     if (!batch) {
       throw new HttpException(
-        { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
+        { error: ErrorCodes.BATCH_NOT_FOUND, message: 'Batch no encontrado', data: { batchId } },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -1793,26 +1803,29 @@ export class ZplService {
 
     if (!batch) {
       throw new HttpException(
-        { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
+        { error: ErrorCodes.BATCH_NOT_FOUND, message: 'Batch no encontrado', data: { batchId } },
         HttpStatus.NOT_FOUND,
       );
     }
 
     // Validar propiedad del recurso
     if (batch.userId !== userId) {
-      throw new ForbiddenException('No tienes acceso a este recurso');
+      throw new HttpException(
+        { error: ErrorCodes.ACCESS_DENIED, message: 'No tienes acceso a este recurso' },
+        HttpStatus.FORBIDDEN,
+      );
     }
 
     if (batch.status === 'processing') {
       throw new HttpException(
-        { error: 'BATCH_PROCESSING', message: 'El batch aún está procesándose' },
+        { error: ErrorCodes.BATCH_PROCESSING, message: 'El batch aún está procesándose', data: { batchId, currentStatus: batch.status } },
         HttpStatus.BAD_REQUEST,
       );
     }
 
     if (!batch.downloadUrl || !batch.zipFilename) {
       throw new HttpException(
-        { error: 'DOWNLOAD_NOT_AVAILABLE', message: 'No hay archivos disponibles para descargar' },
+        { error: ErrorCodes.DOWNLOAD_NOT_AVAILABLE, message: 'No hay archivos disponibles para descargar', data: { batchId } },
         HttpStatus.NOT_FOUND,
       );
     }

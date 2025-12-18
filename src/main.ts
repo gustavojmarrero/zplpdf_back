@@ -4,6 +4,8 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
+import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor.js';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -52,6 +54,12 @@ async function bootstrap() {
 
   // Habilitar validacion de DTO
   app.useGlobalPipes(new ValidationPipe({ transform: true }));
+
+  // Registrar interceptor global para X-Request-Id
+  app.useGlobalInterceptors(new RequestIdInterceptor());
+
+  // Registrar filtro global de excepciones para respuestas estandarizadas
+  app.useGlobalFilters(new HttpExceptionFilter());
 
   // Configurar Swagger
   const config = new DocumentBuilder()
