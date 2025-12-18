@@ -19,7 +19,7 @@ export interface User {
 }
 
 export const DEFAULT_PLAN_LIMITS: Record<PlanType, PlanLimits> = {
-  free: { maxLabelsPerPdf: 100, maxPdfsPerMonth: 100, canDownloadImages: false },
+  free: { maxLabelsPerPdf: 100, maxPdfsPerMonth: 25, canDownloadImages: false },
   pro: { maxLabelsPerPdf: 500, maxPdfsPerMonth: 500, canDownloadImages: true },
   enterprise: { maxLabelsPerPdf: 999999, maxPdfsPerMonth: 999999, canDownloadImages: true },
 };

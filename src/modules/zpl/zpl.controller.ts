@@ -715,8 +715,6 @@ export class ZplController {
   }
 
   @Get('batch/status/:batchId')
-  @UseGuards(FirebaseAuthGuard)
-  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Verificar estado de conversion batch',
     description: 'Consulta el estado actual de un trabajo de conversion batch. Requiere autenticación.',
@@ -731,10 +729,10 @@ export class ZplController {
     description: 'Batch no encontrado',
   })
   async getBatchStatus(
-    @CurrentUser() user: FirebaseUser,
     @Param('batchId') batchId: string,
   ): Promise<BatchStatusResponseDto> {
-    const result = await this.zplService.getBatchStatus(batchId, user.uid);
+    // Status endpoint público - la validación de propiedad se hace en download
+    const result = await this.zplService.getBatchStatusPublic(batchId);
 
     return {
       batchId: result.batchId,

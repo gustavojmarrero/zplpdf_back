@@ -1,5 +1,6 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
+import { PeriodCalculatorService, PeriodInfo } from '../../common/services/period-calculator.service.js';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType, PlanLimits } from '../../common/interfaces/user.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
@@ -13,13 +14,17 @@ export interface CheckCanConvertResult {
   error?: string;
   errorCode?: string;
   data?: Record<string, any>;
+  periodInfo?: PeriodInfo;
 }
 
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private readonly firestoreService: FirestoreService) {}
+  constructor(
+    private readonly firestoreService: FirestoreService,
+    private readonly periodCalculatorService: PeriodCalculatorService,
+  ) {}
 
   async syncUser(firebaseUser: FirebaseUser): Promise<User> {
     const existingUser = await this.firestoreService.getUserById(firebaseUser.uid);
@@ -78,7 +83,9 @@ export class UsersService {
       throw new ForbiddenException('User not found');
     }
 
-    const usage = await this.firestoreService.getOrCreateUsage(userId);
+    // Calcular período basado en plan (Free: desde createdAt, Pro: desde Stripe)
+    const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+    const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
     const limits = this.getPlanLimits(user);
     const batchLimits = BATCH_LIMITS[user.plan] || BATCH_LIMITS.free;
 
@@ -135,7 +142,10 @@ export class UsersService {
     }
 
     const limits = this.getPlanLimits(user);
-    const usage = await this.firestoreService.getOrCreateUsage(userId);
+
+    // Calcular período basado en plan (Free: desde createdAt, Pro: desde Stripe)
+    const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+    const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
 
     // Check labels per PDF limit
     if (labelCount > limits.maxLabelsPerPdf) {
@@ -164,7 +174,7 @@ export class UsersService {
       };
     }
 
-    return { allowed: true };
+    return { allowed: true, periodInfo };
   }
 
   async recordConversion(
@@ -175,6 +185,7 @@ export class UsersService {
     status: 'completed' | 'failed',
     outputFormat: 'pdf' | 'png' | 'jpeg' = 'pdf',
     fileUrl?: string,
+    periodId?: string,
   ): Promise<void> {
     // Save to history (use null instead of undefined for Firestore)
     await this.firestoreService.saveConversionHistory({
@@ -190,7 +201,17 @@ export class UsersService {
 
     // Increment usage only for completed conversions
     if (status === 'completed') {
-      await this.firestoreService.incrementUsage(userId, 1, labelCount);
+      if (periodId) {
+        // Usar el periodId proporcionado (más eficiente)
+        await this.firestoreService.incrementUsageWithPeriod(userId, periodId, 1, labelCount);
+      } else {
+        // Fallback: calcular período (para compatibilidad hacia atrás)
+        const user = await this.firestoreService.getUserById(userId);
+        if (user) {
+          const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+          await this.firestoreService.incrementUsageWithPeriod(userId, periodInfo.periodId, 1, labelCount);
+        }
+      }
     }
   }
 

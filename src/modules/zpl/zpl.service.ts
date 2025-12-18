@@ -215,8 +215,9 @@ export class ZplService {
       }
 
       // Encolar el trabajo para procesamiento asincrono
+      const periodId = canConvert.periodInfo?.periodId;
       setTimeout(() => {
-        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat);
+        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodId);
       }, 100);
 
       return jobId;
@@ -242,6 +243,7 @@ export class ZplService {
     userId: string,
     labelCount: number,
     outputFormat: OutputFormat = OutputFormat.PDF,
+    periodId?: string,
   ): Promise<void> {
     try {
       await this.processZplConversion(zplContent, labelSize, jobId, outputFormat);
@@ -258,6 +260,7 @@ export class ZplService {
           'completed',
           outputFormat,
           job.resultUrl,
+          periodId,
         );
       } else if (job && job.status === 'failed') {
         // Record failed conversion
@@ -268,6 +271,8 @@ export class ZplService {
           labelSize,
           'failed',
           outputFormat,
+          undefined,
+          periodId,
         );
       }
     } catch (error) {
@@ -281,6 +286,8 @@ export class ZplService {
           labelSize,
           'failed',
           outputFormat,
+          undefined,
+          periodId,
         );
       } catch (recordError) {
         this.logger.error(`Error recording failed conversion: ${recordError.message}`);
@@ -337,6 +344,7 @@ export class ZplService {
       }
 
       // Generar nombres de archivo
+      this.logger.log(`Generando nombre: originalFilename=${job.originalFilename}, userPlan=${job.userPlan}`);
       const { storageFilename, downloadFilename } = this.generateFilenames(
         jobId,
         labelSize,
@@ -345,6 +353,7 @@ export class ZplService {
         job.originalFilename,
         job.userPlan,
       );
+      this.logger.log(`Nombre generado: ${downloadFilename}`);
 
       // Guardar el archivo en Google Cloud Storage
       await this.storage
@@ -1412,7 +1421,8 @@ export class ZplService {
       }));
 
       // Iniciar procesamiento asíncrono
-      this.processBatchFiles(batchId, files, batchJobs, labelSize, outputFormat);
+      const periodId = userLimits.periodInfo?.periodId;
+      this.processBatchFiles(batchId, files, batchJobs, labelSize, outputFormat, periodId);
 
       return { batchId, jobs: jobsMapping };
     } catch (error) {
@@ -1434,14 +1444,28 @@ export class ZplService {
     jobs: BatchFileJob[],
     labelSize: string,
     outputFormat: 'pdf' | 'png' | 'jpeg',
+    periodId?: string,
   ): Promise<void> {
     const size = this.getLabelSize(labelSize);
     let completedCount = 0;
     let failedCount = 0;
 
+    // Obtener el userId del batch desde Firestore
+    const batch = await this.firestoreService.getBatchJob(batchId);
+    const userId = batch?.userId;
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const job = jobs[i];
+
+      // Contar labels en el archivo actual
+      let labelCount = 1;
+      try {
+        const countResult = await this.countLabels(file.content);
+        labelCount = countResult.data.totalLabels;
+      } catch (error) {
+        this.logger.warn(`Error contando labels en ${file.fileName}: ${error.message}`);
+      }
 
       try {
         // Actualizar estado a procesando
@@ -1478,12 +1502,44 @@ export class ZplService {
         job.tempStoragePath = tempPath;
         completedCount++;
 
+        // Registrar conversión exitosa para este archivo del batch
+        if (userId) {
+          await this.usersService.recordConversion(
+            userId,
+            job.jobId,
+            labelCount,
+            labelSize,
+            'completed',
+            outputFormat,
+            undefined,
+            periodId,
+          );
+        }
+
         this.logger.log(`Batch ${batchId}: Archivo ${file.fileName} completado`);
       } catch (error) {
         this.logger.error(`Batch ${batchId}: Error procesando ${file.fileName}: ${error.message}`);
         job.status = 'failed';
         job.error = error.message;
         failedCount++;
+
+        // Registrar conversión fallida
+        if (userId) {
+          try {
+            await this.usersService.recordConversion(
+              userId,
+              job.jobId,
+              labelCount,
+              labelSize,
+              'failed',
+              outputFormat,
+              undefined,
+              periodId,
+            );
+          } catch (recordError) {
+            this.logger.error(`Error registrando conversión fallida: ${recordError.message}`);
+          }
+        }
       }
 
       await this.updateBatchJobProgress(batchId, jobs, completedCount, failedCount);
@@ -1644,8 +1700,9 @@ export class ZplService {
   }
 
   /**
-   * Obtiene el estado de un batch
+   * Obtiene el estado de un batch (con validación de propiedad)
    * @param batchId ID del batch
+   * @param userId ID del usuario
    * @returns Estado del batch con todos los jobs
    */
   async getBatchStatus(batchId: string, userId: string): Promise<{
@@ -1668,6 +1725,44 @@ export class ZplService {
     // Validar propiedad del recurso
     if (batch.userId !== userId) {
       throw new ForbiddenException('No tienes acceso a este recurso');
+    }
+
+    return {
+      batchId: batch.id,
+      status: batch.status,
+      totalFiles: batch.totalFiles,
+      completedFiles: batch.completedFiles,
+      jobs: batch.jobs.map((j) => ({
+        jobId: j.jobId,
+        status: j.status,
+        progress: j.progress,
+        error: j.error,
+      })),
+      downloadUrl: batch.downloadUrl,
+    };
+  }
+
+  /**
+   * Obtiene el estado de un batch (público, sin validación de propiedad)
+   * La validación de propiedad se hace en el endpoint de descarga
+   * @param batchId ID del batch
+   * @returns Estado del batch con todos los jobs
+   */
+  async getBatchStatusPublic(batchId: string): Promise<{
+    batchId: string;
+    status: string;
+    totalFiles: number;
+    completedFiles: number;
+    jobs: { jobId: string; status: string; progress: number; error?: string }[];
+    downloadUrl?: string;
+  }> {
+    const batch = await this.firestoreService.getBatchJob(batchId);
+
+    if (!batch) {
+      throw new HttpException(
+        { error: 'BATCH_NOT_FOUND', message: 'Batch no encontrado' },
+        HttpStatus.NOT_FOUND,
+      );
     }
 
     return {

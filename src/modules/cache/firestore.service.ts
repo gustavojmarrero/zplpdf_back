@@ -331,6 +331,100 @@ export class FirestoreService {
     }
   }
 
+  // ============== Usage con Período Calculado ==============
+
+  /**
+   * Obtiene o crea un documento de uso usando un período calculado externamente
+   * (por PeriodCalculatorService)
+   */
+  async getOrCreateUsageWithPeriod(
+    userId: string,
+    periodInfo: { periodStart: Date; periodEnd: Date; periodId: string },
+  ): Promise<Usage> {
+    try {
+      const docRef = this.firestore.collection(this.usageCollection).doc(periodInfo.periodId);
+      const doc = await docRef.get();
+
+      if (doc.exists) {
+        const data = doc.data();
+        return {
+          ...data,
+          periodStart: data.periodStart?.toDate?.() || data.periodStart,
+          periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
+        } as Usage;
+      }
+
+      // Crear nuevo período de uso
+      const newUsage: Usage = {
+        odId: periodInfo.periodId,
+        userId,
+        periodStart: periodInfo.periodStart,
+        periodEnd: periodInfo.periodEnd,
+        pdfCount: 0,
+        labelCount: 0,
+      };
+
+      await docRef.set(newUsage);
+      this.logger.log(`Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`);
+      return newUsage;
+    } catch (error) {
+      this.logger.error(`Error al obtener/crear uso con período: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Incrementa contadores de uso usando el periodId calculado externamente
+   */
+  async incrementUsageWithPeriod(
+    userId: string,
+    periodId: string,
+    pdfCount: number,
+    labelCount: number,
+  ): Promise<void> {
+    try {
+      const docRef = this.firestore.collection(this.usageCollection).doc(periodId);
+      const doc = await docRef.get();
+
+      if (doc.exists) {
+        await docRef.update({
+          pdfCount: (doc.data().pdfCount || 0) + pdfCount,
+          labelCount: (doc.data().labelCount || 0) + labelCount,
+        });
+        this.logger.log(`Uso incrementado para usuario: ${userId} (${periodId})`);
+      } else {
+        this.logger.warn(`Documento de uso no encontrado: ${periodId}`);
+      }
+    } catch (error) {
+      this.logger.error(`Error al incrementar uso con período: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene todos los usos expirados (para CRON)
+   */
+  async getExpiredUsages(beforeDate: Date): Promise<Usage[]> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.usageCollection)
+        .where('periodEnd', '<', beforeDate)
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          ...data,
+          periodStart: data.periodStart?.toDate?.() || data.periodStart,
+          periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
+        } as Usage;
+      });
+    } catch (error) {
+      this.logger.error(`Error al obtener usos expirados: ${error.message}`);
+      throw error;
+    }
+  }
+
   // ============== Conversion History ==============
 
   async saveConversionHistory(history: ConversionHistory): Promise<void> {
