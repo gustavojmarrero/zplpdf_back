@@ -6,6 +6,7 @@ import type { User, PlanType } from '../../common/interfaces/user.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
+import { getStartOfDayInTimezone } from '../../utils/timezone.util.js';
 
 // ============== Admin Interfaces ==============
 
@@ -838,7 +839,7 @@ export class FirestoreService {
 
       switch (period) {
         case 'day':
-          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          startDate = getStartOfDayInTimezone(now); // GMT-6 (Mérida, México)
           break;
         case 'week':
           startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -998,6 +999,22 @@ export class FirestoreService {
       // Get all current usage documents
       const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
 
+      // Batch read: obtener todos los usuarios únicos en una sola consulta
+      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
+      const userDataMap: Record<string, any> = {};
+
+      if (userIds.length > 0) {
+        const userRefs = userIds.map((id) =>
+          this.firestore.collection(this.usersCollection).doc(id),
+        );
+        const userDocs = await this.firestore.getAll(...userRefs);
+        userDocs.forEach((doc) => {
+          if (doc.exists) {
+            userDataMap[doc.id] = doc.data();
+          }
+        });
+      }
+
       const usersNearLimit: Array<{
         id: string;
         email: string;
@@ -1008,15 +1025,14 @@ export class FirestoreService {
         periodEnd: Date;
       }> = [];
 
+      // Procesar sin consultas adicionales
       for (const doc of usageSnapshot.docs) {
         const usageData = doc.data();
         const userId = usageData.userId;
+        const userData = userDataMap[userId];
 
-        // Get user info
-        const userDoc = await this.firestore.collection(this.usersCollection).doc(userId).get();
-        if (!userDoc.exists) continue;
+        if (!userData) continue;
 
-        const userData = userDoc.data();
         const plan = userData.plan as PlanType;
         const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
         const pdfLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
@@ -1070,7 +1086,7 @@ export class FirestoreService {
       if (!queryStartDate) {
         switch (period) {
           case 'day':
-            queryStartDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            queryStartDate = getStartOfDayInTimezone(now); // GMT-6 (Mérida, México)
             break;
           case 'week':
             queryStartDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -1097,9 +1113,25 @@ export class FirestoreService {
         enterprise: { pdfs: 0, labels: 0 },
       };
 
-      // Cache user plans
-      const userPlanCache: Record<string, string> = {};
+      // Batch read: obtener todos los usuarios únicos en una sola consulta
+      const uniqueUserIds = [
+        ...new Set(
+          snapshot.docs.map((doc) => doc.data().userId).filter(Boolean),
+        ),
+      ];
+      const userPlanMap: Record<string, string> = {};
 
+      if (uniqueUserIds.length > 0) {
+        const userRefs = uniqueUserIds.map((id) =>
+          this.firestore.collection(this.usersCollection).doc(id),
+        );
+        const userDocs = await this.firestore.getAll(...userRefs);
+        userDocs.forEach((doc) => {
+          userPlanMap[doc.id] = doc.exists ? doc.data()?.plan || 'free' : 'free';
+        });
+      }
+
+      // Procesar conversiones sin consultas adicionales
       for (const doc of snapshot.docs) {
         const data = doc.data();
         totalPdfs++;
@@ -1111,15 +1143,8 @@ export class FirestoreService {
           failureCount++;
         }
 
-        // Get user plan
-        let userPlan = userPlanCache[data.userId];
-        if (!userPlan && data.userId) {
-          const userDoc = await this.firestore.collection(this.usersCollection).doc(data.userId).get();
-          userPlan = userDoc.exists ? userDoc.data().plan : 'free';
-          userPlanCache[data.userId] = userPlan;
-        }
-
-        if (userPlan && byPlan[userPlan]) {
+        const userPlan = userPlanMap[data.userId] || 'free';
+        if (byPlan[userPlan]) {
           byPlan[userPlan].pdfs++;
           byPlan[userPlan].labels += data.labelCount || 0;
         }

@@ -10,10 +10,20 @@ import type { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
+  // Caché de métricas del dashboard (5 minutos)
+  private metricsCache: { data: AdminMetricsResponseDto; timestamp: number } | null = null;
+  private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
   constructor(private readonly firestoreService: FirestoreService) {}
 
   async getDashboardMetrics(): Promise<AdminMetricsResponseDto> {
-    this.logger.log('Fetching dashboard metrics');
+    // Verificar caché
+    if (this.metricsCache && Date.now() - this.metricsCache.timestamp < this.CACHE_TTL_MS) {
+      this.logger.log('Returning cached dashboard metrics');
+      return this.metricsCache.data;
+    }
+
+    this.logger.log('Fetching dashboard metrics (cache miss)');
 
     try {
       // Fetch all metrics in parallel
@@ -98,7 +108,7 @@ export class AdminService {
         periodEnd: user.periodEnd,
       }));
 
-      return {
+      const result: AdminMetricsResponseDto = {
         success: true,
         data: {
           users: {
@@ -132,6 +142,11 @@ export class AdminService {
         },
         generatedAt: new Date(),
       };
+
+      // Guardar en caché
+      this.metricsCache = { data: result, timestamp: Date.now() };
+
+      return result;
     } catch (error) {
       this.logger.error(`Error fetching dashboard metrics: ${error.message}`);
       throw error;
