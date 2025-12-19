@@ -10,7 +10,7 @@ import Bottleneck from 'bottleneck';
 import archiver from 'archiver';
 import { Writable } from 'stream';
 import { pdfToPng, PngPageOutput } from 'pdf-to-png-converter';
-import { FirestoreService, ConversionStatus } from '../cache/firestore.service.js';
+import { FirestoreService, ConversionStatus, ErrorLogData } from '../cache/firestore.service.js';
 import { UsersService } from '../users/users.service.js';
 import { OutputFormat } from './enums/output-format.enum.js';
 import type { BatchJob, BatchFileJob, BatchLimits } from './interfaces/batch.interface.js';
@@ -123,6 +123,35 @@ export class ZplService {
   }
 
   /**
+   * Registra un error en el log de errores de admin
+   */
+  private async logError(
+    type: string,
+    code: string,
+    message: string,
+    severity: 'error' | 'warning' | 'critical',
+    context?: Record<string, any>,
+    userId?: string,
+    userEmail?: string,
+    jobId?: string,
+  ): Promise<void> {
+    try {
+      await this.firestoreService.saveErrorLog({
+        type,
+        code,
+        message,
+        severity,
+        context,
+        userId,
+        userEmail,
+        jobId,
+      });
+    } catch (error) {
+      this.logger.error(`Error logging to error_logs: ${error.message}`);
+    }
+  }
+
+  /**
    * Inicia un proceso de conversion ZPL
    * @param zplContent Contenido ZPL a convertir
    * @param labelSize Tamano de la etiqueta
@@ -154,6 +183,15 @@ export class ZplService {
       // Check user limits before processing
       const canConvert = await this.usersService.checkCanConvert(userId, labelCount);
       if (!canConvert.allowed) {
+        // Log limit exceeded error
+        await this.logError(
+          'LIMIT_EXCEEDED',
+          canConvert.errorCode || ErrorCodes.MONTHLY_LIMIT_EXCEEDED,
+          canConvert.error,
+          'warning',
+          { labelCount, ...canConvert.data },
+          userId,
+        );
         throw new HttpException(
           {
             error: canConvert.errorCode,
@@ -384,6 +422,20 @@ export class ZplService {
       this.logger.log(`Conversión completada para trabajo ${jobId} (formato: ${outputFormat})`);
     } catch (error) {
       this.logger.error(`Error al procesar conversión ZPL: ${error.message}`);
+
+      // Log error for admin dashboard
+      const errorType = error.message?.includes('ZPL') ? 'INVALID_ZPL' : 'SERVER_ERROR';
+      const severity = errorType === 'SERVER_ERROR' ? 'critical' : 'error';
+      await this.logError(
+        errorType,
+        errorType,
+        error.message,
+        severity,
+        { labelSize, outputFormat },
+        undefined,
+        undefined,
+        jobId,
+      );
 
       // Actualizar estado a fallido
       job.status = 'failed';
@@ -896,14 +948,37 @@ export class ZplService {
         // Manejar rate limit de Labelary
         if (error.response?.status === 429) {
           this.logger.warn('Rate limit de Labelary alcanzado, reintentando...');
+          // Log rate limit warning
+          this.logError(
+            'TIMEOUT',
+            'LABELARY_RATE_LIMIT',
+            'Labelary API rate limit exceeded',
+            'warning',
+            { labelSize },
+          );
           throw new Error('Rate limit exceeded');
         }
         if (error.response?.status === 413) {
+          this.logError(
+            'LABEL_LIMIT_EXCEEDED',
+            'LABELARY_PAYLOAD_TOO_LARGE',
+            'Labels exceed 50 per request limit',
+            'error',
+            { labelSize },
+          );
           throw new HttpException(
             'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
             HttpStatus.PAYLOAD_TOO_LARGE
           );
         }
+        // Log generic Labelary error
+        this.logError(
+          'SERVER_ERROR',
+          'LABELARY_API_ERROR',
+          `Labelary API error: ${error.message}`,
+          'error',
+          { status: error.response?.status },
+        );
         throw new HttpException(
           'Error in Labelary API conversion',
           HttpStatus.INTERNAL_SERVER_ERROR,
