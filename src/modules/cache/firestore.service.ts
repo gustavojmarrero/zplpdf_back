@@ -1269,10 +1269,10 @@ export class FirestoreService {
       // Group by date
       const byDate: Record<string, { pdfs: number; labels: number; failures: number }> = {};
 
-      // Initialize all dates
+      // Initialize all dates (using GMT-6 timezone)
       for (let i = 0; i < days; i++) {
         const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-        const dateKey = date.toISOString().split('T')[0];
+        const dateKey = getDateStringInTimezone(date);
         byDate[dateKey] = { pdfs: 0, labels: 0, failures: 0 };
       }
 
@@ -1280,7 +1280,7 @@ export class FirestoreService {
       snapshot.docs.forEach((doc) => {
         const data = doc.data();
         const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
-        const dateKey = createdAt.toISOString().split('T')[0];
+        const dateKey = getDateStringInTimezone(createdAt);
 
         if (byDate[dateKey]) {
           byDate[dateKey].pdfs++;
