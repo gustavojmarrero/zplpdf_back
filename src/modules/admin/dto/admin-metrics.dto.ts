@@ -66,6 +66,12 @@ class ConversionsMetricsDto {
   pdfsMonth: number;
 
   @ApiProperty()
+  pdfsTotal: number;
+
+  @ApiProperty()
+  labelsToday: number;
+
+  @ApiProperty()
   labelsTotal: number;
 
   @ApiProperty()

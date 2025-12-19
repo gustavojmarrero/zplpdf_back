@@ -66,6 +66,7 @@ export class AdminService {
         usersNearLimit,
         planDistribution,
         upgradeOpportunities,
+        historicalTotals,
       ] = await Promise.all([
         this.firestoreService.getUsersCount(),
         this.firestoreService.getUsersByPlan(),
@@ -81,6 +82,7 @@ export class AdminService {
         this.firestoreService.getUsersNearLimit(80),
         this.firestoreService.getPlanDistribution(),
         this.firestoreService.getUpgradeOpportunities(),
+        this.firestoreService.getHistoricalTotals(),
       ]);
 
       // Calculate success/failure rates
@@ -147,6 +149,8 @@ export class AdminService {
             pdfsToday: conversionStatsDay.summary.totalPdfs,
             pdfsWeek: conversionStatsWeek.summary.totalPdfs,
             pdfsMonth: conversionStatsMonth.summary.totalPdfs,
+            pdfsTotal: historicalTotals.pdfsTotal,
+            labelsToday: conversionStatsDay.summary.totalLabels,
             labelsTotal: conversionStatsMonth.summary.totalLabels,
             successRate,
             failureRate,

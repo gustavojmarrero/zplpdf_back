@@ -1228,6 +1228,29 @@ export class FirestoreService {
     }
   }
 
+  async getHistoricalTotals(): Promise<{ pdfsTotal: number; labelsTotal: number }> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.historyCollection)
+        .where('status', '==', 'completed')
+        .get();
+
+      let pdfsTotal = 0;
+      let labelsTotal = 0;
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        pdfsTotal++;
+        labelsTotal += data.labelCount || 0;
+      }
+
+      return { pdfsTotal, labelsTotal };
+    } catch (error) {
+      this.logger.error(`Error al obtener totales históricos: ${error.message}`);
+      throw error;
+    }
+  }
+
   async getConversionTrend(days: number = 7): Promise<Array<{
     date: string;
     pdfs: number;
