@@ -192,9 +192,36 @@ export class AdminService {
         dateTo: query.dateTo ? new Date(query.dateTo) : undefined,
       });
 
+      // Recalculate usage for each user using correct period
+      const usersWithCorrectUsage = await Promise.all(
+        result.users.map(async (user) => {
+          try {
+            const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod({
+              id: user.id,
+              plan: user.plan as PlanType,
+              createdAt: user.createdAt,
+            });
+            const usage = await this.firestoreService.getOrCreateUsageWithPeriod(user.id, periodInfo);
+            return {
+              ...user,
+              usage: {
+                pdfCount: usage.pdfCount,
+                labelCount: usage.labelCount,
+              },
+            };
+          } catch {
+            // Keep original usage on error
+            return user;
+          }
+        }),
+      );
+
       return {
         success: true,
-        data: result,
+        data: {
+          ...result,
+          users: usersWithCorrectUsage,
+        },
       };
     } catch (error) {
       this.logger.error(`Error fetching users: ${error.message}`);
