@@ -1,6 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsNumber, Min, Max, IsEnum } from 'class-validator';
-import { Transform, Type } from 'class-transformer';
+import {
+  IsOptional,
+  IsString,
+  IsNumber,
+  Min,
+  Max,
+  IsEnum,
+  IsDateString,
+  IsNotEmpty,
+  MaxLength,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class GetUsersQueryDto {
   @ApiPropertyOptional({ default: 1 })
@@ -37,6 +47,16 @@ export class GetUsersQueryDto {
   @IsOptional()
   @IsEnum(['asc', 'desc'])
   sortOrder?: 'asc' | 'desc' = 'desc';
+
+  @ApiPropertyOptional({ description: 'Filter by registration date from (ISO 8601)' })
+  @IsOptional()
+  @IsDateString()
+  dateFrom?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by registration date to (ISO 8601)' })
+  @IsOptional()
+  @IsDateString()
+  dateTo?: string;
 }
 
 class UserUsageDto {
@@ -98,4 +118,139 @@ export class AdminUsersResponseDto {
 
   @ApiProperty({ type: AdminUsersDataDto })
   data: AdminUsersDataDto;
+}
+
+// ==================== User Detail DTOs ====================
+
+class UserUsageDetailDto {
+  @ApiProperty({ description: 'PDFs generated in current period' })
+  pdfCount: number;
+
+  @ApiProperty({ description: 'Labels generated in current period' })
+  labelCount: number;
+
+  @ApiProperty({ description: 'PDF limit for the plan' })
+  pdfLimit: number;
+
+  @ApiProperty({ description: 'Percentage of limit used' })
+  percentUsed: number;
+}
+
+class UsageHistoryItemDto {
+  @ApiProperty({ description: 'Date (YYYY-MM-DD)' })
+  date: string;
+
+  @ApiProperty({ description: 'PDFs generated that day' })
+  pdfs: number;
+
+  @ApiProperty({ description: 'Labels generated that day' })
+  labels: number;
+}
+
+class SubscriptionInfoDto {
+  @ApiProperty({
+    description: 'Subscription status',
+    enum: ['active', 'canceled', 'past_due', 'unpaid', 'trialing', 'incomplete'],
+  })
+  status: string;
+
+  @ApiProperty({ description: 'Current period start date' })
+  currentPeriodStart: string;
+
+  @ApiProperty({ description: 'Current period end date' })
+  currentPeriodEnd: string;
+
+  @ApiPropertyOptional({ description: 'Stripe customer ID' })
+  stripeCustomerId?: string;
+
+  @ApiPropertyOptional({ description: 'Will cancel at period end' })
+  cancelAtPeriodEnd?: boolean;
+}
+
+class UserDetailDataDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  email: string;
+
+  @ApiPropertyOptional()
+  displayName?: string;
+
+  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  plan: string;
+
+  @ApiProperty({ type: UserUsageDetailDto })
+  usage: UserUsageDetailDto;
+
+  @ApiProperty({ type: [UsageHistoryItemDto], description: 'Usage history for the last 30 days' })
+  usageHistory: UsageHistoryItemDto[];
+
+  @ApiPropertyOptional({ type: SubscriptionInfoDto })
+  subscription?: SubscriptionInfoDto;
+
+  @ApiProperty()
+  createdAt: string;
+
+  @ApiPropertyOptional()
+  lastActiveAt?: string;
+}
+
+export class AdminUserDetailResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty({ type: UserDetailDataDto })
+  data: UserDetailDataDto;
+}
+
+// ==================== Update Plan DTOs ====================
+
+export class UpdateUserPlanDto {
+  @ApiProperty({
+    enum: ['free', 'pro', 'enterprise'],
+    description: 'New plan to assign',
+  })
+  @IsEnum(['free', 'pro', 'enterprise'], {
+    message: 'Plan must be: free, pro, or enterprise',
+  })
+  @IsNotEmpty()
+  newPlan: 'free' | 'pro' | 'enterprise';
+
+  @ApiProperty({
+    description: 'Reason for the plan change',
+    maxLength: 500,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  reason: string;
+}
+
+class UpdatePlanResultDto {
+  @ApiProperty()
+  userId: string;
+
+  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  previousPlan: string;
+
+  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  newPlan: string;
+
+  @ApiProperty()
+  effectiveAt: string;
+
+  @ApiPropertyOptional({ description: 'Whether Stripe subscription was canceled' })
+  stripeCanceled?: boolean;
+
+  @ApiPropertyOptional({ description: 'Warnings during the process', type: [String] })
+  warnings?: string[];
+}
+
+export class UpdateUserPlanResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty({ type: UpdatePlanResultDto })
+  data: UpdatePlanResultDto;
 }

@@ -44,3 +44,28 @@ export function getStartOfDayInTimezone(date: Date = new Date()): Date {
     ),
   );
 }
+
+/**
+ * Convierte una fecha UTC a string de fecha en GMT-6 (YYYY-MM-DD)
+ * Ejemplo: 2025-12-19T01:00:00Z (UTC) → "2025-12-18" (GMT-6)
+ */
+export function getDateStringInTimezone(date: Date = new Date()): string {
+  const utcHours = date.getUTCHours();
+
+  let year = date.getUTCFullYear();
+  let month = date.getUTCMonth();
+  let day = date.getUTCDate();
+
+  // Si UTC es 00:00-05:59, en GMT-6 todavía es el día anterior
+  if (utcHours < GMT_OFFSET_HOURS) {
+    const prevDay = new Date(Date.UTC(year, month, day - 1));
+    year = prevDay.getUTCFullYear();
+    month = prevDay.getUTCMonth();
+    day = prevDay.getUTCDate();
+  }
+
+  const monthStr = String(month + 1).padStart(2, '0');
+  const dayStr = String(day).padStart(2, '0');
+
+  return `${year}-${monthStr}-${dayStr}`;
+}

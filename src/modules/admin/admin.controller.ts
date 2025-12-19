@@ -1,7 +1,10 @@
 import {
   Controller,
   Get,
+  Patch,
   Query,
+  Param,
+  Body,
   UseGuards,
   Logger,
 } from '@nestjs/common';
@@ -11,13 +14,21 @@ import {
   ApiOperation,
   ApiResponse,
   ApiHeader,
+  ApiParam,
+  ApiBody,
 } from '@nestjs/swagger';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
 import type { AdminUserData } from '../../common/decorators/admin-user.decorator.js';
 import { AdminService } from './admin.service.js';
 import { AdminMetricsResponseDto } from './dto/admin-metrics.dto.js';
-import { GetUsersQueryDto, AdminUsersResponseDto } from './dto/admin-users.dto.js';
+import {
+  GetUsersQueryDto,
+  AdminUsersResponseDto,
+  AdminUserDetailResponseDto,
+  UpdateUserPlanDto,
+  UpdateUserPlanResponseDto,
+} from './dto/admin-users.dto.js';
 import { GetConversionsQueryDto, AdminConversionsResponseDto } from './dto/admin-conversions.dto.js';
 import { GetErrorsQueryDto, AdminErrorsResponseDto } from './dto/admin-errors.dto.js';
 import { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
@@ -133,5 +144,60 @@ export class AdminController {
   async getPlanUsage(@AdminUser() admin: AdminUserData): Promise<AdminPlanUsageResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting plan usage`);
     return this.adminService.getPlanUsage();
+  }
+
+  @Get('users/:userId')
+  @ApiOperation({
+    summary: 'Get user detail',
+    description: 'Returns detailed information about a specific user including usage, subscription, and activity history.',
+  })
+  @ApiParam({
+    name: 'userId',
+    description: 'Firebase UID of the user',
+    type: String,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'User detail retrieved successfully',
+    type: AdminUserDetailResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getUserDetail(
+    @Param('userId') userId: string,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminUserDetailResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting user detail for ${userId}`);
+    return this.adminService.getUserDetail(userId);
+  }
+
+  @Patch('users/:userId/plan')
+  @ApiOperation({
+    summary: 'Update user plan',
+    description: 'Changes the plan for a specific user. Automatically cancels Stripe subscription when downgrading.',
+  })
+  @ApiParam({
+    name: 'userId',
+    description: 'Firebase UID of the user',
+    type: String,
+  })
+  @ApiBody({ type: UpdateUserPlanDto })
+  @ApiResponse({
+    status: 200,
+    description: 'User plan updated successfully',
+    type: UpdateUserPlanResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Same plan or invalid data' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async updateUserPlan(
+    @Param('userId') userId: string,
+    @Body() dto: UpdateUserPlanDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<UpdateUserPlanResponseDto> {
+    this.logger.log(`Admin ${admin.email} updating plan for user ${userId}`);
+    return this.adminService.updateUserPlan(userId, dto, admin);
   }
 }

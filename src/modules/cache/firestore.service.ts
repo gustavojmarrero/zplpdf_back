@@ -6,7 +6,7 @@ import type { User, PlanType } from '../../common/interfaces/user.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
-import { getStartOfDayInTimezone } from '../../utils/timezone.util.js';
+import { getStartOfDayInTimezone, getDateStringInTimezone } from '../../utils/timezone.util.js';
 
 // ============== Admin Interfaces ==============
 
@@ -73,6 +73,8 @@ export interface UserFilters {
   search?: string;
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
+  dateFrom?: Date;
+  dateTo?: Date;
 }
 
 export interface PaginatedUsers {
@@ -895,12 +897,20 @@ export class FirestoreService {
 
   async getUsersPaginated(filters: UserFilters): Promise<PaginatedUsers> {
     try {
-      const { page = 1, limit = 50, plan, search, sortBy = 'createdAt', sortOrder = 'desc' } = filters;
+      const { page = 1, limit = 50, plan, search, sortBy = 'createdAt', sortOrder = 'desc', dateFrom, dateTo } = filters;
 
       let query: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
 
       if (plan) {
         query = query.where('plan', '==', plan);
+      }
+
+      // Filter by registration date
+      if (dateFrom) {
+        query = query.where('createdAt', '>=', dateFrom);
+      }
+      if (dateTo) {
+        query = query.where('createdAt', '<=', dateTo);
       }
 
       // Sort
@@ -1326,6 +1336,56 @@ export class FirestoreService {
       return { freeToProCandidates, proToEnterpriseCandidates };
     } catch (error) {
       this.logger.error(`Error al obtener oportunidades de upgrade: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== Admin: User Usage History ==============
+
+  async getUserUsageHistory(
+    userId: string,
+    days: number = 30,
+  ): Promise<Array<{ date: string; pdfs: number; labels: number }>> {
+    try {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+
+      const snapshot = await this.firestore
+        .collection(this.historyCollection)
+        .where('userId', '==', userId)
+        .where('createdAt', '>=', startDate)
+        .orderBy('createdAt', 'desc')
+        .get();
+
+      // Initialize all dates with zeros using GMT-6 timezone
+      const byDate: Record<string, { pdfs: number; labels: number }> = {};
+      for (let i = 0; i < days; i++) {
+        const date = new Date();
+        date.setDate(date.getDate() - i);
+        // Use GMT-6 timezone for date key
+        const dateKey = getDateStringInTimezone(date);
+        byDate[dateKey] = { pdfs: 0, labels: 0 };
+      }
+
+      // Aggregate data by date using GMT-6 timezone
+      snapshot.docs.forEach((doc) => {
+        const data = doc.data();
+        const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
+        // Convert to GMT-6 date string
+        const dateKey = getDateStringInTimezone(createdAt);
+
+        if (byDate[dateKey]) {
+          byDate[dateKey].pdfs++;
+          byDate[dateKey].labels += data.labelCount || 0;
+        }
+      });
+
+      // Convert to array and sort by date descending
+      return Object.entries(byDate)
+        .map(([date, stats]) => ({ date, ...stats }))
+        .sort((a, b) => b.date.localeCompare(a.date));
+    } catch (error) {
+      this.logger.error(`Error al obtener historial de uso del usuario: ${error.message}`);
       throw error;
     }
   }
