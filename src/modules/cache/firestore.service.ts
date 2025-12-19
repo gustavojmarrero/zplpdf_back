@@ -899,6 +899,10 @@ export class FirestoreService {
     try {
       const { page = 1, limit = 50, plan, search, sortBy = 'createdAt', sortOrder = 'desc', dateFrom, dateTo } = filters;
 
+      // Fields that exist in Firestore users collection
+      const firestoreFields = ['createdAt', 'email', 'displayName', 'plan'];
+      const canSortInFirestore = firestoreFields.includes(sortBy);
+
       let query: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
 
       if (plan) {
@@ -913,16 +917,32 @@ export class FirestoreService {
         query = query.where('createdAt', '<=', dateTo);
       }
 
-      // Sort
-      query = query.orderBy(sortBy, sortOrder);
+      // Only sort in Firestore if the field exists there
+      if (canSortInFirestore) {
+        query = query.orderBy(sortBy, sortOrder);
+      } else {
+        // Default sort for Firestore, we'll re-sort in memory later
+        query = query.orderBy('createdAt', 'desc');
+      }
 
-      // Get total count
-      const countSnapshot = await query.count().get();
+      // Get total count (without sort-dependent fields)
+      let countQuery: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
+      if (plan) countQuery = countQuery.where('plan', '==', plan);
+      if (dateFrom) countQuery = countQuery.where('createdAt', '>=', dateFrom);
+      if (dateTo) countQuery = countQuery.where('createdAt', '<=', dateTo);
+      const countSnapshot = await countQuery.count().get();
       const total = countSnapshot.data().count;
 
-      // Apply pagination
-      const offset = (page - 1) * limit;
-      const snapshot = await query.offset(offset).limit(limit).get();
+      // For pdfCount/lastActiveAt sorting, we need to fetch all users and sort in memory
+      // For Firestore-sortable fields, use pagination
+      let snapshot;
+      if (canSortInFirestore && !search) {
+        const offset = (page - 1) * limit;
+        snapshot = await query.offset(offset).limit(limit).get();
+      } else {
+        // Fetch all for in-memory sorting/filtering
+        snapshot = await query.get();
+      }
 
       // Get usage for each user
       const users = await Promise.all(
@@ -930,7 +950,7 @@ export class FirestoreService {
           const userData = doc.data();
           const userId = doc.id;
 
-          // Get current usage
+          // Get current usage (will be recalculated in AdminService)
           let usage = { pdfCount: 0, labelCount: 0 };
           try {
             const usageDoc = await this.getOrCreateUsage(userId);
@@ -979,15 +999,47 @@ export class FirestoreService {
       );
 
       // Filter out null values (from search filter)
-      const filteredUsers = users.filter((u) => u !== null);
+      let filteredUsers = users.filter((u) => u !== null);
+
+      // Sort in memory if needed (pdfCount, lastActiveAt, or search was applied)
+      if (!canSortInFirestore || search) {
+        filteredUsers.sort((a, b) => {
+          let aVal: any;
+          let bVal: any;
+
+          if (sortBy === 'pdfCount') {
+            aVal = a.usage.pdfCount;
+            bVal = b.usage.pdfCount;
+          } else if (sortBy === 'lastActiveAt') {
+            aVal = a.lastActiveAt ? new Date(a.lastActiveAt).getTime() : 0;
+            bVal = b.lastActiveAt ? new Date(b.lastActiveAt).getTime() : 0;
+          } else if (sortBy === 'createdAt') {
+            aVal = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            bVal = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          } else {
+            aVal = a[sortBy] || '';
+            bVal = b[sortBy] || '';
+          }
+
+          if (sortOrder === 'asc') {
+            return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+          } else {
+            return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+          }
+        });
+
+        // Apply pagination in memory
+        const offset = (page - 1) * limit;
+        filteredUsers = filteredUsers.slice(offset, offset + limit);
+      }
 
       return {
         users: filteredUsers,
         pagination: {
           page,
           limit,
-          total,
-          totalPages: Math.ceil(total / limit),
+          total: search ? users.filter((u) => u !== null).length : total,
+          totalPages: Math.ceil((search ? users.filter((u) => u !== null).length : total) / limit),
         },
       };
     } catch (error) {
