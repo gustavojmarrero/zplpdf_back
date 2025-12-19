@@ -181,13 +181,16 @@ export class AdminService {
     this.logger.log('Fetching users list');
 
     try {
+      // For pdfCount sorting, we need to handle it here after recalculating usage
+      const needsMemorySort = query.sortBy === 'pdfCount' || query.sortBy === 'lastActiveAt';
+
       const result = await this.firestoreService.getUsersPaginated({
-        page: query.page,
-        limit: query.limit,
+        page: needsMemorySort ? 1 : query.page,
+        limit: needsMemorySort ? 10000 : query.limit, // Get all for memory sort
         plan: query.plan,
         search: query.search,
-        sortBy: query.sortBy,
-        sortOrder: query.sortOrder,
+        sortBy: needsMemorySort ? 'createdAt' : query.sortBy, // Default sort in Firestore
+        sortOrder: needsMemorySort ? 'desc' : query.sortOrder,
         dateFrom: query.dateFrom ? new Date(query.dateFrom) : undefined,
         dateTo: query.dateTo ? new Date(query.dateTo) : undefined,
       });
@@ -216,11 +219,57 @@ export class AdminService {
         }),
       );
 
+      let finalUsers = usersWithCorrectUsage;
+
+      // Sort by pdfCount or lastActiveAt after recalculating usage
+      if (needsMemorySort) {
+        finalUsers.sort((a, b) => {
+          let aVal: number;
+          let bVal: number;
+
+          if (query.sortBy === 'pdfCount') {
+            aVal = a.usage.pdfCount;
+            bVal = b.usage.pdfCount;
+          } else {
+            // lastActiveAt
+            aVal = a.lastActiveAt ? new Date(a.lastActiveAt).getTime() : 0;
+            bVal = b.lastActiveAt ? new Date(b.lastActiveAt).getTime() : 0;
+          }
+
+          if (query.sortOrder === 'asc') {
+            return aVal - bVal;
+          } else {
+            return bVal - aVal;
+          }
+        });
+
+        // Apply pagination after sorting
+        const page = query.page || 1;
+        const limit = query.limit || 20;
+        const offset = (page - 1) * limit;
+        const total = finalUsers.length;
+
+        finalUsers = finalUsers.slice(offset, offset + limit);
+
+        return {
+          success: true,
+          data: {
+            users: finalUsers,
+            pagination: {
+              page,
+              limit,
+              total,
+              totalPages: Math.ceil(total / limit),
+            },
+          },
+        };
+      }
+
       return {
         success: true,
         data: {
           ...result,
-          users: usersWithCorrectUsage,
+          users: finalUsers,
         },
       };
     } catch (error) {
