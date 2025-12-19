@@ -49,6 +49,7 @@ export class PaymentsController {
       user.email,
       successUrl,
       cancelUrl,
+      dto.country,
     );
   }
 

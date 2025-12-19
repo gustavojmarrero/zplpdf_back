@@ -9,6 +9,7 @@ export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
   private stripe: Stripe;
   private proPriceId: string;
+  private proPriceIdMxn: string;
   private readonly MAX_RETRIES = 3;
 
   /**
@@ -60,10 +61,14 @@ export class PaymentsService {
     this.stripe = new Stripe(stripeSecretKey);
 
     this.proPriceId = this.configService.get<string>('STRIPE_PRO_PRICE_ID');
+    this.proPriceIdMxn = this.configService.get<string>('STRIPE_PRO_PRICE_ID_MXN');
 
     // Validate price ID is configured
     if (!this.proPriceId) {
       this.logger.warn('STRIPE_PRO_PRICE_ID not configured');
+    }
+    if (!this.proPriceIdMxn) {
+      this.logger.warn('STRIPE_PRO_PRICE_ID_MXN not configured');
     }
   }
 
@@ -72,12 +77,16 @@ export class PaymentsService {
     email: string,
     successUrl: string,
     cancelUrl: string,
+    country?: string,
   ): Promise<CheckoutResponseDto> {
     if (!this.stripe) {
       throw new BadRequestException('Payment system not configured');
     }
 
-    if (!this.proPriceId) {
+    // Select price based on country
+    const priceId = country === 'MX' ? this.proPriceIdMxn : this.proPriceId;
+
+    if (!priceId) {
       throw new BadRequestException('Pro price not configured');
     }
 
@@ -117,7 +126,7 @@ export class PaymentsService {
       payment_method_types: ['card'],
       line_items: [
         {
-          price: this.proPriceId,
+          price: priceId,
           quantity: 1,
         },
       ],

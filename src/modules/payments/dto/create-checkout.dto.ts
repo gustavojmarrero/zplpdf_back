@@ -17,6 +17,15 @@ export class CreateCheckoutDto {
   @IsString()
   @IsOptional()
   cancelUrl?: string;
+
+  @ApiProperty({
+    description: 'Country code (ISO 3166-1 alpha-2) for currency selection',
+    required: false,
+    example: 'MX',
+  })
+  @IsString()
+  @IsOptional()
+  country?: string;
 }
 
 export class CheckoutResponseDto {
