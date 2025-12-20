@@ -8,6 +8,30 @@ import type { ConversionHistory } from '../../common/interfaces/conversion-histo
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import { getStartOfDayInTimezone, getDateStringInTimezone } from '../../utils/timezone.util.js';
 
+// ============== Daily Stats (Aggregated Metrics) ==============
+
+export interface DailyStats {
+  date: string; // "2025-12-20" (YYYY-MM-DD)
+  totalConversions: number;
+  totalLabels: number;
+  totalPdfs: number;
+  activeUserIds: string[]; // Unique users who converted that day
+  errorCount: number;
+  successCount: number;
+  failureCount: number;
+  conversionsByPlan: {
+    free: { pdfs: number; labels: number };
+    pro: { pdfs: number; labels: number };
+    enterprise: { pdfs: number; labels: number };
+  };
+}
+
+export interface GlobalTotals {
+  pdfsTotal: number;
+  labelsTotal: number;
+  lastUpdated: Date;
+}
+
 // ============== Admin Interfaces ==============
 
 export interface ErrorLogData {
@@ -590,6 +614,197 @@ export class FirestoreService {
     }
   }
 
+  // ============== Daily Stats (Aggregated Metrics) ==============
+
+  private readonly dailyStatsCollection = 'daily_stats';
+  private readonly globalTotalsDoc = 'global_totals/totals';
+
+  /**
+   * Increment daily stats atomically when a conversion is completed
+   */
+  async incrementDailyStats(
+    userId: string,
+    userPlan: 'free' | 'pro' | 'enterprise',
+    pdfCount: number,
+    labelCount: number,
+    status: 'completed' | 'failed',
+  ): Promise<void> {
+    try {
+      const dateKey = getDateStringInTimezone(new Date());
+      const docRef = this.firestore.collection(this.dailyStatsCollection).doc(dateKey);
+      const globalRef = this.firestore.doc(this.globalTotalsDoc);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const doc = await transaction.get(docRef);
+        const globalDoc = await transaction.get(globalRef);
+
+        if (doc.exists) {
+          const data = doc.data() as DailyStats;
+          const activeUserIds = data.activeUserIds.includes(userId)
+            ? data.activeUserIds
+            : [...data.activeUserIds, userId];
+
+          transaction.update(docRef, {
+            totalConversions: data.totalConversions + 1,
+            totalLabels: data.totalLabels + labelCount,
+            totalPdfs: data.totalPdfs + pdfCount,
+            activeUserIds,
+            successCount: status === 'completed' ? data.successCount + 1 : data.successCount,
+            failureCount: status === 'failed' ? data.failureCount + 1 : data.failureCount,
+            [`conversionsByPlan.${userPlan}.pdfs`]: (data.conversionsByPlan[userPlan]?.pdfs || 0) + pdfCount,
+            [`conversionsByPlan.${userPlan}.labels`]: (data.conversionsByPlan[userPlan]?.labels || 0) + labelCount,
+          });
+        } else {
+          const newStats: DailyStats = {
+            date: dateKey,
+            totalConversions: 1,
+            totalLabels: labelCount,
+            totalPdfs: pdfCount,
+            activeUserIds: [userId],
+            errorCount: 0,
+            successCount: status === 'completed' ? 1 : 0,
+            failureCount: status === 'failed' ? 1 : 0,
+            conversionsByPlan: {
+              free: { pdfs: 0, labels: 0 },
+              pro: { pdfs: 0, labels: 0 },
+              enterprise: { pdfs: 0, labels: 0 },
+            },
+          };
+          newStats.conversionsByPlan[userPlan] = { pdfs: pdfCount, labels: labelCount };
+          transaction.set(docRef, newStats);
+        }
+
+        // Update global totals
+        if (status === 'completed') {
+          if (globalDoc.exists) {
+            const globalData = globalDoc.data() as GlobalTotals;
+            transaction.update(globalRef, {
+              pdfsTotal: globalData.pdfsTotal + pdfCount,
+              labelsTotal: globalData.labelsTotal + labelCount,
+              lastUpdated: new Date(),
+            });
+          } else {
+            transaction.set(globalRef, {
+              pdfsTotal: pdfCount,
+              labelsTotal: labelCount,
+              lastUpdated: new Date(),
+            });
+          }
+        }
+      });
+
+      this.logger.debug(`Daily stats updated for ${dateKey}`);
+    } catch (error) {
+      this.logger.error(`Error updating daily stats: ${error.message}`);
+      // Don't throw - this is a fire-and-forget operation
+    }
+  }
+
+  /**
+   * Increment error count in daily stats
+   */
+  async incrementDailyErrorCount(): Promise<void> {
+    try {
+      const dateKey = getDateStringInTimezone(new Date());
+      const docRef = this.firestore.collection(this.dailyStatsCollection).doc(dateKey);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const doc = await transaction.get(docRef);
+
+        if (doc.exists) {
+          transaction.update(docRef, {
+            errorCount: (doc.data().errorCount || 0) + 1,
+          });
+        } else {
+          const newStats: DailyStats = {
+            date: dateKey,
+            totalConversions: 0,
+            totalLabels: 0,
+            totalPdfs: 0,
+            activeUserIds: [],
+            errorCount: 1,
+            successCount: 0,
+            failureCount: 0,
+            conversionsByPlan: {
+              free: { pdfs: 0, labels: 0 },
+              pro: { pdfs: 0, labels: 0 },
+              enterprise: { pdfs: 0, labels: 0 },
+            },
+          };
+          transaction.set(docRef, newStats);
+        }
+      });
+    } catch (error) {
+      this.logger.error(`Error incrementing daily error count: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get daily stats for a specific date
+   */
+  async getDailyStats(date: string): Promise<DailyStats | null> {
+    try {
+      const doc = await this.firestore.collection(this.dailyStatsCollection).doc(date).get();
+      return doc.exists ? (doc.data() as DailyStats) : null;
+    } catch (error) {
+      this.logger.error(`Error getting daily stats: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get daily stats for a date range
+   */
+  async getDailyStatsRange(startDate: string, endDate: string): Promise<DailyStats[]> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.dailyStatsCollection)
+        .where('date', '>=', startDate)
+        .where('date', '<=', endDate)
+        .orderBy('date', 'asc')
+        .get();
+
+      return snapshot.docs.map((doc) => doc.data() as DailyStats);
+    } catch (error) {
+      this.logger.error(`Error getting daily stats range: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get global totals (all-time cumulative)
+   */
+  async getGlobalTotals(): Promise<GlobalTotals> {
+    try {
+      const doc = await this.firestore.doc(this.globalTotalsDoc).get();
+      if (doc.exists) {
+        const data = doc.data();
+        return {
+          pdfsTotal: data.pdfsTotal || 0,
+          labelsTotal: data.labelsTotal || 0,
+          lastUpdated: data.lastUpdated?.toDate?.() || data.lastUpdated,
+        };
+      }
+      return { pdfsTotal: 0, labelsTotal: 0, lastUpdated: new Date() };
+    } catch (error) {
+      this.logger.error(`Error getting global totals: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Set global totals (for migration)
+   */
+  async setGlobalTotals(totals: GlobalTotals): Promise<void> {
+    try {
+      await this.firestore.doc(this.globalTotalsDoc).set(totals);
+      this.logger.log('Global totals updated');
+    } catch (error) {
+      this.logger.error(`Error setting global totals: ${error.message}`);
+      throw error;
+    }
+  }
+
   // ============== Batch Processing ==============
 
   private readonly batchCollection = 'zpl-batches';
@@ -817,17 +1032,30 @@ export class FirestoreService {
 
   async getUsersByPlan(): Promise<{ free: number; pro: number; enterprise: number }> {
     try {
-      const snapshot = await this.firestore.collection(this.usersCollection).get();
+      // Use count() queries instead of full scan - 3 small queries vs 1 large
+      const [freeCount, proCount, enterpriseCount] = await Promise.all([
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'free')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'pro')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'enterprise')
+          .count()
+          .get(),
+      ]);
 
-      const byPlan = { free: 0, pro: 0, enterprise: 0 };
-      snapshot.docs.forEach((doc) => {
-        const plan = doc.data().plan as PlanType;
-        if (plan in byPlan) {
-          byPlan[plan]++;
-        }
-      });
-
-      return byPlan;
+      return {
+        free: freeCount.data().count,
+        pro: proCount.data().count,
+        enterprise: enterpriseCount.data().count,
+      };
     } catch (error) {
       this.logger.error(`Error al obtener usuarios por plan: ${error.message}`);
       throw error;
@@ -837,32 +1065,31 @@ export class FirestoreService {
   async getActiveUsers(period: 'day' | 'week' | 'month'): Promise<number> {
     try {
       const now = new Date();
-      let startDate: Date;
+      let days: number;
 
       switch (period) {
         case 'day':
-          startDate = getStartOfDayInTimezone(now); // GMT-6 (Mérida, México)
+          days = 1;
           break;
         case 'week':
-          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          days = 7;
           break;
         case 'month':
-          startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          days = 30;
           break;
       }
 
-      // Get unique users from conversion_history in the period
-      const snapshot = await this.firestore
-        .collection(this.historyCollection)
-        .where('createdAt', '>=', startDate)
-        .get();
+      // Use daily_stats instead of scanning conversion_history
+      const endDate = getDateStringInTimezone(now);
+      const startDateObj = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+      const startDate = getDateStringInTimezone(startDateObj);
 
+      const dailyStats = await this.getDailyStatsRange(startDate, endDate);
+
+      // Collect unique users across all days
       const uniqueUsers = new Set<string>();
-      snapshot.docs.forEach((doc) => {
-        const userId = doc.data().userId;
-        if (userId) {
-          uniqueUsers.add(userId);
-        }
+      dailyStats.forEach((day) => {
+        day.activeUserIds?.forEach((userId) => uniqueUsers.add(userId));
       });
 
       return uniqueUsers.size;
@@ -1142,29 +1369,32 @@ export class FirestoreService {
   }> {
     try {
       const now = new Date();
-      let queryStartDate = startDate;
-      let queryEndDate = endDate || now;
+      let days: number;
 
-      if (!queryStartDate) {
+      if (startDate && endDate) {
+        days = Math.ceil((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
+      } else {
         switch (period) {
           case 'day':
-            queryStartDate = getStartOfDayInTimezone(now); // GMT-6 (Mérida, México)
+            days = 1;
             break;
           case 'week':
-            queryStartDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            days = 7;
             break;
           case 'month':
-            queryStartDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+            days = 30;
             break;
         }
       }
 
-      const snapshot = await this.firestore
-        .collection(this.historyCollection)
-        .where('createdAt', '>=', queryStartDate)
-        .where('createdAt', '<=', queryEndDate)
-        .get();
+      // Use daily_stats instead of scanning conversion_history
+      const endDateStr = getDateStringInTimezone(endDate || now);
+      const startDateObj = startDate || new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+      const startDateStr = getDateStringInTimezone(startDateObj);
 
+      const dailyStats = await this.getDailyStatsRange(startDateStr, endDateStr);
+
+      // Aggregate from daily stats
       let totalPdfs = 0;
       let totalLabels = 0;
       let successCount = 0;
@@ -1175,42 +1405,22 @@ export class FirestoreService {
         enterprise: { pdfs: 0, labels: 0 },
       };
 
-      // Batch read: obtener todos los usuarios únicos en una sola consulta
-      const uniqueUserIds = [
-        ...new Set(
-          snapshot.docs.map((doc) => doc.data().userId).filter(Boolean),
-        ),
-      ];
-      const userPlanMap: Record<string, string> = {};
+      dailyStats.forEach((day) => {
+        totalPdfs += day.totalPdfs || 0;
+        totalLabels += day.totalLabels || 0;
+        successCount += day.successCount || 0;
+        failureCount += day.failureCount || 0;
 
-      if (uniqueUserIds.length > 0) {
-        const userRefs = uniqueUserIds.map((id) =>
-          this.firestore.collection(this.usersCollection).doc(id),
-        );
-        const userDocs = await this.firestore.getAll(...userRefs);
-        userDocs.forEach((doc) => {
-          userPlanMap[doc.id] = doc.exists ? doc.data()?.plan || 'free' : 'free';
-        });
-      }
-
-      // Procesar conversiones sin consultas adicionales
-      for (const doc of snapshot.docs) {
-        const data = doc.data();
-        totalPdfs++;
-        totalLabels += data.labelCount || 0;
-
-        if (data.status === 'completed') {
-          successCount++;
-        } else if (data.status === 'failed') {
-          failureCount++;
+        // Aggregate by plan
+        if (day.conversionsByPlan) {
+          Object.entries(day.conversionsByPlan).forEach(([plan, stats]) => {
+            if (byPlan[plan]) {
+              byPlan[plan].pdfs += stats.pdfs || 0;
+              byPlan[plan].labels += stats.labels || 0;
+            }
+          });
         }
-
-        const userPlan = userPlanMap[data.userId] || 'free';
-        if (byPlan[userPlan]) {
-          byPlan[userPlan].pdfs++;
-          byPlan[userPlan].labels += data.labelCount || 0;
-        }
-      }
+      });
 
       return {
         summary: {
@@ -1230,21 +1440,12 @@ export class FirestoreService {
 
   async getHistoricalTotals(): Promise<{ pdfsTotal: number; labelsTotal: number }> {
     try {
-      const snapshot = await this.firestore
-        .collection(this.historyCollection)
-        .where('status', '==', 'completed')
-        .get();
-
-      let pdfsTotal = 0;
-      let labelsTotal = 0;
-
-      for (const doc of snapshot.docs) {
-        const data = doc.data();
-        pdfsTotal++;
-        labelsTotal += data.labelCount || 0;
-      }
-
-      return { pdfsTotal, labelsTotal };
+      // Use global_totals instead of scanning all conversion_history
+      const totals = await this.getGlobalTotals();
+      return {
+        pdfsTotal: totals.pdfsTotal,
+        labelsTotal: totals.labelsTotal,
+      };
     } catch (error) {
       this.logger.error(`Error al obtener totales históricos: ${error.message}`);
       throw error;
@@ -1259,42 +1460,34 @@ export class FirestoreService {
   }>> {
     try {
       const now = new Date();
-      const startDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 
-      const snapshot = await this.firestore
-        .collection(this.historyCollection)
-        .where('createdAt', '>=', startDate)
-        .get();
+      // Use daily_stats instead of scanning conversion_history
+      const endDateStr = getDateStringInTimezone(now);
+      const startDateObj = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+      const startDateStr = getDateStringInTimezone(startDateObj);
 
-      // Group by date
-      const byDate: Record<string, { pdfs: number; labels: number; failures: number }> = {};
+      const dailyStats = await this.getDailyStatsRange(startDateStr, endDateStr);
 
-      // Initialize all dates (using GMT-6 timezone)
-      for (let i = 0; i < days; i++) {
+      // Create a map for easy lookup
+      const statsMap = new Map<string, DailyStats>();
+      dailyStats.forEach((stat) => statsMap.set(stat.date, stat));
+
+      // Build result array with all dates (fill missing with zeros)
+      const result: Array<{ date: string; pdfs: number; labels: number; failures: number }> = [];
+      for (let i = days - 1; i >= 0; i--) {
         const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
         const dateKey = getDateStringInTimezone(date);
-        byDate[dateKey] = { pdfs: 0, labels: 0, failures: 0 };
+        const stat = statsMap.get(dateKey);
+
+        result.push({
+          date: dateKey,
+          pdfs: stat?.totalPdfs || 0,
+          labels: stat?.totalLabels || 0,
+          failures: stat?.failureCount || 0,
+        });
       }
 
-      // Aggregate data
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data();
-        const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
-        const dateKey = getDateStringInTimezone(createdAt);
-
-        if (byDate[dateKey]) {
-          byDate[dateKey].pdfs++;
-          byDate[dateKey].labels += data.labelCount || 0;
-          if (data.status === 'failed') {
-            byDate[dateKey].failures++;
-          }
-        }
-      });
-
-      // Convert to array and sort by date
-      return Object.entries(byDate)
-        .map(([date, stats]) => ({ date, ...stats }))
-        .sort((a, b) => a.date.localeCompare(b.date));
+      return result;
     } catch (error) {
       this.logger.error(`Error al obtener tendencia de conversiones: ${error.message}`);
       throw error;

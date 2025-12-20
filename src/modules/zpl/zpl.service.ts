@@ -255,7 +255,7 @@ export class ZplService {
       // Encolar el trabajo para procesamiento asincrono
       const periodId = canConvert.periodInfo?.periodId;
       setTimeout(() => {
-        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodId);
+        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodId, userPlan as 'free' | 'pro' | 'enterprise');
       }, 100);
 
       return jobId;
@@ -282,6 +282,7 @@ export class ZplService {
     labelCount: number,
     outputFormat: OutputFormat = OutputFormat.PDF,
     periodId?: string,
+    userPlan?: 'free' | 'pro' | 'enterprise',
   ): Promise<void> {
     try {
       await this.processZplConversion(zplContent, labelSize, jobId, outputFormat);
@@ -299,6 +300,7 @@ export class ZplService {
           outputFormat,
           job.resultUrl,
           periodId,
+          userPlan,
         );
       } else if (job && job.status === 'failed') {
         // Record failed conversion
@@ -311,6 +313,7 @@ export class ZplService {
           outputFormat,
           undefined,
           periodId,
+          userPlan,
         );
       }
     } catch (error) {
@@ -326,6 +329,7 @@ export class ZplService {
           outputFormat,
           undefined,
           periodId,
+          userPlan,
         );
       } catch (recordError) {
         this.logger.error(`Error recording failed conversion: ${recordError.message}`);

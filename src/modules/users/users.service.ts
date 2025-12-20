@@ -221,6 +221,7 @@ export class UsersService {
     outputFormat: 'pdf' | 'png' | 'jpeg' = 'pdf',
     fileUrl?: string,
     periodId?: string,
+    userPlan?: 'free' | 'pro' | 'enterprise',
   ): Promise<void> {
     // Save to history (use null instead of undefined for Firestore)
     await this.firestoreService.saveConversionHistory({
@@ -233,6 +234,18 @@ export class UsersService {
       fileUrl: fileUrl || null,
       createdAt: new Date(),
     });
+
+    // Get user plan if not provided
+    let plan = userPlan;
+    if (!plan) {
+      const user = await this.firestoreService.getUserById(userId);
+      plan = (user?.plan as 'free' | 'pro' | 'enterprise') || 'free';
+    }
+
+    // Update daily stats (fire-and-forget for performance)
+    this.firestoreService
+      .incrementDailyStats(userId, plan, 1, labelCount, status)
+      .catch((err) => this.logger.error(`Failed to update daily stats: ${err.message}`));
 
     // Increment usage only for completed conversions
     if (status === 'completed') {
