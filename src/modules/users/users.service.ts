@@ -1,11 +1,13 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
+import { FirebaseAdminService } from '../auth/firebase-admin.service.js';
 import { PeriodCalculatorService, PeriodInfo } from '../../common/services/period-calculator.service.js';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType, PlanLimits } from '../../common/interfaces/user.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
+import { VerificationStatusDto } from './dto/verification-status.dto.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { BATCH_LIMITS } from '../zpl/interfaces/batch.interface.js';
 
@@ -23,10 +25,20 @@ export class UsersService {
 
   constructor(
     private readonly firestoreService: FirestoreService,
+    private readonly firebaseAdminService: FirebaseAdminService,
     private readonly periodCalculatorService: PeriodCalculatorService,
   ) {}
 
   async syncUser(firebaseUser: FirebaseUser): Promise<User> {
+    // Obtener estado fresco de emailVerified desde Firebase Auth
+    let emailVerified = false;
+    try {
+      const fbUser = await this.firebaseAdminService.getUser(firebaseUser.uid);
+      emailVerified = fbUser.emailVerified;
+    } catch (error) {
+      this.logger.warn(`Could not fetch Firebase user for emailVerified: ${error.message}`);
+    }
+
     const existingUser = await this.firestoreService.getUserById(firebaseUser.uid);
 
     if (existingUser) {
@@ -34,12 +46,14 @@ export class UsersService {
       await this.firestoreService.updateUser(firebaseUser.uid, {
         email: firebaseUser.email,
         displayName: firebaseUser.name,
+        emailVerified,
       });
 
       return {
         ...existingUser,
         email: firebaseUser.email,
         displayName: firebaseUser.name,
+        emailVerified,
       };
     }
 
@@ -48,6 +62,7 @@ export class UsersService {
       id: firebaseUser.uid,
       email: firebaseUser.email,
       displayName: firebaseUser.name,
+      emailVerified,
       plan: 'free',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -66,13 +81,33 @@ export class UsersService {
       throw new ForbiddenException('User not found');
     }
 
+    // Obtener estado fresco de emailVerified desde Firebase Auth
+    let emailVerified = user.emailVerified ?? false;
+    try {
+      const firebaseUser = await this.firebaseAdminService.getUser(userId);
+      emailVerified = firebaseUser.emailVerified;
+    } catch (error) {
+      this.logger.warn(`Could not fetch Firebase user for emailVerified: ${error.message}`);
+    }
+
     return {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
+      emailVerified,
       plan: user.plan,
       createdAt: user.createdAt,
       hasStripeSubscription: !!user.stripeSubscriptionId,
+    };
+  }
+
+  async getVerificationStatus(userId: string): Promise<VerificationStatusDto> {
+    // Obtener estado fresco directamente desde Firebase Auth
+    const firebaseUser = await this.firebaseAdminService.getUser(userId);
+
+    return {
+      emailVerified: firebaseUser.emailVerified,
+      email: firebaseUser.email || '',
     };
   }
 

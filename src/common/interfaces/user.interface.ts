@@ -10,6 +10,7 @@ export interface User {
   id: string;
   email: string;
   displayName?: string;
+  emailVerified: boolean;
   plan: PlanType;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;

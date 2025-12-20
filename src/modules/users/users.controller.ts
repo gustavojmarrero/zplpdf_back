@@ -20,6 +20,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
+import { VerificationStatusDto } from './dto/verification-status.dto.js';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -42,6 +43,7 @@ export class UsersController {
       id: syncedUser.id,
       email: syncedUser.email,
       displayName: syncedUser.displayName,
+      emailVerified: syncedUser.emailVerified ?? false,
       plan: syncedUser.plan,
       createdAt: syncedUser.createdAt,
       hasStripeSubscription: !!syncedUser.stripeSubscriptionId,
@@ -57,6 +59,19 @@ export class UsersController {
   })
   async getProfile(@CurrentUser() user: FirebaseUser): Promise<UserProfileDto> {
     return this.usersService.getUserProfile(user.uid);
+  }
+
+  @Get('verification-status')
+  @ApiOperation({ summary: 'Get email verification status from Firebase Auth' })
+  @ApiResponse({
+    status: 200,
+    description: 'Email verification status',
+    type: VerificationStatusDto,
+  })
+  async getVerificationStatus(
+    @CurrentUser() user: FirebaseUser,
+  ): Promise<VerificationStatusDto> {
+    return this.usersService.getVerificationStatus(user.uid);
   }
 
   @Get('limits')

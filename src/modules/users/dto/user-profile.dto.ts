@@ -11,6 +11,9 @@ export class UserProfileDto {
   @ApiProperty({ description: 'Display name', required: false })
   displayName?: string;
 
+  @ApiProperty({ description: 'Whether the email is verified' })
+  emailVerified: boolean;
+
   @ApiProperty({ description: 'Current plan', enum: ['free', 'pro', 'enterprise'] })
   plan: PlanType;
 
