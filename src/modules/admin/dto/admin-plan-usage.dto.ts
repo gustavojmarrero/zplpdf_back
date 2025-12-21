@@ -31,6 +31,43 @@ class UserNearLimitDto {
   periodEnd: Date;
 }
 
+class UserNearLabelLimitDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  email: string;
+
+  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  plan: string;
+
+  @ApiProperty({ description: 'Current label count in period' })
+  labelCount: number;
+
+  @ApiProperty({ description: 'Monthly label limit (maxPdfsPerMonth * maxLabelsPerPdf)' })
+  labelLimit: number;
+
+  @ApiProperty({ description: 'Percentage of label limit used' })
+  percentUsed: number;
+
+  @ApiProperty()
+  periodEnd: Date;
+}
+
+class LabelUsageDistributionDto {
+  @ApiProperty({ description: 'Users using 0-25% of label limit' })
+  '0-25': number;
+
+  @ApiProperty({ description: 'Users using 25-50% of label limit' })
+  '25-50': number;
+
+  @ApiProperty({ description: 'Users using 50-75% of label limit' })
+  '50-75': number;
+
+  @ApiProperty({ description: 'Users using 75-100% of label limit' })
+  '75-100': number;
+}
+
 class UserExceedingFrequentlyDto {
   @ApiProperty()
   id: string;
@@ -75,8 +112,14 @@ class PlanUsageDataDto {
     enterprise: PlanDistributionItemDto;
   };
 
-  @ApiProperty({ type: [UserNearLimitDto] })
+  @ApiProperty({ type: [UserNearLimitDto], description: 'Users near PDF limit' })
   usersNearLimit: UserNearLimitDto[];
+
+  @ApiProperty({ type: [UserNearLabelLimitDto], description: 'Users near label limit' })
+  usersNearLabelLimit: UserNearLabelLimitDto[];
+
+  @ApiProperty({ type: LabelUsageDistributionDto, description: 'Distribution of label usage by percentage ranges' })
+  labelUsageDistribution: LabelUsageDistributionDto;
 
   @ApiProperty({ type: [UserExceedingFrequentlyDto] })
   usersExceedingFrequently: UserExceedingFrequentlyDto[];

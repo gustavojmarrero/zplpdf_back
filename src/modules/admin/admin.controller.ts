@@ -29,9 +29,11 @@ import {
   UpdateUserPlanDto,
   UpdateUserPlanResponseDto,
 } from './dto/admin-users.dto.js';
-import { GetConversionsQueryDto, AdminConversionsResponseDto } from './dto/admin-conversions.dto.js';
+import { GetConversionsQueryDto, AdminConversionsResponseDto, GetConversionsListQueryDto, AdminConversionsListResponseDto } from './dto/admin-conversions.dto.js';
 import { GetErrorsQueryDto, AdminErrorsResponseDto } from './dto/admin-errors.dto.js';
 import { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
+import { GetPlanChangesQueryDto, AdminPlanChangesResponseDto } from './dto/admin-plan-changes.dto.js';
+import { GetConsumptionProjectionQueryDto, AdminConsumptionProjectionResponseDto } from './dto/admin-consumption-projection.dto.js';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -89,6 +91,26 @@ export class AdminController {
     return this.adminService.getUsers(query);
   }
 
+  @Get('conversions/list')
+  @ApiOperation({
+    summary: 'Get individual conversions list',
+    description: 'Returns a paginated list of individual conversions with optional filtering by user, date range, and status.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Conversions list retrieved successfully',
+    type: AdminConversionsListResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getConversionsList(
+    @Query() query: GetConversionsListQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminConversionsListResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting conversions list`);
+    return this.adminService.getConversionsList(query);
+  }
+
   @Get('conversions')
   @ApiOperation({
     summary: 'Get conversion statistics',
@@ -144,6 +166,46 @@ export class AdminController {
   async getPlanUsage(@AdminUser() admin: AdminUserData): Promise<AdminPlanUsageResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting plan usage`);
     return this.adminService.getPlanUsage();
+  }
+
+  @Get('plan-changes')
+  @ApiOperation({
+    summary: 'Get plan changes history',
+    description: 'Returns a paginated list of plan changes (upgrades, downgrades, admin changes) with optional filtering.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Plan changes history retrieved successfully',
+    type: AdminPlanChangesResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getPlanChanges(
+    @Query() query: GetPlanChangesQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminPlanChangesResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting plan changes history`);
+    return this.adminService.getPlanChanges(query);
+  }
+
+  @Get('consumption-projection')
+  @ApiOperation({
+    summary: 'Get consumption projection for all users',
+    description: 'Returns projected plan exhaustion data for users, identifying those who will exhaust their plan before billing period ends.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Consumption projection data retrieved successfully',
+    type: AdminConsumptionProjectionResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getConsumptionProjection(
+    @Query() query: GetConsumptionProjectionQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminConsumptionProjectionResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting consumption projection`);
+    return this.adminService.getConsumptionProjection(query);
   }
 
   @Get('users/:userId')

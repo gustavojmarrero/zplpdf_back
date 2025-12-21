@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsDateString, IsEnum } from 'class-validator';
+import { IsOptional, IsString, IsDateString, IsEnum, IsInt, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class GetConversionsQueryDto {
   @ApiPropertyOptional({ enum: ['day', 'week', 'month'], default: 'week' })
@@ -98,4 +99,102 @@ export class AdminConversionsResponseDto {
 
   @ApiProperty({ type: ConversionsDataDto })
   data: ConversionsDataDto;
+}
+
+// ==================== Conversions List (Individual) ====================
+
+export class GetConversionsListQueryDto {
+  @ApiPropertyOptional({ description: 'Page number', default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ description: 'Items per page', default: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
+
+  @ApiPropertyOptional({ description: 'Filter by user ID' })
+  @IsOptional()
+  @IsString()
+  userId?: string;
+
+  @ApiPropertyOptional({ description: 'Start date (ISO 8601)' })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({ description: 'End date (ISO 8601)' })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+
+  @ApiPropertyOptional({ enum: ['completed', 'failed'], description: 'Filter by status' })
+  @IsOptional()
+  @IsEnum(['completed', 'failed'])
+  status?: 'completed' | 'failed';
+}
+
+class ConversionItemDto {
+  @ApiProperty({ description: 'Conversion job ID' })
+  id: string;
+
+  @ApiProperty({ description: 'User ID' })
+  userId: string;
+
+  @ApiProperty({ description: 'User email' })
+  userEmail: string;
+
+  @ApiProperty({ description: 'Conversion timestamp' })
+  createdAt: string;
+
+  @ApiProperty({ description: 'Number of labels in this conversion' })
+  labelCount: number;
+
+  @ApiProperty({ description: 'Label size (e.g., "4x6")' })
+  labelSize: string;
+
+  @ApiProperty({ enum: ['completed', 'failed'], description: 'Conversion status' })
+  status: 'completed' | 'failed';
+
+  @ApiProperty({ enum: ['pdf', 'png', 'jpeg'], description: 'Output format' })
+  outputFormat: 'pdf' | 'png' | 'jpeg';
+
+  @ApiPropertyOptional({ description: 'File URL if available' })
+  fileUrl?: string;
+}
+
+class PaginationDto {
+  @ApiProperty()
+  page: number;
+
+  @ApiProperty()
+  limit: number;
+
+  @ApiProperty()
+  total: number;
+
+  @ApiProperty()
+  totalPages: number;
+}
+
+class ConversionsListDataDto {
+  @ApiProperty({ type: [ConversionItemDto] })
+  conversions: ConversionItemDto[];
+
+  @ApiProperty({ type: PaginationDto })
+  pagination: PaginationDto;
+}
+
+export class AdminConversionsListResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty({ type: ConversionsListDataDto })
+  data: ConversionsListDataDto;
 }

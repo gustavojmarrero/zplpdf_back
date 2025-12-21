@@ -1018,6 +1018,128 @@ export class FirestoreService {
     }
   }
 
+  async getPlanChanges(filters: {
+    page?: number;
+    limit?: number;
+    userId?: string;
+    startDate?: Date;
+    endDate?: Date;
+  }): Promise<{
+    changes: Array<{
+      userId: string;
+      userEmail: string;
+      previousPlan: string;
+      newPlan: string;
+      changedAt: Date;
+      reason: 'upgrade' | 'downgrade' | 'admin_change';
+      changedBy?: string;
+    }>;
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+    };
+  }> {
+    try {
+      const { page = 1, limit = 20, userId, startDate, endDate } = filters;
+
+      let query: FirebaseFirestore.Query = this.firestore
+        .collection(this.adminAuditCollection)
+        .where('action', '==', 'update_user_plan');
+
+      if (startDate) {
+        query = query.where('createdAt', '>=', startDate);
+      }
+      if (endDate) {
+        query = query.where('createdAt', '<=', endDate);
+      }
+
+      query = query.orderBy('createdAt', 'desc');
+
+      // Get all matching documents (we'll filter by userId in memory if needed)
+      const snapshot = await query.get();
+
+      // Filter by userId if provided (Firestore doesn't support nested field queries well)
+      let filteredDocs = snapshot.docs;
+      if (userId) {
+        filteredDocs = snapshot.docs.filter((doc) => {
+          const data = doc.data();
+          return data.requestParams?.userId === userId;
+        });
+      }
+
+      const total = filteredDocs.length;
+
+      // Apply pagination
+      const offset = (page - 1) * limit;
+      const paginatedDocs = filteredDocs.slice(offset, offset + limit);
+
+      // Collect unique user IDs for batch lookup
+      const userIds = [...new Set(paginatedDocs.map((doc) => doc.data().requestParams?.userId).filter(Boolean))];
+
+      // Batch read users
+      const userDataMap: Record<string, { email: string }> = {};
+      if (userIds.length > 0) {
+        const userRefs = userIds.map((id) =>
+          this.firestore.collection(this.usersCollection).doc(id),
+        );
+        const userDocs = await this.firestore.getAll(...userRefs);
+        userDocs.forEach((doc) => {
+          if (doc.exists) {
+            const data = doc.data();
+            userDataMap[doc.id] = { email: data.email || 'unknown' };
+          }
+        });
+      }
+
+      // Map changes
+      const changes = paginatedDocs.map((doc) => {
+        const data = doc.data();
+        const params = data.requestParams || {};
+        const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
+
+        // Determine reason
+        let reason: 'upgrade' | 'downgrade' | 'admin_change' = 'admin_change';
+        if (params.reason) {
+          reason = params.reason;
+        } else {
+          const planOrder: Record<string, number> = { free: 0, pro: 1, enterprise: 2 };
+          const prevOrder = planOrder[params.previousPlan] ?? 0;
+          const newOrder = planOrder[params.newPlan] ?? 0;
+          if (newOrder > prevOrder) {
+            reason = 'upgrade';
+          } else if (newOrder < prevOrder) {
+            reason = 'downgrade';
+          }
+        }
+
+        return {
+          userId: params.userId,
+          userEmail: userDataMap[params.userId]?.email || 'unknown',
+          previousPlan: params.previousPlan,
+          newPlan: params.newPlan,
+          changedAt: createdAt,
+          reason,
+          changedBy: data.adminEmail,
+        };
+      });
+
+      return {
+        changes,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error al obtener cambios de plan: ${error.message}`);
+      throw error;
+    }
+  }
+
   // ============== Admin: User Metrics ==============
 
   async getUsersCount(): Promise<number> {
@@ -1351,6 +1473,277 @@ export class FirestoreService {
     }
   }
 
+  async getUsersNearLabelLimit(threshold: number = 80): Promise<Array<{
+    id: string;
+    email: string;
+    plan: PlanType;
+    labelCount: number;
+    labelLimit: number;
+    percentUsed: number;
+    periodEnd: Date;
+  }>> {
+    try {
+      // Get all current usage documents
+      const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
+
+      // Batch read: get all unique users in a single query
+      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
+      const userDataMap: Record<string, any> = {};
+
+      if (userIds.length > 0) {
+        const userRefs = userIds.map((id) =>
+          this.firestore.collection(this.usersCollection).doc(id),
+        );
+        const userDocs = await this.firestore.getAll(...userRefs);
+        userDocs.forEach((doc) => {
+          if (doc.exists) {
+            userDataMap[doc.id] = doc.data();
+          }
+        });
+      }
+
+      const usersNearLabelLimit: Array<{
+        id: string;
+        email: string;
+        plan: PlanType;
+        labelCount: number;
+        labelLimit: number;
+        percentUsed: number;
+        periodEnd: Date;
+      }> = [];
+
+      // Process without additional queries
+      for (const doc of usageSnapshot.docs) {
+        const usageData = doc.data();
+        const userId = usageData.userId;
+        const userData = userDataMap[userId];
+
+        if (!userData) continue;
+
+        const plan = userData.plan as PlanType;
+        const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
+
+        // Calculate monthly label limit as maxPdfsPerMonth * maxLabelsPerPdf
+        const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
+        const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[plan].maxLabelsPerPdf;
+        const labelLimit = maxPdfs * maxLabelsPerPdf;
+
+        // Skip enterprise users (unlimited)
+        if (plan === 'enterprise') continue;
+
+        const percentUsed = (usageData.labelCount / labelLimit) * 100;
+
+        if (percentUsed >= threshold) {
+          usersNearLabelLimit.push({
+            id: userId,
+            email: userData.email,
+            plan,
+            labelCount: usageData.labelCount,
+            labelLimit,
+            percentUsed: Math.round(percentUsed),
+            periodEnd: usageData.periodEnd?.toDate?.() || usageData.periodEnd,
+          });
+        }
+      }
+
+      // Sort by percentUsed descending
+      usersNearLabelLimit.sort((a, b) => b.percentUsed - a.percentUsed);
+
+      return usersNearLabelLimit.slice(0, 20); // Return top 20
+    } catch (error) {
+      this.logger.error(`Error al obtener usuarios cerca del límite de etiquetas: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getLabelUsageDistribution(): Promise<{
+    '0-25': number;
+    '25-50': number;
+    '50-75': number;
+    '75-100': number;
+  }> {
+    try {
+      // Get all current usage documents
+      const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
+
+      // Batch read: get all unique users in a single query
+      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
+      const userDataMap: Record<string, any> = {};
+
+      if (userIds.length > 0) {
+        const userRefs = userIds.map((id) =>
+          this.firestore.collection(this.usersCollection).doc(id),
+        );
+        const userDocs = await this.firestore.getAll(...userRefs);
+        userDocs.forEach((doc) => {
+          if (doc.exists) {
+            userDataMap[doc.id] = doc.data();
+          }
+        });
+      }
+
+      const distribution = {
+        '0-25': 0,
+        '25-50': 0,
+        '50-75': 0,
+        '75-100': 0,
+      };
+
+      // Process and categorize users
+      for (const doc of usageSnapshot.docs) {
+        const usageData = doc.data();
+        const userId = usageData.userId;
+        const userData = userDataMap[userId];
+
+        if (!userData) continue;
+
+        const plan = userData.plan as PlanType;
+
+        // Skip enterprise users (unlimited)
+        if (plan === 'enterprise') continue;
+
+        const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
+        const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
+        const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[plan].maxLabelsPerPdf;
+        const labelLimit = maxPdfs * maxLabelsPerPdf;
+
+        const percentUsed = (usageData.labelCount / labelLimit) * 100;
+
+        if (percentUsed <= 25) {
+          distribution['0-25']++;
+        } else if (percentUsed <= 50) {
+          distribution['25-50']++;
+        } else if (percentUsed <= 75) {
+          distribution['50-75']++;
+        } else {
+          distribution['75-100']++;
+        }
+      }
+
+      return distribution;
+    } catch (error) {
+      this.logger.error(`Error al obtener distribución de uso de etiquetas: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getConsumptionProjection(): Promise<Array<{
+    id: string;
+    email: string;
+    name: string;
+    plan: PlanType;
+    billingPeriodStart: Date;
+    billingPeriodEnd: Date;
+    planLimit: number;
+    pdfsUsed: number;
+    daysElapsed: number;
+    dailyRate: number;
+    projectedDaysToExhaust: number;
+    status: 'critical' | 'risk' | 'normal';
+  }>> {
+    try {
+      const now = new Date();
+
+      // Get all current usage documents
+      const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
+
+      // Batch read: get all unique users in a single query
+      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
+      const userDataMap: Record<string, any> = {};
+
+      if (userIds.length > 0) {
+        const userRefs = userIds.map((id) =>
+          this.firestore.collection(this.usersCollection).doc(id),
+        );
+        const userDocs = await this.firestore.getAll(...userRefs);
+        userDocs.forEach((doc) => {
+          if (doc.exists) {
+            userDataMap[doc.id] = doc.data();
+          }
+        });
+      }
+
+      const projections: Array<{
+        id: string;
+        email: string;
+        name: string;
+        plan: PlanType;
+        billingPeriodStart: Date;
+        billingPeriodEnd: Date;
+        planLimit: number;
+        pdfsUsed: number;
+        daysElapsed: number;
+        dailyRate: number;
+        projectedDaysToExhaust: number;
+        status: 'critical' | 'risk' | 'normal';
+      }> = [];
+
+      for (const doc of usageSnapshot.docs) {
+        const usageData = doc.data();
+        const userId = usageData.userId;
+        const userData = userDataMap[userId];
+
+        if (!userData) continue;
+
+        const pdfsUsed = usageData.pdfCount || 0;
+
+        // Only include users with activity (pdfsUsed > 0)
+        if (pdfsUsed === 0) continue;
+
+        const plan = userData.plan as PlanType;
+        const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
+        const planLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
+
+        // Get period dates
+        const periodStart = usageData.periodStart?.toDate?.() || new Date(usageData.periodStart);
+        const periodEnd = usageData.periodEnd?.toDate?.() || new Date(usageData.periodEnd);
+
+        // Calculate days elapsed (minimum 1 to avoid division by zero)
+        const daysElapsed = Math.max(1, Math.ceil((now.getTime() - periodStart.getTime()) / (1000 * 60 * 60 * 24)));
+
+        // Calculate daily rate
+        const dailyRate = pdfsUsed / daysElapsed;
+
+        // Calculate projected days to exhaust plan
+        // If dailyRate is 0, set to Infinity (will never exhaust)
+        const projectedDaysToExhaust = dailyRate > 0 ? Math.round((planLimit / dailyRate) * 10) / 10 : 999;
+
+        // Determine status based on projected days
+        let status: 'critical' | 'risk' | 'normal';
+        if (projectedDaysToExhaust < 15) {
+          status = 'critical';
+        } else if (projectedDaysToExhaust < 24) {
+          status = 'risk';
+        } else {
+          status = 'normal';
+        }
+
+        projections.push({
+          id: userId,
+          email: userData.email || 'unknown',
+          name: userData.displayName || '',
+          plan,
+          billingPeriodStart: periodStart,
+          billingPeriodEnd: periodEnd,
+          planLimit,
+          pdfsUsed,
+          daysElapsed,
+          dailyRate: Math.round(dailyRate * 100) / 100,
+          projectedDaysToExhaust,
+          status,
+        });
+      }
+
+      // Sort by projectedDaysToExhaust ascending (most critical first)
+      projections.sort((a, b) => a.projectedDaysToExhaust - b.projectedDaysToExhaust);
+
+      return projections;
+    } catch (error) {
+      this.logger.error(`Error al obtener proyección de consumo: ${error.message}`);
+      throw error;
+    }
+  }
+
   // ============== Admin: Conversion Metrics ==============
 
   async getConversionStats(
@@ -1654,6 +2047,114 @@ export class FirestoreService {
         .sort((a, b) => b.date.localeCompare(a.date));
     } catch (error) {
       this.logger.error(`Error al obtener historial de uso del usuario: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== Admin: Conversions List (Individual) ==============
+
+  async getConversionsPaginated(filters: {
+    page?: number;
+    limit?: number;
+    userId?: string;
+    startDate?: Date;
+    endDate?: Date;
+    status?: 'completed' | 'failed';
+  }): Promise<{
+    conversions: Array<{
+      id: string;
+      userId: string;
+      userEmail: string;
+      createdAt: Date;
+      labelCount: number;
+      labelSize: string;
+      status: 'completed' | 'failed';
+      outputFormat: 'pdf' | 'png' | 'jpeg';
+      fileUrl?: string;
+    }>;
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+    };
+  }> {
+    try {
+      const { page = 1, limit = 20, userId, startDate, endDate, status } = filters;
+
+      let query: FirebaseFirestore.Query = this.firestore.collection(this.historyCollection);
+
+      // Apply filters
+      if (userId) {
+        query = query.where('userId', '==', userId);
+      }
+      if (status) {
+        query = query.where('status', '==', status);
+      }
+      if (startDate) {
+        query = query.where('createdAt', '>=', startDate);
+      }
+      if (endDate) {
+        query = query.where('createdAt', '<=', endDate);
+      }
+
+      query = query.orderBy('createdAt', 'desc');
+
+      // Get total count
+      const countSnapshot = await query.count().get();
+      const total = countSnapshot.data().count;
+
+      // Apply pagination
+      const offset = (page - 1) * limit;
+      const snapshot = await query.offset(offset).limit(limit).get();
+
+      // Collect unique user IDs for batch user lookup
+      const userIds = [...new Set(snapshot.docs.map((doc) => doc.data().userId).filter(Boolean))];
+
+      // Batch read users
+      const userDataMap: Record<string, { email: string }> = {};
+      if (userIds.length > 0) {
+        const userRefs = userIds.map((id) =>
+          this.firestore.collection(this.usersCollection).doc(id),
+        );
+        const userDocs = await this.firestore.getAll(...userRefs);
+        userDocs.forEach((doc) => {
+          if (doc.exists) {
+            const data = doc.data();
+            userDataMap[doc.id] = { email: data.email || 'unknown' };
+          }
+        });
+      }
+
+      // Map conversions with user emails
+      const conversions = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
+
+        return {
+          id: data.jobId || doc.id,
+          userId: data.userId,
+          userEmail: userDataMap[data.userId]?.email || 'unknown',
+          createdAt,
+          labelCount: data.labelCount || 0,
+          labelSize: data.labelSize || 'unknown',
+          status: data.status as 'completed' | 'failed',
+          outputFormat: data.outputFormat as 'pdf' | 'png' | 'jpeg',
+          fileUrl: data.fileUrl,
+        };
+      });
+
+      return {
+        conversions,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error al obtener conversiones paginadas: ${error.message}`);
       throw error;
     }
   }

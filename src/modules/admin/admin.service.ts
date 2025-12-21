@@ -15,9 +15,11 @@ import type {
   UpdateUserPlanDto,
   UpdateUserPlanResponseDto,
 } from './dto/admin-users.dto.js';
-import type { GetConversionsQueryDto, AdminConversionsResponseDto } from './dto/admin-conversions.dto.js';
+import type { GetConversionsQueryDto, AdminConversionsResponseDto, GetConversionsListQueryDto, AdminConversionsListResponseDto } from './dto/admin-conversions.dto.js';
 import type { GetErrorsQueryDto, AdminErrorsResponseDto } from './dto/admin-errors.dto.js';
 import type { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
+import type { GetPlanChangesQueryDto, AdminPlanChangesResponseDto } from './dto/admin-plan-changes.dto.js';
+import type { GetConsumptionProjectionQueryDto, AdminConsumptionProjectionResponseDto } from './dto/admin-consumption-projection.dto.js';
 
 @Injectable()
 export class AdminService {
@@ -318,6 +320,47 @@ export class AdminService {
     }
   }
 
+  async getConversionsList(query: GetConversionsListQueryDto): Promise<AdminConversionsListResponseDto> {
+    this.logger.log('Fetching conversions list');
+
+    try {
+      const result = await this.firestoreService.getConversionsPaginated({
+        page: query.page,
+        limit: query.limit,
+        userId: query.userId,
+        startDate: query.startDate ? new Date(query.startDate) : undefined,
+        endDate: query.endDate ? new Date(query.endDate) : undefined,
+        status: query.status,
+      });
+
+      // Transform conversions
+      const conversions = result.conversions.map((conversion) => ({
+        id: conversion.id,
+        userId: conversion.userId,
+        userEmail: conversion.userEmail,
+        createdAt: conversion.createdAt instanceof Date
+          ? conversion.createdAt.toISOString()
+          : new Date(conversion.createdAt).toISOString(),
+        labelCount: conversion.labelCount,
+        labelSize: conversion.labelSize,
+        status: conversion.status,
+        outputFormat: conversion.outputFormat,
+        fileUrl: conversion.fileUrl,
+      }));
+
+      return {
+        success: true,
+        data: {
+          conversions,
+          pagination: result.pagination,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching conversions list: ${error.message}`);
+      throw error;
+    }
+  }
+
   async getErrors(query: GetErrorsQueryDto): Promise<AdminErrorsResponseDto> {
     this.logger.log('Fetching errors log');
 
@@ -368,13 +411,15 @@ export class AdminService {
     this.logger.log('Fetching plan usage');
 
     try {
-      const [usersNearLimit, planDistribution, upgradeOpportunities] = await Promise.all([
+      const [usersNearLimit, usersNearLabelLimit, labelUsageDistribution, planDistribution, upgradeOpportunities] = await Promise.all([
         this.firestoreService.getUsersNearLimit(80),
+        this.firestoreService.getUsersNearLabelLimit(80),
+        this.firestoreService.getLabelUsageDistribution(),
         this.firestoreService.getPlanDistribution(),
         this.firestoreService.getUpgradeOpportunities(),
       ]);
 
-      // Transform users near limit
+      // Transform users near PDF limit
       const formattedUsersNearLimit = usersNearLimit.map((user) => ({
         id: user.id,
         email: user.email,
@@ -385,11 +430,24 @@ export class AdminService {
         periodEnd: user.periodEnd,
       }));
 
+      // Transform users near label limit
+      const formattedUsersNearLabelLimit = usersNearLabelLimit.map((user) => ({
+        id: user.id,
+        email: user.email,
+        plan: user.plan,
+        labelCount: user.labelCount,
+        labelLimit: user.labelLimit,
+        percentUsed: user.percentUsed,
+        periodEnd: user.periodEnd,
+      }));
+
       return {
         success: true,
         data: {
           distribution: planDistribution.distribution as any,
           usersNearLimit: formattedUsersNearLimit,
+          usersNearLabelLimit: formattedUsersNearLabelLimit,
+          labelUsageDistribution,
           usersExceedingFrequently: [], // Would need additional tracking
           upgradeOpportunities,
           conversionRates: planDistribution.conversionRates,
@@ -397,6 +455,106 @@ export class AdminService {
       };
     } catch (error) {
       this.logger.error(`Error fetching plan usage: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getPlanChanges(query: GetPlanChangesQueryDto): Promise<AdminPlanChangesResponseDto> {
+    this.logger.log('Fetching plan changes history');
+
+    try {
+      const result = await this.firestoreService.getPlanChanges({
+        page: query.page,
+        limit: query.limit,
+        userId: query.userId,
+        startDate: query.startDate ? new Date(query.startDate) : undefined,
+        endDate: query.endDate ? new Date(query.endDate) : undefined,
+      });
+
+      // Transform changes
+      const changes = result.changes.map((change) => ({
+        userId: change.userId,
+        userEmail: change.userEmail,
+        previousPlan: change.previousPlan,
+        newPlan: change.newPlan,
+        changedAt: change.changedAt instanceof Date
+          ? change.changedAt.toISOString()
+          : new Date(change.changedAt).toISOString(),
+        reason: change.reason,
+        changedBy: change.changedBy,
+      }));
+
+      return {
+        success: true,
+        data: {
+          changes,
+          pagination: result.pagination,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching plan changes: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getConsumptionProjection(query: GetConsumptionProjectionQueryDto): Promise<AdminConsumptionProjectionResponseDto> {
+    this.logger.log('Fetching consumption projection');
+
+    try {
+      const allProjections = await this.firestoreService.getConsumptionProjection();
+
+      // Apply filters
+      let filteredProjections = allProjections;
+
+      if (query.plan) {
+        filteredProjections = filteredProjections.filter((p) => p.plan === query.plan);
+      }
+
+      if (query.status) {
+        filteredProjections = filteredProjections.filter((p) => p.status === query.status);
+      }
+
+      // Calculate summary from ALL projections (before status filter for accurate totals)
+      const projectionsForSummary = query.plan
+        ? allProjections.filter((p) => p.plan === query.plan)
+        : allProjections;
+
+      const summary = {
+        critical: projectionsForSummary.filter((p) => p.status === 'critical').length,
+        risk: projectionsForSummary.filter((p) => p.status === 'risk').length,
+        normal: projectionsForSummary.filter((p) => p.status === 'normal').length,
+        total: projectionsForSummary.length,
+      };
+
+      // Transform users
+      const users = filteredProjections.map((p) => ({
+        id: p.id,
+        email: p.email,
+        name: p.name,
+        plan: p.plan,
+        billingPeriodStart: p.billingPeriodStart instanceof Date
+          ? p.billingPeriodStart.toISOString()
+          : new Date(p.billingPeriodStart).toISOString(),
+        billingPeriodEnd: p.billingPeriodEnd instanceof Date
+          ? p.billingPeriodEnd.toISOString()
+          : new Date(p.billingPeriodEnd).toISOString(),
+        planLimit: p.planLimit,
+        pdfsUsed: p.pdfsUsed,
+        daysElapsed: p.daysElapsed,
+        dailyRate: p.dailyRate,
+        projectedDaysToExhaust: p.projectedDaysToExhaust,
+        status: p.status,
+      }));
+
+      return {
+        success: true,
+        data: {
+          users,
+          summary,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching consumption projection: ${error.message}`);
       throw error;
     }
   }
