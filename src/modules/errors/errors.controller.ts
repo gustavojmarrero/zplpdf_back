@@ -14,7 +14,7 @@ import {
   ApiResponse,
   ApiHeader,
 } from '@nestjs/swagger';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
