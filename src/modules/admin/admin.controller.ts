@@ -30,7 +30,14 @@ import {
   UpdateUserPlanResponseDto,
 } from './dto/admin-users.dto.js';
 import { GetConversionsQueryDto, AdminConversionsResponseDto, GetConversionsListQueryDto, AdminConversionsListResponseDto } from './dto/admin-conversions.dto.js';
-import { GetErrorsQueryDto, AdminErrorsResponseDto } from './dto/admin-errors.dto.js';
+import {
+  GetErrorsQueryDto,
+  AdminErrorsResponseDto,
+  AdminErrorDetailResponseDto,
+  UpdateErrorDto,
+  UpdateErrorResponseDto,
+  AdminErrorStatsResponseDto,
+} from './dto/admin-errors.dto.js';
 import { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
 import { GetPlanChangesQueryDto, AdminPlanChangesResponseDto } from './dto/admin-plan-changes.dto.js';
 import { GetConsumptionProjectionQueryDto, AdminConsumptionProjectionResponseDto } from './dto/admin-consumption-projection.dto.js';
@@ -149,6 +156,77 @@ export class AdminController {
   ): Promise<AdminErrorsResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting error logs`);
     return this.adminService.getErrors(query);
+  }
+
+  @Get('errors/stats')
+  @ApiOperation({
+    summary: 'Get error statistics',
+    description: 'Returns aggregated error statistics including counts by status, severity, type, source, and trend data.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Error statistics retrieved successfully',
+    type: AdminErrorStatsResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getErrorStats(@AdminUser() admin: AdminUserData): Promise<AdminErrorStatsResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting error stats`);
+    return this.adminService.getErrorStats();
+  }
+
+  @Get('errors/:id')
+  @ApiOperation({
+    summary: 'Get error detail by ID',
+    description: 'Returns detailed information about a specific error by document ID or errorId (ERR-YYYYMMDD-XXXXX).',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Error document ID or errorId (ERR-YYYYMMDD-XXXXX)',
+    example: 'ERR-20251222-00042',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Error detail retrieved successfully',
+    type: AdminErrorDetailResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({ status: 404, description: 'Error not found' })
+  async getErrorDetail(
+    @Param('id') id: string,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminErrorDetailResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting error detail: ${id}`);
+    return this.adminService.getErrorDetail(id);
+  }
+
+  @Patch('errors/:id')
+  @ApiOperation({
+    summary: 'Update error status/notes',
+    description: 'Update the status and/or notes of an error. When status changes to "resolved", resolvedAt is set automatically.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Error document ID or errorId (ERR-YYYYMMDD-XXXXX)',
+    example: 'ERR-20251222-00042',
+  })
+  @ApiBody({ type: UpdateErrorDto })
+  @ApiResponse({
+    status: 200,
+    description: 'Error updated successfully',
+    type: UpdateErrorResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({ status: 404, description: 'Error not found' })
+  async updateError(
+    @Param('id') id: string,
+    @Body() dto: UpdateErrorDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<UpdateErrorResponseDto> {
+    this.logger.log(`Admin ${admin.email} updating error: ${id}`);
+    return this.adminService.updateError(id, dto, admin);
   }
 
   @Get('plan-usage')

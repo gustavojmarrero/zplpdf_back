@@ -7,6 +7,11 @@ export interface ResetUsageResult {
   executedAt: Date;
 }
 
+export interface CleanupErrorsResult {
+  deletedCount: number;
+  executedAt: Date;
+}
+
 @Injectable()
 export class CronService {
   private readonly logger = new Logger(CronService.name);
@@ -58,6 +63,31 @@ export class CronService {
       };
     } catch (error) {
       this.logger.error(`Error in usage reset cron job: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete errors older than 90 days
+   */
+  async cleanupOldErrors(): Promise<CleanupErrorsResult> {
+    this.logger.log('Starting error cleanup cron job...');
+
+    try {
+      const retentionDays = 90;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+      const deletedCount = await this.firestoreService.deleteOldErrors(cutoffDate);
+
+      this.logger.log(`Error cleanup completed. Deleted ${deletedCount} error(s) older than ${retentionDays} days.`);
+
+      return {
+        deletedCount,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Error in cleanup cron job: ${error.message}`);
       throw error;
     }
   }

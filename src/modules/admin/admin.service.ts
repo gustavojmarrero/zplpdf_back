@@ -16,7 +16,14 @@ import type {
   UpdateUserPlanResponseDto,
 } from './dto/admin-users.dto.js';
 import type { GetConversionsQueryDto, AdminConversionsResponseDto, GetConversionsListQueryDto, AdminConversionsListResponseDto } from './dto/admin-conversions.dto.js';
-import type { GetErrorsQueryDto, AdminErrorsResponseDto } from './dto/admin-errors.dto.js';
+import type {
+  GetErrorsQueryDto,
+  AdminErrorsResponseDto,
+  AdminErrorDetailResponseDto,
+  UpdateErrorDto,
+  UpdateErrorResponseDto,
+  AdminErrorStatsResponseDto,
+} from './dto/admin-errors.dto.js';
 import type { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
 import type { GetPlanChangesQueryDto, AdminPlanChangesResponseDto } from './dto/admin-plan-changes.dto.js';
 import type { GetConsumptionProjectionQueryDto, AdminConsumptionProjectionResponseDto } from './dto/admin-consumption-projection.dto.js';
@@ -373,19 +380,31 @@ export class AdminService {
         startDate: query.startDate ? new Date(query.startDate) : undefined,
         endDate: query.endDate ? new Date(query.endDate) : undefined,
         userId: query.userId,
+        status: query.status,
+        source: query.source,
+        errorId: query.errorId,
       });
 
-      // Transform errors
+      // Transform errors with new fields
       const errors = result.errors.map((error) => ({
         id: error.id,
+        errorId: error.errorId,
         type: error.type,
         code: error.code,
         message: error.message,
         userId: error.userId,
         userEmail: error.userEmail,
         jobId: error.jobId,
-        timestamp: error.createdAt,
+        createdAt: error.createdAt,
+        updatedAt: error.updatedAt,
         severity: error.severity,
+        status: error.status,
+        source: error.source,
+        notes: error.notes,
+        resolvedAt: error.resolvedAt,
+        url: error.url,
+        stackTrace: error.stackTrace,
+        userAgent: error.userAgent,
         context: error.context,
       }));
 
@@ -395,14 +414,125 @@ export class AdminService {
           errors,
           summary: {
             total: result.summary.total,
-            bySeverity: result.summary.bySeverity as any,
+            bySeverity: result.summary.bySeverity,
             byType: result.summary.byType,
+            byStatus: result.summary.byStatus,
+            bySource: result.summary.bySource,
           },
           pagination: result.pagination,
         },
       };
     } catch (error) {
       this.logger.error(`Error fetching errors: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getErrorStats(): Promise<AdminErrorStatsResponseDto> {
+    this.logger.log('Fetching error statistics');
+
+    try {
+      const stats = await this.firestoreService.getDetailedErrorStats(30);
+
+      return {
+        success: true,
+        data: stats,
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching error stats: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getErrorDetail(id: string): Promise<AdminErrorDetailResponseDto> {
+    this.logger.log(`Fetching error detail: ${id}`);
+
+    try {
+      const error = await this.firestoreService.getErrorById(id);
+
+      if (!error) {
+        throw new NotFoundException(`Error not found: ${id}`);
+      }
+
+      return {
+        success: true,
+        data: {
+          id: error.id,
+          errorId: error.errorId,
+          type: error.type,
+          code: error.code,
+          message: error.message,
+          userId: error.userId,
+          userEmail: error.userEmail,
+          jobId: error.jobId,
+          createdAt: error.createdAt,
+          updatedAt: error.updatedAt,
+          severity: error.severity,
+          status: error.status,
+          source: error.source,
+          notes: error.notes,
+          resolvedAt: error.resolvedAt,
+          url: error.url,
+          stackTrace: error.stackTrace,
+          userAgent: error.userAgent,
+          context: error.context,
+        },
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      this.logger.error(`Error fetching error detail: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async updateError(
+    id: string,
+    dto: UpdateErrorDto,
+    admin: AdminUserData,
+  ): Promise<UpdateErrorResponseDto> {
+    this.logger.log(`Updating error: ${id}`);
+
+    try {
+      const updatedError = await this.firestoreService.updateErrorLog(id, {
+        status: dto.status,
+        notes: dto.notes,
+      });
+
+      if (!updatedError) {
+        throw new NotFoundException(`Error not found: ${id}`);
+      }
+
+      // Log admin action
+      await this.firestoreService.saveAdminAuditLog({
+        adminEmail: admin.email,
+        adminUid: admin.uid,
+        action: 'update_error',
+        endpoint: `/admin/errors/${id}`,
+        requestParams: {
+          errorId: id,
+          status: dto.status,
+          notes: dto.notes ? '[UPDATED]' : undefined,
+        },
+      });
+
+      return {
+        success: true,
+        data: {
+          id: updatedError.id,
+          errorId: updatedError.errorId,
+          status: updatedError.status,
+          notes: updatedError.notes,
+          resolvedAt: updatedError.resolvedAt,
+          updatedAt: updatedError.updatedAt,
+        },
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      this.logger.error(`Error updating error: ${error.message}`);
       throw error;
     }
   }

@@ -1,6 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsNumber, Min, Max, IsDateString, IsEnum } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsNumber,
+  Min,
+  Max,
+  IsDateString,
+  IsEnum,
+  MaxLength,
+} from 'class-validator';
 import { Type } from 'class-transformer';
+
+// Types
+export type ErrorStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
+export type ErrorSource = 'frontend' | 'backend' | 'system';
 
 export class GetErrorsQueryDto {
   @ApiPropertyOptional({ default: 1 })
@@ -42,6 +55,31 @@ export class GetErrorsQueryDto {
   @IsOptional()
   @IsString()
   userId?: string;
+
+  // New filters
+  @ApiPropertyOptional({
+    enum: ['open', 'investigating', 'resolved', 'dismissed'],
+    description: 'Filter by error status',
+  })
+  @IsOptional()
+  @IsEnum(['open', 'investigating', 'resolved', 'dismissed'])
+  status?: ErrorStatus;
+
+  @ApiPropertyOptional({
+    enum: ['frontend', 'backend', 'system'],
+    description: 'Filter by error source',
+  })
+  @IsOptional()
+  @IsEnum(['frontend', 'backend', 'system'])
+  source?: ErrorSource;
+
+  @ApiPropertyOptional({
+    description: 'Search by error ID (ERR-YYYYMMDD-XXXXX)',
+    example: 'ERR-20251222-00042',
+  })
+  @IsOptional()
+  @IsString()
+  errorId?: string;
 }
 
 class ErrorContextDto {
@@ -74,8 +112,11 @@ class ErrorContextDto {
 }
 
 class ErrorItemDto {
-  @ApiProperty()
+  @ApiProperty({ description: 'Firestore document ID' })
   id: string;
+
+  @ApiProperty({ description: 'Unique error ID (ERR-YYYYMMDD-XXXXX)', example: 'ERR-20251222-00042' })
+  errorId: string;
 
   @ApiProperty()
   type: string;
@@ -96,10 +137,34 @@ class ErrorItemDto {
   jobId?: string;
 
   @ApiProperty()
-  timestamp: Date;
+  createdAt: Date;
+
+  @ApiProperty({ required: false })
+  updatedAt?: Date;
 
   @ApiProperty({ enum: ['error', 'warning', 'critical'] })
   severity: string;
+
+  @ApiProperty({ enum: ['open', 'investigating', 'resolved', 'dismissed'], default: 'open' })
+  status: ErrorStatus;
+
+  @ApiProperty({ enum: ['frontend', 'backend', 'system'], default: 'backend' })
+  source: ErrorSource;
+
+  @ApiProperty({ required: false, description: 'Admin notes' })
+  notes?: string;
+
+  @ApiProperty({ required: false, description: 'When error was resolved' })
+  resolvedAt?: Date;
+
+  @ApiProperty({ required: false, description: 'URL where error occurred' })
+  url?: string;
+
+  @ApiProperty({ required: false, description: 'Stack trace' })
+  stackTrace?: string;
+
+  @ApiProperty({ required: false, description: 'User agent' })
+  userAgent?: string;
 
   @ApiProperty({ type: ErrorContextDto, required: false })
   context?: ErrorContextDto;
@@ -110,14 +175,16 @@ class ErrorsSummaryDto {
   total: number;
 
   @ApiProperty()
-  bySeverity: {
-    error: number;
-    warning: number;
-    critical: number;
-  };
+  bySeverity: Record<string, number>;
 
   @ApiProperty()
   byType: Record<string, number>;
+
+  @ApiProperty()
+  byStatus: Record<string, number>;
+
+  @ApiProperty()
+  bySource: Record<string, number>;
 }
 
 class PaginationDto {
@@ -151,4 +218,107 @@ export class AdminErrorsResponseDto {
 
   @ApiProperty({ type: ErrorsDataDto })
   data: ErrorsDataDto;
+}
+
+// ============== Error Detail ==============
+
+export class AdminErrorDetailResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty({ type: ErrorItemDto })
+  data: ErrorItemDto;
+}
+
+// ============== Update Error ==============
+
+export class UpdateErrorDto {
+  @ApiPropertyOptional({
+    enum: ['open', 'investigating', 'resolved', 'dismissed'],
+    description: 'New status for the error',
+  })
+  @IsOptional()
+  @IsEnum(['open', 'investigating', 'resolved', 'dismissed'])
+  status?: ErrorStatus;
+
+  @ApiPropertyOptional({
+    description: 'Admin notes about this error',
+    maxLength: 2000,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+}
+
+export class UpdateErrorResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty({
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      errorId: { type: 'string' },
+      status: { type: 'string' },
+      notes: { type: 'string' },
+      resolvedAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' },
+    },
+  })
+  data: {
+    id: string;
+    errorId: string;
+    status: ErrorStatus;
+    notes?: string;
+    resolvedAt?: Date;
+    updatedAt: Date;
+  };
+}
+
+// ============== Error Stats ==============
+
+class TrendItemDto {
+  @ApiProperty()
+  date: string;
+
+  @ApiProperty()
+  count: number;
+}
+
+class ErrorStatsDataDto {
+  @ApiProperty()
+  total: number;
+
+  @ApiProperty()
+  byStatus: Record<string, number>;
+
+  @ApiProperty()
+  bySeverity: Record<string, number>;
+
+  @ApiProperty()
+  byType: Record<string, number>;
+
+  @ApiProperty()
+  bySource: Record<string, number>;
+
+  @ApiProperty()
+  last24Hours: number;
+
+  @ApiProperty()
+  last7Days: number;
+
+  @ApiProperty()
+  last30Days: number;
+
+  @ApiProperty({ type: [TrendItemDto] })
+  trend: TrendItemDto[];
+}
+
+export class AdminErrorStatsResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty({ type: ErrorStatsDataDto })
+  data: ErrorStatsDataDto;
 }

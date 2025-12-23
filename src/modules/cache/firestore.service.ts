@@ -7,6 +7,7 @@ import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import { getStartOfDayInTimezone, getDateStringInTimezone } from '../../utils/timezone.util.js';
+import { ErrorIdGenerator } from '../../common/utils/error-id-generator.js';
 
 // ============== Daily Stats (Aggregated Metrics) ==============
 
@@ -34,6 +35,9 @@ export interface GlobalTotals {
 
 // ============== Admin Interfaces ==============
 
+export type ErrorStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
+export type ErrorSource = 'frontend' | 'backend' | 'system';
+
 export interface ErrorLogData {
   type: string;
   code: string;
@@ -43,11 +47,24 @@ export interface ErrorLogData {
   jobId?: string;
   severity: 'error' | 'warning' | 'critical';
   context?: Record<string, any>;
+  // New fields for error management
+  errorId?: string; // ERR-YYYYMMDD-XXXXX (auto-generated)
+  status?: ErrorStatus;
+  notes?: string;
+  resolvedAt?: Date;
+  source?: ErrorSource;
+  userAgent?: string;
+  url?: string;
+  stackTrace?: string;
 }
 
 export interface ErrorLog extends ErrorLogData {
   id: string;
+  errorId: string;
+  status: ErrorStatus;
+  source: ErrorSource;
   createdAt: Date;
+  updatedAt?: Date;
 }
 
 export interface AdminAuditLogData {
@@ -73,6 +90,10 @@ export interface ErrorFilters {
   startDate?: Date;
   endDate?: Date;
   userId?: string;
+  // New filters
+  status?: ErrorStatus;
+  source?: ErrorSource;
+  errorId?: string;
 }
 
 export interface PaginatedErrors {
@@ -81,6 +102,8 @@ export interface PaginatedErrors {
     total: number;
     bySeverity: Record<string, number>;
     byType: Record<string, number>;
+    byStatus: Record<string, number>;
+    bySource: Record<string, number>;
   };
   pagination: {
     page: number;
@@ -869,24 +892,55 @@ export class FirestoreService {
 
   // ============== Admin: Error Logs ==============
 
-  async saveErrorLog(errorData: ErrorLogData): Promise<void> {
+  /**
+   * Saves an error log with auto-generated errorId
+   * @param errorData Error data to save
+   * @returns The generated errorId (ERR-YYYYMMDD-XXXXX) or null if failed
+   */
+  async saveErrorLog(errorData: ErrorLogData): Promise<string | null> {
     try {
+      const errorId = errorData.errorId || ErrorIdGenerator.generate();
+      const now = new Date();
+
       await this.firestore.collection(this.errorLogsCollection).add({
         ...errorData,
-        createdAt: new Date(),
+        errorId,
+        status: errorData.status || 'open',
+        source: errorData.source || 'backend',
+        createdAt: now,
+        updatedAt: now,
       });
-      this.logger.debug(`Error log guardado: ${errorData.code}`);
+
+      this.logger.debug(`Error log guardado: ${errorData.code} (${errorId})`);
+      return errorId;
     } catch (error) {
       this.logger.error(`Error al guardar error log: ${error.message}`);
       // No lanzar error para no interrumpir el flujo principal
+      return null;
     }
   }
 
   async getErrorLogs(filters: ErrorFilters): Promise<PaginatedErrors> {
     try {
-      const { page = 1, limit = 100, severity, type, startDate, endDate, userId } = filters;
+      const {
+        page = 1,
+        limit = 100,
+        severity,
+        type,
+        startDate,
+        endDate,
+        userId,
+        status,
+        source,
+        errorId,
+      } = filters;
 
       let query: FirebaseFirestore.Query = this.firestore.collection(this.errorLogsCollection);
+
+      // Search by errorId first (exact match)
+      if (errorId) {
+        query = query.where('errorId', '==', errorId);
+      }
 
       if (severity) {
         query = query.where('severity', '==', severity);
@@ -896,6 +950,12 @@ export class FirestoreService {
       }
       if (userId) {
         query = query.where('userId', '==', userId);
+      }
+      if (status) {
+        query = query.where('status', '==', status);
+      }
+      if (source) {
+        query = query.where('source', '==', source);
       }
       if (startDate) {
         query = query.where('createdAt', '>=', startDate);
@@ -919,7 +979,12 @@ export class FirestoreService {
         return {
           id: doc.id,
           ...data,
+          errorId: data.errorId || doc.id, // Fallback for old errors without errorId
+          status: data.status || 'open',
+          source: data.source || 'backend',
           createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+          resolvedAt: data.resolvedAt?.toDate?.() || data.resolvedAt,
         } as ErrorLog;
       });
 
@@ -927,11 +992,17 @@ export class FirestoreService {
       const summarySnapshot = await this.firestore.collection(this.errorLogsCollection).get();
       const bySeverity: Record<string, number> = {};
       const byType: Record<string, number> = {};
+      const byStatus: Record<string, number> = {};
+      const bySource: Record<string, number> = {};
 
       summarySnapshot.docs.forEach((doc) => {
         const data = doc.data();
         bySeverity[data.severity] = (bySeverity[data.severity] || 0) + 1;
         byType[data.type] = (byType[data.type] || 0) + 1;
+        const docStatus = data.status || 'open';
+        const docSource = data.source || 'backend';
+        byStatus[docStatus] = (byStatus[docStatus] || 0) + 1;
+        bySource[docSource] = (bySource[docSource] || 0) + 1;
       });
 
       return {
@@ -940,6 +1011,8 @@ export class FirestoreService {
           total,
           bySeverity,
           byType,
+          byStatus,
+          bySource,
         },
         pagination: {
           page,
@@ -999,6 +1072,225 @@ export class FirestoreService {
       return { recentErrors, byType, criticalCount };
     } catch (error) {
       this.logger.error(`Error al obtener stats de errores: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get error by document ID or errorId (ERR-YYYYMMDD-XXXXX)
+   */
+  async getErrorById(id: string): Promise<ErrorLog | null> {
+    try {
+      // If starts with ERR-, search by errorId field
+      if (id.startsWith('ERR-')) {
+        const snapshot = await this.firestore
+          .collection(this.errorLogsCollection)
+          .where('errorId', '==', id)
+          .limit(1)
+          .get();
+
+        if (snapshot.empty) return null;
+
+        const doc = snapshot.docs[0];
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          errorId: data.errorId || doc.id,
+          status: data.status || 'open',
+          source: data.source || 'backend',
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+          resolvedAt: data.resolvedAt?.toDate?.() || data.resolvedAt,
+        } as ErrorLog;
+      }
+
+      // Otherwise, search by document ID
+      const doc = await this.firestore.collection(this.errorLogsCollection).doc(id).get();
+
+      if (!doc.exists) return null;
+
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        errorId: data.errorId || doc.id,
+        status: data.status || 'open',
+        source: data.source || 'backend',
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        resolvedAt: data.resolvedAt?.toDate?.() || data.resolvedAt,
+      } as ErrorLog;
+    } catch (error) {
+      this.logger.error(`Error al obtener error por ID: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Update error status/notes
+   */
+  async updateErrorLog(
+    id: string,
+    data: {
+      status?: ErrorStatus;
+      notes?: string;
+    },
+  ): Promise<ErrorLog | null> {
+    try {
+      // First find the error (by doc ID or errorId)
+      const error = await this.getErrorById(id);
+      if (!error) return null;
+
+      const updateData: Record<string, any> = {
+        updatedAt: new Date(),
+      };
+
+      if (data.status !== undefined) {
+        updateData.status = data.status;
+        // Set resolvedAt when status changes to resolved
+        if (data.status === 'resolved') {
+          updateData.resolvedAt = new Date();
+        }
+      }
+
+      if (data.notes !== undefined) {
+        updateData.notes = data.notes;
+      }
+
+      await this.firestore.collection(this.errorLogsCollection).doc(error.id).update(updateData);
+
+      // Return updated error
+      return await this.getErrorById(error.id);
+    } catch (error) {
+      this.logger.error(`Error al actualizar error log: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get detailed error statistics for admin dashboard
+   */
+  async getDetailedErrorStats(days: number = 30): Promise<{
+    total: number;
+    byStatus: Record<string, number>;
+    bySeverity: Record<string, number>;
+    byType: Record<string, number>;
+    bySource: Record<string, number>;
+    last24Hours: number;
+    last7Days: number;
+    last30Days: number;
+    trend: Array<{ date: string; count: number }>;
+  }> {
+    try {
+      const now = new Date();
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - days);
+
+      const snapshot = await this.firestore
+        .collection(this.errorLogsCollection)
+        .where('createdAt', '>=', cutoffDate)
+        .get();
+
+      const byStatus: Record<string, number> = {};
+      const bySeverity: Record<string, number> = {};
+      const byType: Record<string, number> = {};
+      const bySource: Record<string, number> = {};
+      const trendMap: Record<string, number> = {};
+
+      let last24Hours = 0;
+      let last7Days = 0;
+      let last30Days = 0;
+
+      const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      snapshot.docs.forEach((doc) => {
+        const data = doc.data();
+        const createdAt = data.createdAt?.toDate?.() || data.createdAt;
+
+        // Count by status
+        const status = data.status || 'open';
+        byStatus[status] = (byStatus[status] || 0) + 1;
+
+        // Count by severity
+        bySeverity[data.severity] = (bySeverity[data.severity] || 0) + 1;
+
+        // Count by type
+        byType[data.type] = (byType[data.type] || 0) + 1;
+
+        // Count by source
+        const source = data.source || 'backend';
+        bySource[source] = (bySource[source] || 0) + 1;
+
+        // Time-based counts
+        if (createdAt >= oneDayAgo) last24Hours++;
+        if (createdAt >= sevenDaysAgo) last7Days++;
+        last30Days++;
+
+        // Trend by date
+        const dateKey = createdAt.toISOString().slice(0, 10);
+        trendMap[dateKey] = (trendMap[dateKey] || 0) + 1;
+      });
+
+      // Convert trend map to sorted array
+      const trend = Object.entries(trendMap)
+        .map(([date, count]) => ({ date, count }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      return {
+        total: snapshot.size,
+        byStatus,
+        bySeverity,
+        byType,
+        bySource,
+        last24Hours,
+        last7Days,
+        last30Days,
+        trend,
+      };
+    } catch (error) {
+      this.logger.error(`Error al obtener stats detalladas de errores: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete errors older than specified date (for cleanup cron)
+   * @returns Number of deleted errors
+   */
+  async deleteOldErrors(beforeDate: Date): Promise<number> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.errorLogsCollection)
+        .where('createdAt', '<', beforeDate)
+        .get();
+
+      if (snapshot.empty) {
+        this.logger.log('No hay errores antiguos para eliminar');
+        return 0;
+      }
+
+      // Delete in batches of 500 (Firestore limit)
+      const batchSize = 500;
+      let deletedCount = 0;
+
+      for (let i = 0; i < snapshot.docs.length; i += batchSize) {
+        const batch = this.firestore.batch();
+        const chunk = snapshot.docs.slice(i, i + batchSize);
+
+        chunk.forEach((doc) => {
+          batch.delete(doc.ref);
+        });
+
+        await batch.commit();
+        deletedCount += chunk.length;
+      }
+
+      this.logger.log(`Eliminados ${deletedCount} errores anteriores a ${beforeDate.toISOString()}`);
+      return deletedCount;
+    } catch (error) {
+      this.logger.error(`Error al eliminar errores antiguos: ${error.message}`);
       throw error;
     }
   }
