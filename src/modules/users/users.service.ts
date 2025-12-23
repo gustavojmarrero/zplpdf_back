@@ -10,6 +10,7 @@ import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { BATCH_LIMITS } from '../zpl/interfaces/batch.interface.js';
+import { isBlockedEmailDomain } from '../../common/constants/blocked-email-domains.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -194,6 +195,24 @@ export class UsersService {
     if (user.role === 'admin' && !this.isSimulationActive(user)) {
       const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
       return { allowed: true, periodInfo };
+    }
+
+    // Check email verification (defense in depth - frontend should handle this)
+    if (!user.emailVerified) {
+      return {
+        allowed: false,
+        error: 'Please verify your email before using the service',
+        errorCode: 'EMAIL_NOT_VERIFIED',
+      };
+    }
+
+    // Block disposable/temporary email domains
+    if (isBlockedEmailDomain(user.email)) {
+      return {
+        allowed: false,
+        error: 'Temporary/disposable email addresses are not allowed',
+        errorCode: 'BLOCKED_EMAIL_DOMAIN',
+      };
     }
 
     const limits = this.getEffectivePlanLimits(user);
