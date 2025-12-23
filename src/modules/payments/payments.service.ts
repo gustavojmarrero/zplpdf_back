@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { CheckoutResponseDto, PortalResponseDto } from './dto/create-checkout.dto.js';
+import { GA4Service } from '../analytics/ga4.service.js';
 
 @Injectable()
 export class PaymentsService {
@@ -39,6 +40,7 @@ export class PaymentsService {
   constructor(
     private readonly configService: ConfigService,
     private readonly firestoreService: FirestoreService,
+    private readonly ga4Service: GA4Service,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     const nodeEnv = this.configService.get<string>('NODE_ENV');
@@ -190,6 +192,16 @@ export class PaymentsService {
     );
 
     this.logger.log(`User ${userId} upgraded to Pro plan`);
+
+    // Track purchase in GA4 (server-side)
+    await this.ga4Service.trackPurchase({
+      userId,
+      transactionId: session.id,
+      planId: 'plan_pro',
+      planName: 'Plan Pro',
+      price: session.amount_total ? session.amount_total / 100 : 0,
+      currency: session.currency?.toUpperCase() || 'USD',
+    });
   }
 
   async handleSubscriptionUpdated(subscription: Stripe.Subscription): Promise<void> {
