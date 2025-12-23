@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Query,
   Param,
@@ -41,6 +42,12 @@ import {
 import { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
 import { GetPlanChangesQueryDto, AdminPlanChangesResponseDto } from './dto/admin-plan-changes.dto.js';
 import { GetConsumptionProjectionQueryDto, AdminConsumptionProjectionResponseDto } from './dto/admin-consumption-projection.dto.js';
+import {
+  SimulatePlanDto,
+  SimulatePlanResponseDto,
+  SimulationStatusResponseDto,
+  StopSimulationResponseDto,
+} from './dto/admin-simulate-plan.dto.js';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -339,5 +346,64 @@ export class AdminController {
   ): Promise<UpdateUserPlanResponseDto> {
     this.logger.log(`Admin ${admin.email} updating plan for user ${userId}`);
     return this.adminService.updateUserPlan(userId, dto, admin);
+  }
+
+  // ==================== Simulación de Plan ====================
+
+  @Post('simulate-plan')
+  @ApiOperation({
+    summary: 'Simulate a plan',
+    description: 'Allows an admin to simulate a different plan for testing purposes. The simulation affects limits and usage calculations.',
+  })
+  @ApiBody({ type: SimulatePlanDto })
+  @ApiResponse({
+    status: 201,
+    description: 'Plan simulation started successfully',
+    type: SimulatePlanResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Invalid plan or not an admin' })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async simulatePlan(
+    @Body() dto: SimulatePlanDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<SimulatePlanResponseDto> {
+    this.logger.log(`Admin ${admin.email} starting plan simulation: ${dto.plan}`);
+    return this.adminService.simulatePlan(admin.uid, dto.plan, dto.durationHours, admin);
+  }
+
+  @Get('simulate-plan/status')
+  @ApiOperation({
+    summary: 'Get simulation status',
+    description: 'Returns the current simulation status for the authenticated admin.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Simulation status retrieved successfully',
+    type: SimulationStatusResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getSimulationStatus(@AdminUser() admin: AdminUserData): Promise<SimulationStatusResponseDto> {
+    this.logger.log(`Admin ${admin.email} checking simulation status`);
+    return this.adminService.getSimulationStatus(admin.uid);
+  }
+
+  @Post('simulate-plan/stop')
+  @ApiOperation({
+    summary: 'Stop plan simulation',
+    description: 'Stops the current plan simulation and reverts to the original plan.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Plan simulation stopped successfully',
+    type: StopSimulationResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - Not an admin' })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async stopSimulation(@AdminUser() admin: AdminUserData): Promise<StopSimulationResponseDto> {
+    this.logger.log(`Admin ${admin.email} stopping plan simulation`);
+    return this.adminService.stopSimulation(admin.uid, admin);
   }
 }

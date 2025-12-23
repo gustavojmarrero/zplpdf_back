@@ -1,4 +1,5 @@
 export type PlanType = 'free' | 'pro' | 'enterprise';
+export type UserRole = 'user' | 'admin';
 
 export interface PlanLimits {
   maxLabelsPerPdf: number;
@@ -12,9 +13,13 @@ export interface User {
   displayName?: string;
   emailVerified: boolean;
   plan: PlanType;
+  role: UserRole;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
   planLimits?: PlanLimits;
+  // Campos de simulación de plan (solo para admins)
+  simulatedPlan?: PlanType;
+  simulationExpiresAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

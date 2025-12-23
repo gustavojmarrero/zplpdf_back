@@ -886,4 +886,121 @@ export class AdminService {
     const planOrder: Record<string, number> = { free: 0, pro: 1, enterprise: 2 };
     return planOrder[newPlan] < planOrder[currentPlan];
   }
+
+  // ==================== Simulación de Plan (Admin) ====================
+
+  async simulatePlan(
+    adminUid: string,
+    plan: PlanType,
+    durationHours: number = 24,
+    adminUser: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${adminUser.email} simulating plan ${plan} for ${durationHours}h`);
+
+    // Verificar que el usuario admin existe
+    const user = await this.firestoreService.getUserById(adminUid);
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    if (user.role !== 'admin') {
+      throw new BadRequestException('Solo los administradores pueden simular planes');
+    }
+
+    // Calcular fecha de expiración
+    const simulationExpiresAt = new Date();
+    simulationExpiresAt.setHours(simulationExpiresAt.getHours() + durationHours);
+
+    // Actualizar usuario con simulación
+    await this.firestoreService.updateUser(adminUid, {
+      simulatedPlan: plan,
+      simulationExpiresAt,
+    });
+
+    // Log en audit
+    await this.firestoreService.saveAdminAuditLog({
+      adminEmail: adminUser.email,
+      adminUid: adminUser.uid,
+      action: 'simulate_plan',
+      endpoint: '/admin/simulate-plan',
+      requestParams: {
+        simulatedPlan: plan,
+        durationHours,
+        expiresAt: simulationExpiresAt.toISOString(),
+      },
+    });
+
+    return {
+      success: true,
+      data: {
+        simulatedPlan: plan,
+        simulationExpiresAt: simulationExpiresAt.toISOString(),
+        message: `Simulando plan ${plan} por ${durationHours} horas`,
+      },
+    };
+  }
+
+  async getSimulationStatus(adminUid: string) {
+    const user = await this.firestoreService.getUserById(adminUid);
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    const isSimulating =
+      user.role === 'admin' &&
+      !!user.simulatedPlan &&
+      !!user.simulationExpiresAt &&
+      new Date() < new Date(user.simulationExpiresAt);
+
+    return {
+      success: true,
+      data: {
+        isSimulating,
+        simulatedPlan: isSimulating ? user.simulatedPlan : undefined,
+        simulationExpiresAt: isSimulating && user.simulationExpiresAt
+          ? new Date(user.simulationExpiresAt).toISOString()
+          : undefined,
+        originalPlan: user.plan,
+        role: user.role || 'user',
+      },
+    };
+  }
+
+  async stopSimulation(adminUid: string, adminUser: AdminUserData) {
+    this.logger.log(`Admin ${adminUser.email} stopping plan simulation`);
+
+    const user = await this.firestoreService.getUserById(adminUid);
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    if (user.role !== 'admin') {
+      throw new BadRequestException('Solo los administradores pueden detener simulaciones');
+    }
+
+    // Limpiar campos de simulación
+    await this.firestoreService.updateUser(adminUid, {
+      simulatedPlan: null,
+      simulationExpiresAt: null,
+    });
+
+    // Log en audit
+    await this.firestoreService.saveAdminAuditLog({
+      adminEmail: adminUser.email,
+      adminUid: adminUser.uid,
+      action: 'stop_simulation',
+      endpoint: '/admin/simulate-plan/stop',
+      requestParams: {},
+    });
+
+    return {
+      success: true,
+      data: {
+        message: 'Simulación detenida',
+        originalPlan: user.plan,
+      },
+    };
+  }
 }

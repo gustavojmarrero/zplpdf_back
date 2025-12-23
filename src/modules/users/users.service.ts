@@ -64,6 +64,7 @@ export class UsersService {
       displayName: firebaseUser.name,
       emailVerified,
       plan: 'free',
+      role: 'user',
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -121,24 +122,37 @@ export class UsersService {
     // Calcular período basado en plan (Free: desde createdAt, Pro: desde Stripe)
     const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
     const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
-    const limits = this.getPlanLimits(user);
-    const batchLimits = BATCH_LIMITS[user.plan] || BATCH_LIMITS.free;
+
+    // Usar límites efectivos (considera simulación para admins)
+    const effectivePlan = this.getEffectivePlan(user);
+    const limits = this.getEffectivePlanLimits(user);
+    const batchLimits = BATCH_LIMITS[effectivePlan] || BATCH_LIMITS.free;
+
+    // Admin sin simulación = ilimitado
+    const isAdminUnlimited = user.role === 'admin' && !this.isSimulationActive(user);
 
     return {
-      plan: user.plan,
+      plan: effectivePlan,
       limits: {
-        maxLabelsPerPdf: limits.maxLabelsPerPdf,
-        maxPdfsPerMonth: limits.maxPdfsPerMonth,
-        canDownloadImages: limits.canDownloadImages,
-        batchAllowed: batchLimits.batchAllowed,
-        maxFilesPerBatch: batchLimits.maxFilesPerBatch,
-        maxFileSizeBytes: batchLimits.maxFileSizeBytes,
+        maxLabelsPerPdf: isAdminUnlimited ? 999999 : limits.maxLabelsPerPdf,
+        maxPdfsPerMonth: isAdminUnlimited ? 999999 : limits.maxPdfsPerMonth,
+        canDownloadImages: isAdminUnlimited ? true : limits.canDownloadImages,
+        batchAllowed: isAdminUnlimited ? true : batchLimits.batchAllowed,
+        maxFilesPerBatch: isAdminUnlimited ? 100 : batchLimits.maxFilesPerBatch,
+        maxFileSizeBytes: isAdminUnlimited ? 50 * 1024 * 1024 : batchLimits.maxFileSizeBytes,
       },
       currentUsage: {
         pdfCount: usage.pdfCount,
         labelCount: usage.labelCount,
       },
       periodEndsAt: usage.periodEnd,
+      // Campos adicionales para admins
+      ...(user.role === 'admin' && {
+        isAdmin: true,
+        isSimulating: this.isSimulationActive(user),
+        simulatedPlan: user.simulatedPlan,
+        simulationExpiresAt: user.simulationExpiresAt,
+      }),
     };
   }
 
@@ -176,7 +190,13 @@ export class UsersService {
       };
     }
 
-    const limits = this.getPlanLimits(user);
+    // Admins sin simulación activa tienen acceso ilimitado
+    if (user.role === 'admin' && !this.isSimulationActive(user)) {
+      const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+      return { allowed: true, periodInfo };
+    }
+
+    const limits = this.getEffectivePlanLimits(user);
 
     // Calcular período basado en plan (Free: desde createdAt, Pro: desde Stripe)
     const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
@@ -275,5 +295,36 @@ export class UsersService {
 
     // Usar límites por defecto del plan
     return DEFAULT_PLAN_LIMITS[user.plan] || DEFAULT_PLAN_LIMITS.free;
+  }
+
+  /**
+   * Verifica si un admin tiene una simulación de plan activa
+   */
+  private isSimulationActive(user: User): boolean {
+    if (user.role !== 'admin') return false;
+    if (!user.simulatedPlan || !user.simulationExpiresAt) return false;
+    return new Date() < new Date(user.simulationExpiresAt);
+  }
+
+  /**
+   * Obtiene los límites efectivos considerando simulación de plan
+   */
+  private getEffectivePlanLimits(user: User): PlanLimits {
+    // Si es admin con simulación activa, usar límites del plan simulado
+    if (this.isSimulationActive(user) && user.simulatedPlan) {
+      return DEFAULT_PLAN_LIMITS[user.simulatedPlan] || DEFAULT_PLAN_LIMITS.free;
+    }
+
+    return this.getPlanLimits(user);
+  }
+
+  /**
+   * Obtiene el plan efectivo (real o simulado)
+   */
+  getEffectivePlan(user: User): PlanType {
+    if (this.isSimulationActive(user) && user.simulatedPlan) {
+      return user.simulatedPlan;
+    }
+    return user.plan;
   }
 }

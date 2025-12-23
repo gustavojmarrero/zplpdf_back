@@ -51,6 +51,7 @@ export class FirebaseAuthGuard implements CanActivate {
           displayName: decodedToken.name || decodedToken.email?.split('@')[0] || 'Usuario',
           emailVerified: decodedToken.email_verified || false,
           plan: 'free',
+          role: 'user',
           createdAt: new Date(),
           updatedAt: new Date(),
         };
