@@ -17,20 +17,8 @@ export class FieldValidator implements IZplValidator {
     const issues: ValidationIssue[] = [];
     const messages = getMessages(options.language);
 
-    // Contar ^FD y ^FS
-    const fdMatches = block.match(/\^FD/g) || [];
-    const fsMatches = block.match(/\^FS/g) || [];
-
-    // Verificar balance
-    if (fdMatches.length !== fsMatches.length) {
-      issues.push({
-        code: 'ZPL_FIELD_001',
-        type: this.type,
-        severity: 'error',
-        message: messages.fdFsImbalance(fdMatches.length, fsMatches.length),
-        suggestion: messages.suggestCheckFdFs,
-      });
-    }
+    // NOTA: No validamos balance ^FD/^FS porque ^FS termina múltiples comandos
+    // (^FX, ^GFA, ^GB, etc.), no solo ^FD. Es válido tener más ^FS que ^FD.
 
     // Verificar ^FD vacios (^FD seguido inmediatamente de ^FS)
     const emptyFdPattern = /\^FD\s*\^FS/g;
