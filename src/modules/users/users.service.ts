@@ -11,6 +11,7 @@ import { VerificationStatusDto } from './dto/verification-status.dto.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { BATCH_LIMITS } from '../zpl/interfaces/batch.interface.js';
 import { isBlockedEmailDomain } from '../../common/constants/blocked-email-domains.js';
+import { GeoService } from '../admin/services/geo.service.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -28,9 +29,10 @@ export class UsersService {
     private readonly firestoreService: FirestoreService,
     private readonly firebaseAdminService: FirebaseAdminService,
     private readonly periodCalculatorService: PeriodCalculatorService,
+    private readonly geoService: GeoService,
   ) {}
 
-  async syncUser(firebaseUser: FirebaseUser): Promise<User> {
+  async syncUser(firebaseUser: FirebaseUser, clientIP?: string): Promise<User> {
     // Obtener estado fresco de emailVerified desde Firebase Auth
     let emailVerified = false;
     try {
@@ -58,6 +60,20 @@ export class UsersService {
       };
     }
 
+    // Detectar país por IP para nuevos usuarios
+    let country: string | undefined;
+    if (clientIP) {
+      try {
+        const detectedCountry = await this.geoService.detectCountryByIP(clientIP);
+        if (detectedCountry) {
+          country = detectedCountry;
+          this.logger.log(`Detected country ${country} for new user ${firebaseUser.uid}`);
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to detect country for ${firebaseUser.uid}: ${error.message}`);
+      }
+    }
+
     // Create new user with free plan
     const newUser: User = {
       id: firebaseUser.uid,
@@ -66,6 +82,9 @@ export class UsersService {
       emailVerified,
       plan: 'free',
       role: 'user',
+      country,
+      countrySource: country ? 'ip' : undefined,
+      countryDetectedAt: country ? new Date() : undefined,
       createdAt: new Date(),
       updatedAt: new Date(),
     };

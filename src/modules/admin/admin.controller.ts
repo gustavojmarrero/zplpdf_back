@@ -3,11 +3,14 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Query,
   Param,
   Body,
   UseGuards,
   Logger,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -48,6 +51,18 @@ import {
   SimulationStatusResponseDto,
   StopSimulationResponseDto,
 } from './dto/admin-simulate-plan.dto.js';
+import {
+  GetRevenueQueryDto,
+  GetTransactionsQueryDto,
+  CreateExpenseDto,
+  UpdateExpenseDto,
+  GetExpensesQueryDto,
+  SetGoalsDto,
+  GetGoalsQueryDto,
+  GetGeoRevenueQueryDto,
+  GetChurnQueryDto,
+  GetProfitQueryDto,
+} from './dto/admin-finance.dto.js';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -546,5 +561,323 @@ export class AdminController {
   async getLabelaryMetrics(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} requesting Labelary metrics`);
     return this.adminService.getLabelaryMetrics();
+  }
+
+  // ==================== Finance - Revenue ====================
+
+  @Get('revenue')
+  @ApiOperation({
+    summary: 'Get revenue metrics',
+    description: 'Returns revenue data for the specified period with MRR information.',
+  })
+  @ApiResponse({ status: 200, description: 'Revenue data retrieved successfully' })
+  async getRevenue(
+    @Query('period') period: string = 'month',
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting revenue metrics`);
+    return this.adminService.getRevenue(period);
+  }
+
+  @Get('revenue/breakdown')
+  @ApiOperation({
+    summary: 'Get revenue breakdown',
+    description: 'Returns revenue breakdown by currency and country for the specified period.',
+  })
+  @ApiResponse({ status: 200, description: 'Revenue breakdown retrieved successfully' })
+  async getRevenueBreakdown(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting revenue breakdown`);
+    return this.adminService.getRevenueBreakdown(new Date(startDate), new Date(endDate));
+  }
+
+  @Get('transactions')
+  @ApiOperation({
+    summary: 'Get transactions list',
+    description: 'Returns a paginated list of Stripe transactions with optional filtering.',
+  })
+  @ApiResponse({ status: 200, description: 'Transactions list retrieved successfully' })
+  async getTransactions(
+    @Query() query: GetTransactionsQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting transactions`);
+    return this.adminService.getTransactions({
+      page: query.page,
+      limit: query.limit,
+      userId: query.userId,
+      startDate: query.startDate ? new Date(query.startDate) : undefined,
+      endDate: query.endDate ? new Date(query.endDate) : undefined,
+      currency: query.currency,
+      type: query.type,
+    });
+  }
+
+  @Get('mrr-history')
+  @ApiOperation({
+    summary: 'Get MRR history',
+    description: 'Returns Monthly Recurring Revenue history for the specified number of months.',
+  })
+  @ApiResponse({ status: 200, description: 'MRR history retrieved successfully' })
+  async getMRRHistory(
+    @Query('months') months: string = '12',
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting MRR history`);
+    return this.adminService.getMRRHistory(parseInt(months, 10) || 12);
+  }
+
+  // ==================== Finance - Expenses ====================
+
+  @Get('expenses')
+  @ApiOperation({
+    summary: 'Get expenses list',
+    description: 'Returns a paginated list of expenses with optional filtering.',
+  })
+  @ApiResponse({ status: 200, description: 'Expenses list retrieved successfully' })
+  async getExpenses(
+    @Query() query: GetExpensesQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting expenses`);
+    return this.adminService.getExpenses({
+      page: query.page,
+      limit: query.limit,
+      startDate: query.startDate ? new Date(query.startDate) : undefined,
+      endDate: query.endDate ? new Date(query.endDate) : undefined,
+      category: query.category,
+      type: query.type,
+    });
+  }
+
+  @Post('expenses')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Create expense',
+    description: 'Creates a new expense. USD amounts are automatically converted to MXN using Banxico rates.',
+  })
+  @ApiBody({ type: CreateExpenseDto })
+  @ApiResponse({ status: 201, description: 'Expense created successfully' })
+  async createExpense(
+    @Body() dto: CreateExpenseDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} creating expense`);
+    return this.adminService.createExpense(
+      {
+        ...dto,
+        date: dto.date ? new Date(dto.date) : undefined,
+      },
+      admin.email,
+    );
+  }
+
+  @Patch('expenses/:id')
+  @ApiOperation({
+    summary: 'Update expense',
+    description: 'Updates an existing expense.',
+  })
+  @ApiParam({ name: 'id', description: 'Expense ID' })
+  @ApiBody({ type: UpdateExpenseDto })
+  @ApiResponse({ status: 200, description: 'Expense updated successfully' })
+  async updateExpense(
+    @Param('id') id: string,
+    @Body() dto: UpdateExpenseDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} updating expense ${id}`);
+    return this.adminService.updateExpense(id, dto);
+  }
+
+  @Delete('expenses/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Delete expense',
+    description: 'Deletes an expense.',
+  })
+  @ApiParam({ name: 'id', description: 'Expense ID' })
+  @ApiResponse({ status: 204, description: 'Expense deleted successfully' })
+  async deleteExpense(
+    @Param('id') id: string,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} deleting expense ${id}`);
+    return this.adminService.deleteExpense(id);
+  }
+
+  @Get('expenses/summary')
+  @ApiOperation({
+    summary: 'Get expense summary',
+    description: 'Returns expense summary by category and vendor for the specified period.',
+  })
+  @ApiResponse({ status: 200, description: 'Expense summary retrieved successfully' })
+  async getExpenseSummary(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting expense summary`);
+    return this.adminService.getExpenseSummary(new Date(startDate), new Date(endDate));
+  }
+
+  // ==================== Goals ====================
+
+  @Get('goals')
+  @ApiOperation({
+    summary: 'Get monthly goals',
+    description: 'Returns the goals for the specified month (defaults to current month).',
+  })
+  @ApiResponse({ status: 200, description: 'Goals retrieved successfully' })
+  async getGoals(
+    @Query() query: GetGoalsQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting goals`);
+    return this.adminService.getGoals(query.month);
+  }
+
+  @Post('goals')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set monthly goals',
+    description: 'Sets or updates goals for the specified month.',
+  })
+  @ApiBody({ type: SetGoalsDto })
+  @ApiResponse({ status: 200, description: 'Goals set successfully' })
+  async setGoals(
+    @Body() dto: SetGoalsDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} setting goals for ${dto.month}`);
+    return this.adminService.setGoals(dto, admin.email);
+  }
+
+  @Get('goals/progress')
+  @ApiOperation({
+    summary: 'Get goals progress',
+    description: 'Returns progress toward monthly goals with alerts and status.',
+  })
+  @ApiResponse({ status: 200, description: 'Goals progress retrieved successfully' })
+  async getGoalsProgress(
+    @Query() query: GetGoalsQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting goals progress`);
+    return this.adminService.getGoalsProgress(query.month);
+  }
+
+  @Get('goals/alerts')
+  @ApiOperation({
+    summary: 'Check goal alerts',
+    description: 'Returns current alerts for monthly goals.',
+  })
+  @ApiResponse({ status: 200, description: 'Goal alerts retrieved successfully' })
+  async checkGoalAlerts(@AdminUser() admin: AdminUserData) {
+    this.logger.log(`Admin ${admin.email} checking goal alerts`);
+    return this.adminService.checkGoalAlerts();
+  }
+
+  // ==================== Geography ====================
+
+  @Get('geo/distribution')
+  @ApiOperation({
+    summary: 'Get user distribution by country',
+    description: 'Returns the distribution of users by country with plan breakdown.',
+  })
+  @ApiResponse({ status: 200, description: 'Distribution data retrieved successfully' })
+  async getGeoDistribution(@AdminUser() admin: AdminUserData) {
+    this.logger.log(`Admin ${admin.email} requesting geo distribution`);
+    return this.adminService.getGeoDistribution();
+  }
+
+  @Get('geo/conversion-rates')
+  @ApiOperation({
+    summary: 'Get conversion rates by country',
+    description: 'Returns Free→Pro conversion rates by country.',
+  })
+  @ApiResponse({ status: 200, description: 'Conversion rates retrieved successfully' })
+  async getGeoConversionRates(@AdminUser() admin: AdminUserData) {
+    this.logger.log(`Admin ${admin.email} requesting geo conversion rates`);
+    return this.adminService.getGeoConversionRates();
+  }
+
+  @Get('geo/revenue')
+  @ApiOperation({
+    summary: 'Get revenue by country',
+    description: 'Returns revenue data by country for the specified period.',
+  })
+  @ApiResponse({ status: 200, description: 'Revenue by country retrieved successfully' })
+  async getGeoRevenue(
+    @Query() query: GetGeoRevenueQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting geo revenue`);
+    return this.adminService.getGeoRevenue(new Date(query.startDate), new Date(query.endDate));
+  }
+
+  @Get('geo/potential')
+  @ApiOperation({
+    summary: 'Get countries with potential',
+    description: 'Returns countries ranked by potential for growth and marketing investment.',
+  })
+  @ApiResponse({ status: 200, description: 'Country potential data retrieved successfully' })
+  async getGeoPotential(@AdminUser() admin: AdminUserData) {
+    this.logger.log(`Admin ${admin.email} requesting geo potential`);
+    return this.adminService.getGeoPotential();
+  }
+
+  // ==================== Advanced Metrics ====================
+
+  @Get('metrics/churn')
+  @ApiOperation({
+    summary: 'Get churn rate',
+    description: 'Returns subscription churn rate for the specified period.',
+  })
+  @ApiResponse({ status: 200, description: 'Churn rate retrieved successfully' })
+  async getChurnRate(
+    @Query() query: GetChurnQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting churn rate`);
+    return this.adminService.getChurnRate(query.period);
+  }
+
+  @Get('metrics/ltv')
+  @ApiOperation({
+    summary: 'Get Customer Lifetime Value',
+    description: 'Returns average customer lifetime value metrics.',
+  })
+  @ApiResponse({ status: 200, description: 'LTV data retrieved successfully' })
+  async getLTV(@AdminUser() admin: AdminUserData) {
+    this.logger.log(`Admin ${admin.email} requesting LTV`);
+    return this.adminService.getLTV();
+  }
+
+  @Get('metrics/profit')
+  @ApiOperation({
+    summary: 'Get profit margin',
+    description: 'Returns profit margin for the specified period.',
+  })
+  @ApiResponse({ status: 200, description: 'Profit data retrieved successfully' })
+  async getProfitMargin(
+    @Query('period') period: string = 'month',
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting profit margin`);
+    return this.adminService.getProfitMargin(period);
+  }
+
+  @Get('finance/dashboard')
+  @ApiOperation({
+    summary: 'Get financial dashboard',
+    description: 'Returns comprehensive financial dashboard with revenue, expenses, MRR, and profit.',
+  })
+  @ApiResponse({ status: 200, description: 'Financial dashboard retrieved successfully' })
+  async getFinancialDashboard(@AdminUser() admin: AdminUserData) {
+    this.logger.log(`Admin ${admin.email} requesting financial dashboard`);
+    return this.adminService.getFinancialDashboard();
   }
 }

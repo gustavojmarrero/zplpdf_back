@@ -4,6 +4,8 @@ import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { CheckoutResponseDto, PortalResponseDto } from './dto/create-checkout.dto.js';
 import { GA4Service } from '../analytics/ga4.service.js';
+import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
+import type { StripeTransaction, SubscriptionEvent } from '../../common/interfaces/finance.interface.js';
 
 @Injectable()
 export class PaymentsService {
@@ -41,6 +43,7 @@ export class PaymentsService {
     private readonly configService: ConfigService,
     private readonly firestoreService: FirestoreService,
     private readonly ga4Service: GA4Service,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     const nodeEnv = this.configService.get<string>('NODE_ENV');
@@ -181,17 +184,92 @@ export class PaymentsService {
     }
 
     const subscriptionId = session.subscription as string;
+    const user = await this.firestoreService.getUserById(userId);
+    const billingCountry = session.customer_details?.address?.country || undefined;
+    const currency = (session.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
+    const amount = session.amount_total || 0;
+
+    // Calculate MXN amount for transactions
+    let amountMxn = amount / 100;
+    let exchangeRate = 1;
+    if (currency === 'usd') {
+      try {
+        const conversion = await this.exchangeRateService.convertUsdToMxn(
+          amount / 100,
+          this.firestoreService,
+        );
+        amountMxn = conversion.amountMxn;
+        exchangeRate = conversion.rate;
+      } catch (error) {
+        this.logger.warn(`Failed to get exchange rate: ${error.message}`);
+        exchangeRate = 20; // Fallback
+        amountMxn = (amount / 100) * exchangeRate;
+      }
+    }
 
     // Update user to Pro plan with retry
+    const updateData: Record<string, unknown> = {
+      plan: 'pro',
+      stripeSubscriptionId: subscriptionId,
+    };
+
+    // Update country from billing address if available and not already set
+    if (billingCountry && (!user?.country || user.countrySource === 'ip')) {
+      updateData.country = billingCountry;
+      updateData.countrySource = 'stripe';
+      updateData.countryDetectedAt = new Date();
+      this.logger.log(`Updated user ${userId} country to ${billingCountry} from Stripe billing`);
+    }
+
     await this.withRetry(
-      () => this.firestoreService.updateUser(userId, {
-        plan: 'pro',
-        stripeSubscriptionId: subscriptionId,
-      }),
+      () => this.firestoreService.updateUser(userId, updateData),
       `handleCheckoutCompleted(${userId})`,
     );
 
     this.logger.log(`User ${userId} upgraded to Pro plan`);
+
+    // Save transaction record
+    const transactionId = this.generateTransactionId();
+    const transaction: StripeTransaction = {
+      id: transactionId,
+      stripeEventId: session.id,
+      stripeEventType: 'checkout.session.completed',
+      userId,
+      userEmail: user?.email || session.customer_details?.email || '',
+      amount,
+      currency,
+      amountMxn,
+      exchangeRate,
+      type: 'subscription',
+      plan: 'pro',
+      stripeCustomerId: session.customer as string,
+      stripeSubscriptionId: subscriptionId,
+      status: 'succeeded',
+      billingCountry,
+      createdAt: new Date(),
+    };
+
+    await this.firestoreService.saveTransaction(transaction);
+    this.logger.log(`Saved transaction: ${transactionId}`);
+
+    // Save subscription event
+    const subscriptionEvent: SubscriptionEvent = {
+      id: this.generateSubscriptionEventId(),
+      userId,
+      userEmail: user?.email || session.customer_details?.email || '',
+      eventType: 'started',
+      plan: 'pro',
+      previousPlan: user?.plan || 'free',
+      currency,
+      mrr: amount / 100,
+      mrrMxn: amountMxn,
+      stripeSubscriptionId: subscriptionId,
+      country: billingCountry,
+      createdAt: new Date(),
+    };
+
+    await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
+    this.logger.log(`Saved subscription event: started for user ${userId}`);
 
     // Track purchase in GA4 (server-side)
     await this.ga4Service.trackPurchase({
@@ -202,6 +280,20 @@ export class PaymentsService {
       price: session.amount_total ? session.amount_total / 100 : 0,
       currency: session.currency?.toUpperCase() || 'USD',
     });
+  }
+
+  private generateTransactionId(): string {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+    const random = Math.random().toString(36).substring(2, 7).toUpperCase();
+    return `transaction_${dateStr}_${random}`;
+  }
+
+  private generateSubscriptionEventId(): string {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+    const random = Math.random().toString(36).substring(2, 7).toUpperCase();
+    return `sub_event_${dateStr}_${random}`;
   }
 
   async handleSubscriptionUpdated(subscription: Stripe.Subscription): Promise<void> {
@@ -254,6 +346,26 @@ export class PaymentsService {
     );
 
     this.logger.log(`User ${user.id} downgraded to Free plan`);
+
+    // Save subscription event for churn tracking
+    const subscriptionEvent: SubscriptionEvent = {
+      id: this.generateSubscriptionEventId(),
+      userId: user.id,
+      userEmail: user.email,
+      eventType: 'canceled',
+      plan: 'pro',
+      previousPlan: 'pro',
+      currency: 'usd', // Default, actual currency not available in deleted event
+      mrr: 0,
+      mrrMxn: 0,
+      stripeSubscriptionId: subscription.id,
+      cancellationReason: subscription.cancellation_details?.reason || undefined,
+      country: user.country,
+      createdAt: new Date(),
+    };
+
+    await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
+    this.logger.log(`Saved subscription event: canceled for user ${user.id}`);
   }
 
   async handlePaymentFailed(invoice: Stripe.Invoice): Promise<void> {

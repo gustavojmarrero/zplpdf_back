@@ -14,6 +14,11 @@ import type {
   LabelaryMetricsResponse,
 } from '../zpl/interfaces/labelary-analytics.interface.js';
 import { LabelaryQueueService } from '../zpl/services/labelary-queue.service.js';
+// Finance services
+import { FinanceService } from './services/finance.service.js';
+import { ExpenseService, type CreateExpenseDto, type UpdateExpenseDto, type ExpenseFilters } from './services/expense.service.js';
+import { GeoService } from './services/geo.service.js';
+import { GoalsService, type SetGoalsDto } from './services/goals.service.js';
 import type {
   GetUsersQueryDto,
   AdminUsersResponseDto,
@@ -50,6 +55,10 @@ export class AdminService {
     private readonly periodCalculatorService: PeriodCalculatorService,
     private readonly labelaryAnalyticsService: LabelaryAnalyticsService,
     private readonly labelaryQueueService: LabelaryQueueService,
+    private readonly financeService: FinanceService,
+    private readonly expenseService: ExpenseService,
+    private readonly geoService: GeoService,
+    private readonly goalsService: GoalsService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (stripeSecretKey) {
@@ -1134,5 +1143,108 @@ export class AdminService {
     const minutes = String(exhaustionTime.getMinutes()).padStart(2, '0');
 
     return `~${hours}:${minutes}`;
+  }
+
+  // ==================== Finance (Revenue/MRR/Churn/LTV) ====================
+
+  async getRevenue(period?: string) {
+    const validPeriod = (period as 'day' | 'week' | 'month' | 'year') || 'month';
+    return this.financeService.getRevenue(validPeriod);
+  }
+
+  async getRevenueBreakdown(startDate: Date, endDate: Date) {
+    return this.financeService.getRevenueBreakdown(startDate, endDate);
+  }
+
+  async getMRRHistory(months: number = 12) {
+    return this.financeService.getMRRHistory(months);
+  }
+
+  async getTransactions(filters: {
+    page?: number;
+    limit?: number;
+    userId?: string;
+    startDate?: Date;
+    endDate?: Date;
+    currency?: 'usd' | 'mxn';
+    type?: 'subscription' | 'refund';
+  }) {
+    return this.firestoreService.getTransactions(filters);
+  }
+
+  async getChurnRate(period?: string) {
+    const validPeriod = (period as 'month' | 'quarter' | 'year') || 'month';
+    return this.financeService.getChurnRate(validPeriod);
+  }
+
+  async getLTV() {
+    return this.financeService.getLTV();
+  }
+
+  async getProfitMargin(period?: string) {
+    const validPeriod = (period as 'month' | 'quarter' | 'year') || 'month';
+    return this.financeService.getProfitMargin(validPeriod);
+  }
+
+  async getFinancialDashboard() {
+    return this.financeService.getFinancialDashboard();
+  }
+
+  // ==================== Expenses ====================
+
+  async createExpense(data: CreateExpenseDto, adminEmail: string) {
+    return this.expenseService.createExpense(data, adminEmail);
+  }
+
+  async updateExpense(id: string, data: UpdateExpenseDto) {
+    return this.expenseService.updateExpense(id, data);
+  }
+
+  async deleteExpense(id: string) {
+    return this.expenseService.deleteExpense(id);
+  }
+
+  async getExpenses(filters: ExpenseFilters) {
+    return this.expenseService.getExpenses(filters);
+  }
+
+  async getExpenseSummary(startDate: Date, endDate: Date) {
+    return this.expenseService.getExpenseSummary(startDate, endDate);
+  }
+
+  // ==================== Geography ====================
+
+  async getGeoDistribution() {
+    return this.geoService.getUserDistributionByCountry();
+  }
+
+  async getGeoConversionRates() {
+    return this.geoService.getConversionRatesByCountry();
+  }
+
+  async getGeoRevenue(startDate: Date, endDate: Date) {
+    return this.geoService.getRevenueByCountry(startDate, endDate);
+  }
+
+  async getGeoPotential() {
+    return this.geoService.getCountriesWithPotential();
+  }
+
+  // ==================== Goals ====================
+
+  async setGoals(data: SetGoalsDto, adminEmail: string) {
+    return this.goalsService.setGoals(data, adminEmail);
+  }
+
+  async getGoals(month?: string) {
+    return this.goalsService.getGoals(month);
+  }
+
+  async getGoalsProgress(month?: string) {
+    return this.goalsService.getProgress(month);
+  }
+
+  async checkGoalAlerts() {
+    return this.goalsService.checkAlerts();
   }
 }

@@ -8,6 +8,13 @@ import type { ConversionHistory } from '../../common/interfaces/conversion-histo
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
 import { getStartOfDayInTimezone, getDateStringInTimezone } from '../../utils/timezone.util.js';
+import type {
+  ExchangeRate,
+  StripeTransaction,
+  Expense,
+  MonthlyGoal,
+  SubscriptionEvent,
+} from '../../common/interfaces/finance.interface.js';
 import { ErrorIdGenerator } from '../../common/utils/error-id-generator.js';
 
 // ============== Daily Stats (Aggregated Metrics) ==============
@@ -169,6 +176,12 @@ export class FirestoreService {
   private readonly usersCollection = 'users';
   private readonly usageCollection = 'usage';
   private readonly historyCollection = 'conversion_history';
+  // Finance collections
+  private readonly exchangeRatesCollection = 'exchange_rates';
+  private readonly transactionsCollection = 'stripe_transactions';
+  private readonly expensesCollection = 'expenses';
+  private readonly goalsCollection = 'monthly_goals';
+  private readonly subscriptionEventsCollection = 'subscription_events';
 
   constructor(private configService: ConfigService) {
     let credentials: any = null;
@@ -2880,6 +2893,678 @@ export class FirestoreService {
     } catch (error) {
       this.logger.error(`Error getting hourly distribution: ${error.message}`);
       throw error;
+    }
+  }
+
+  // ============================================
+  // FINANCE: Exchange Rates
+  // ============================================
+
+  async getExchangeRate(date: string): Promise<ExchangeRate | null> {
+    try {
+      const docId = `rate_${date.replace(/-/g, '')}`;
+      const doc = await this.firestore.collection(this.exchangeRatesCollection).doc(docId).get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        id: doc.id,
+        date: data.date,
+        usdToMxn: data.usdToMxn,
+        source: data.source,
+        fetchedAt: data.fetchedAt?.toDate ? data.fetchedAt.toDate() : new Date(data.fetchedAt),
+      };
+    } catch (error) {
+      this.logger.error(`Error getting exchange rate: ${error.message}`);
+      return null;
+    }
+  }
+
+  async saveExchangeRate(rate: ExchangeRate): Promise<void> {
+    try {
+      await this.firestore.collection(this.exchangeRatesCollection).doc(rate.id).set({
+        ...rate,
+        fetchedAt: rate.fetchedAt,
+      });
+    } catch (error) {
+      this.logger.error(`Error saving exchange rate: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // FINANCE: Stripe Transactions
+  // ============================================
+
+  async saveTransaction(transaction: StripeTransaction): Promise<void> {
+    try {
+      await this.firestore.collection(this.transactionsCollection).doc(transaction.id).set({
+        ...transaction,
+        createdAt: transaction.createdAt,
+      });
+      this.logger.log(`Saved transaction: ${transaction.id}`);
+    } catch (error) {
+      this.logger.error(`Error saving transaction: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getTransactions(filters: {
+    startDate?: Date;
+    endDate?: Date;
+    userId?: string;
+    currency?: 'usd' | 'mxn';
+    status?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{ transactions: StripeTransaction[]; total: number }> {
+    try {
+      let query = this.firestore.collection(this.transactionsCollection) as FirebaseFirestore.Query;
+
+      if (filters.startDate) {
+        query = query.where('createdAt', '>=', filters.startDate);
+      }
+      if (filters.endDate) {
+        query = query.where('createdAt', '<=', filters.endDate);
+      }
+      if (filters.userId) {
+        query = query.where('userId', '==', filters.userId);
+      }
+      if (filters.currency) {
+        query = query.where('currency', '==', filters.currency);
+      }
+      if (filters.status) {
+        query = query.where('status', '==', filters.status);
+      }
+
+      query = query.orderBy('createdAt', 'desc');
+
+      // Get total count
+      const countSnapshot = await query.count().get();
+      const total = countSnapshot.data().count;
+
+      // Apply pagination
+      const page = filters.page || 1;
+      const limit = filters.limit || 50;
+      const offset = (page - 1) * limit;
+
+      query = query.offset(offset).limit(limit);
+
+      const snapshot = await query.get();
+      const transactions: StripeTransaction[] = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          stripeEventId: data.stripeEventId,
+          stripeEventType: data.stripeEventType,
+          userId: data.userId,
+          userEmail: data.userEmail,
+          amount: data.amount,
+          currency: data.currency,
+          amountMxn: data.amountMxn,
+          exchangeRate: data.exchangeRate,
+          type: data.type,
+          plan: data.plan,
+          stripeCustomerId: data.stripeCustomerId,
+          stripeSubscriptionId: data.stripeSubscriptionId,
+          stripeInvoiceId: data.stripeInvoiceId,
+          stripePaymentIntentId: data.stripePaymentIntentId,
+          status: data.status,
+          billingCountry: data.billingCountry,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+          metadata: data.metadata,
+        };
+      });
+
+      return { transactions, total };
+    } catch (error) {
+      this.logger.error(`Error getting transactions: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getRevenueByPeriod(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<{ totalUsd: number; totalMxn: number; count: number }> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.transactionsCollection)
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate)
+        .where('status', '==', 'succeeded')
+        .get();
+
+      let totalUsd = 0;
+      let totalMxn = 0;
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        if (data.currency === 'usd') {
+          totalUsd += data.amount;
+        } else {
+          totalMxn += data.amount;
+        }
+      }
+
+      return {
+        totalUsd: totalUsd / 100, // Convertir de centavos
+        totalMxn: totalMxn / 100,
+        count: snapshot.size,
+      };
+    } catch (error) {
+      this.logger.error(`Error getting revenue: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // FINANCE: Expenses
+  // ============================================
+
+  async saveExpense(expense: Expense): Promise<void> {
+    try {
+      await this.firestore.collection(this.expensesCollection).doc(expense.id).set({
+        ...expense,
+        createdAt: expense.createdAt,
+        updatedAt: expense.updatedAt || new Date(),
+      });
+      this.logger.log(`Saved expense: ${expense.id}`);
+    } catch (error) {
+      this.logger.error(`Error saving expense: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getExpenses(filters: {
+    startDate?: Date;
+    endDate?: Date;
+    category?: string;
+    type?: 'recurring' | 'one_time';
+    page?: number;
+    limit?: number;
+  }): Promise<{ expenses: Expense[]; total: number }> {
+    try {
+      let query = this.firestore.collection(this.expensesCollection) as FirebaseFirestore.Query;
+
+      if (filters.startDate) {
+        query = query.where('createdAt', '>=', filters.startDate);
+      }
+      if (filters.endDate) {
+        query = query.where('createdAt', '<=', filters.endDate);
+      }
+      if (filters.category) {
+        query = query.where('category', '==', filters.category);
+      }
+      if (filters.type) {
+        query = query.where('type', '==', filters.type);
+      }
+
+      query = query.orderBy('createdAt', 'desc');
+
+      const countSnapshot = await query.count().get();
+      const total = countSnapshot.data().count;
+
+      const page = filters.page || 1;
+      const limit = filters.limit || 50;
+      const offset = (page - 1) * limit;
+
+      query = query.offset(offset).limit(limit);
+
+      const snapshot = await query.get();
+      const expenses: Expense[] = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          amount: data.amount,
+          currency: data.currency,
+          amountMxn: data.amountMxn,
+          exchangeRate: data.exchangeRate,
+          type: data.type,
+          category: data.category,
+          description: data.description,
+          vendor: data.vendor,
+          recurrenceType: data.recurrenceType,
+          nextGenerationDate: data.nextGenerationDate?.toDate
+            ? data.nextGenerationDate.toDate()
+            : data.nextGenerationDate
+              ? new Date(data.nextGenerationDate)
+              : undefined,
+          parentExpenseId: data.parentExpenseId,
+          createdBy: data.createdBy,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : undefined,
+          isAutoGenerated: data.isAutoGenerated,
+        };
+      });
+
+      return { expenses, total };
+    } catch (error) {
+      this.logger.error(`Error getting expenses: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async updateExpense(id: string, data: Partial<Expense>): Promise<void> {
+    try {
+      await this.firestore
+        .collection(this.expensesCollection)
+        .doc(id)
+        .update({
+          ...data,
+          updatedAt: new Date(),
+        });
+    } catch (error) {
+      this.logger.error(`Error updating expense: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async deleteExpense(id: string): Promise<void> {
+    try {
+      await this.firestore.collection(this.expensesCollection).doc(id).delete();
+      this.logger.log(`Deleted expense: ${id}`);
+    } catch (error) {
+      this.logger.error(`Error deleting expense: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getRecurringExpensesDueToday(): Promise<Expense[]> {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const snapshot = await this.firestore
+        .collection(this.expensesCollection)
+        .where('type', '==', 'recurring')
+        .where('nextGenerationDate', '>=', today)
+        .where('nextGenerationDate', '<', tomorrow)
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          amount: data.amount,
+          currency: data.currency,
+          amountMxn: data.amountMxn,
+          exchangeRate: data.exchangeRate,
+          type: data.type,
+          category: data.category,
+          description: data.description,
+          vendor: data.vendor,
+          recurrenceType: data.recurrenceType,
+          nextGenerationDate: data.nextGenerationDate?.toDate
+            ? data.nextGenerationDate.toDate()
+            : new Date(data.nextGenerationDate),
+          parentExpenseId: data.parentExpenseId,
+          createdBy: data.createdBy,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+          isAutoGenerated: data.isAutoGenerated,
+        };
+      });
+    } catch (error) {
+      this.logger.error(`Error getting recurring expenses due today: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getExpenseSummary(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<{
+    total: number;
+    totalMxn: number;
+    byCategory: Record<string, number>;
+    byType: { recurring: number; one_time: number };
+  }> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.expensesCollection)
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate)
+        .get();
+
+      let totalMxn = 0;
+      const byCategory: Record<string, number> = {};
+      const byType = { recurring: 0, one_time: 0 };
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        totalMxn += data.amountMxn;
+
+        byCategory[data.category] = (byCategory[data.category] || 0) + data.amountMxn;
+        byType[data.type as 'recurring' | 'one_time'] += data.amountMxn;
+      }
+
+      return { total: snapshot.size, totalMxn, byCategory, byType };
+    } catch (error) {
+      this.logger.error(`Error getting expense summary: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // FINANCE: Monthly Goals
+  // ============================================
+
+  async saveGoal(goal: MonthlyGoal): Promise<void> {
+    try {
+      await this.firestore.collection(this.goalsCollection).doc(goal.id).set({
+        ...goal,
+        createdAt: goal.createdAt,
+        updatedAt: goal.updatedAt || new Date(),
+      });
+      this.logger.log(`Saved goal: ${goal.id}`);
+    } catch (error) {
+      this.logger.error(`Error saving goal: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getGoal(month: string): Promise<MonthlyGoal | null> {
+    try {
+      const docId = `goal_${month.replace(/-/g, '')}`;
+      const doc = await this.firestore.collection(this.goalsCollection).doc(docId).get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        id: doc.id,
+        month: data.month,
+        targets: data.targets,
+        actual: data.actual,
+        alerts: data.alerts,
+        createdBy: data.createdBy,
+        createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+        updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : undefined,
+      };
+    } catch (error) {
+      this.logger.error(`Error getting goal: ${error.message}`);
+      return null;
+    }
+  }
+
+  async updateGoalActuals(
+    month: string,
+    actual: { revenue: number; newUsers: number; proConversions: number },
+    alerts?: { belowPaceRevenue: boolean; belowPaceUsers: boolean; belowPaceConversions: boolean },
+  ): Promise<void> {
+    try {
+      const docId = `goal_${month.replace(/-/g, '')}`;
+      await this.firestore
+        .collection(this.goalsCollection)
+        .doc(docId)
+        .update({
+          actual,
+          alerts,
+          updatedAt: new Date(),
+        });
+    } catch (error) {
+      this.logger.error(`Error updating goal actuals: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============================================
+  // FINANCE: Subscription Events
+  // ============================================
+
+  async saveSubscriptionEvent(event: SubscriptionEvent): Promise<void> {
+    try {
+      await this.firestore.collection(this.subscriptionEventsCollection).doc(event.id).set({
+        ...event,
+        createdAt: event.createdAt,
+      });
+      this.logger.log(`Saved subscription event: ${event.id}`);
+    } catch (error) {
+      this.logger.error(`Error saving subscription event: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getSubscriptionEvents(filters: {
+    startDate?: Date;
+    endDate?: Date;
+    eventType?: string;
+    userId?: string;
+  }): Promise<SubscriptionEvent[]> {
+    try {
+      let query = this.firestore.collection(
+        this.subscriptionEventsCollection,
+      ) as FirebaseFirestore.Query;
+
+      if (filters.startDate) {
+        query = query.where('createdAt', '>=', filters.startDate);
+      }
+      if (filters.endDate) {
+        query = query.where('createdAt', '<=', filters.endDate);
+      }
+      if (filters.eventType) {
+        query = query.where('eventType', '==', filters.eventType);
+      }
+      if (filters.userId) {
+        query = query.where('userId', '==', filters.userId);
+      }
+
+      query = query.orderBy('createdAt', 'desc');
+
+      const snapshot = await query.get();
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          userId: data.userId,
+          userEmail: data.userEmail,
+          eventType: data.eventType,
+          plan: data.plan,
+          previousPlan: data.previousPlan,
+          currency: data.currency,
+          mrr: data.mrr,
+          mrrMxn: data.mrrMxn,
+          stripeSubscriptionId: data.stripeSubscriptionId,
+          cancellationReason: data.cancellationReason,
+          country: data.country,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+        };
+      });
+    } catch (error) {
+      this.logger.error(`Error getting subscription events: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getActiveSubscribersCount(): Promise<number> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.usersCollection)
+        .where('plan', 'in', ['pro', 'enterprise'])
+        .where('stripeSubscriptionId', '!=', null)
+        .count()
+        .get();
+
+      return snapshot.data().count;
+    } catch (error) {
+      this.logger.error(`Error getting active subscribers count: ${error.message}`);
+      return 0;
+    }
+  }
+
+  async getChurnedUsersInPeriod(startDate: Date, endDate: Date): Promise<number> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.subscriptionEventsCollection)
+        .where('eventType', 'in', ['canceled', 'churned'])
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate)
+        .count()
+        .get();
+
+      return snapshot.data().count;
+    } catch (error) {
+      this.logger.error(`Error getting churned users: ${error.message}`);
+      return 0;
+    }
+  }
+
+  // ============================================
+  // GEOGRAPHIC: User Distribution by Country
+  // ============================================
+
+  async getUsersByCountry(): Promise<
+    Array<{
+      country: string;
+      total: number;
+      byPlan: { free: number; pro: number; enterprise: number };
+    }>
+  > {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.usersCollection)
+        .where('country', '!=', null)
+        .get();
+
+      const countryMap = new Map<
+        string,
+        { total: number; byPlan: { free: number; pro: number; enterprise: number } }
+      >();
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        const country = data.country || 'unknown';
+
+        if (!countryMap.has(country)) {
+          countryMap.set(country, {
+            total: 0,
+            byPlan: { free: 0, pro: 0, enterprise: 0 },
+          });
+        }
+
+        const countryData = countryMap.get(country)!;
+        countryData.total++;
+        countryData.byPlan[data.plan as 'free' | 'pro' | 'enterprise']++;
+      }
+
+      return Array.from(countryMap.entries())
+        .map(([country, data]) => ({
+          country,
+          ...data,
+        }))
+        .sort((a, b) => b.total - a.total);
+    } catch (error) {
+      this.logger.error(`Error getting users by country: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getConversionRatesByCountry(): Promise<
+    Array<{
+      country: string;
+      freeUsers: number;
+      proUsers: number;
+      conversionRate: number;
+    }>
+  > {
+    try {
+      const usersByCountry = await this.getUsersByCountry();
+
+      return usersByCountry.map((countryData) => {
+        const freeUsers = countryData.byPlan.free;
+        const proUsers = countryData.byPlan.pro + countryData.byPlan.enterprise;
+        const conversionRate = freeUsers + proUsers > 0 ? (proUsers / (freeUsers + proUsers)) * 100 : 0;
+
+        return {
+          country: countryData.country,
+          freeUsers,
+          proUsers,
+          conversionRate: Math.round(conversionRate * 100) / 100,
+        };
+      });
+    } catch (error) {
+      this.logger.error(`Error getting conversion rates by country: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getRevenueByCountry(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<Array<{ country: string; revenue: number; revenueMxn: number; transactions: number }>> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.transactionsCollection)
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate)
+        .where('status', '==', 'succeeded')
+        .get();
+
+      const countryMap = new Map<string, { revenue: number; revenueMxn: number; transactions: number }>();
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        const country = data.billingCountry || 'unknown';
+
+        if (!countryMap.has(country)) {
+          countryMap.set(country, { revenue: 0, revenueMxn: 0, transactions: 0 });
+        }
+
+        const countryData = countryMap.get(country)!;
+        countryData.revenue += data.amount / 100; // Convertir de centavos
+        countryData.revenueMxn += data.amountMxn;
+        countryData.transactions++;
+      }
+
+      return Array.from(countryMap.entries())
+        .map(([country, data]) => ({
+          country,
+          ...data,
+        }))
+        .sort((a, b) => b.revenueMxn - a.revenueMxn);
+    } catch (error) {
+      this.logger.error(`Error getting revenue by country: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getNewUsersInPeriod(startDate: Date, endDate: Date): Promise<number> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.usersCollection)
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate)
+        .count()
+        .get();
+
+      return snapshot.data().count;
+    } catch (error) {
+      this.logger.error(`Error getting new users in period: ${error.message}`);
+      return 0;
+    }
+  }
+
+  async getProConversionsInPeriod(startDate: Date, endDate: Date): Promise<number> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.subscriptionEventsCollection)
+        .where('eventType', '==', 'started')
+        .where('createdAt', '>=', startDate)
+        .where('createdAt', '<=', endDate)
+        .count()
+        .get();
+
+      return snapshot.data().count;
+    } catch (error) {
+      this.logger.error(`Error getting pro conversions in period: ${error.message}`);
+      return 0;
     }
   }
 }

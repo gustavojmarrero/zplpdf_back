@@ -1,6 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
+import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
+import { ExpenseService } from '../admin/services/expense.service.js';
+import { GoalsService } from '../admin/services/goals.service.js';
 
 export interface ResetUsageResult {
   resetCount: number;
@@ -12,6 +15,24 @@ export interface CleanupErrorsResult {
   executedAt: Date;
 }
 
+export interface UpdateExchangeRateResult {
+  success: boolean;
+  rate?: number;
+  source?: string;
+  executedAt: Date;
+}
+
+export interface GenerateRecurringExpensesResult {
+  generated: number;
+  executedAt: Date;
+}
+
+export interface UpdateGoalsResult {
+  month: string;
+  updated: boolean;
+  executedAt: Date;
+}
+
 @Injectable()
 export class CronService {
   private readonly logger = new Logger(CronService.name);
@@ -19,6 +40,12 @@ export class CronService {
   constructor(
     private readonly firestoreService: FirestoreService,
     private readonly periodCalculatorService: PeriodCalculatorService,
+    @Inject(forwardRef(() => ExchangeRateService))
+    private readonly exchangeRateService: ExchangeRateService,
+    @Inject(forwardRef(() => ExpenseService))
+    private readonly expenseService: ExpenseService,
+    @Inject(forwardRef(() => GoalsService))
+    private readonly goalsService: GoalsService,
   ) {}
 
   async resetExpiredUsage(): Promise<ResetUsageResult> {
@@ -89,6 +116,83 @@ export class CronService {
     } catch (error) {
       this.logger.error(`Error in cleanup cron job: ${error.message}`);
       throw error;
+    }
+  }
+
+  /**
+   * Actualiza el tipo de cambio USD/MXN desde Banxico
+   * Ejecutar diariamente a las 6:00 AM (GMT-6)
+   */
+  async updateExchangeRate(): Promise<UpdateExchangeRateResult> {
+    this.logger.log('Starting exchange rate update cron job...');
+
+    try {
+      const result = await this.exchangeRateService.updateRateCache(this.firestoreService);
+
+      this.logger.log(`Exchange rate update completed: ${result.rate} (${result.source})`);
+
+      return {
+        success: true,
+        rate: result.rate,
+        source: result.source,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Error in exchange rate update cron job: ${error.message}`);
+      return {
+        success: false,
+        executedAt: new Date(),
+      };
+    }
+  }
+
+  /**
+   * Genera gastos recurrentes que vencen hoy
+   * Ejecutar diariamente a las 00:05 (GMT-6)
+   */
+  async generateRecurringExpenses(): Promise<GenerateRecurringExpensesResult> {
+    this.logger.log('Starting recurring expenses generation cron job...');
+
+    try {
+      const result = await this.expenseService.generateRecurringExpenses();
+
+      this.logger.log(`Recurring expenses generation completed. Generated ${result.generated} expense(s).`);
+
+      return {
+        generated: result.generated,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Error in recurring expenses cron job: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Actualiza el progreso de los objetivos mensuales
+   * Ejecutar cada hora
+   */
+  async updateGoals(): Promise<UpdateGoalsResult> {
+    this.logger.log('Starting goals update cron job...');
+
+    try {
+      await this.goalsService.updateActuals();
+      const month = new Date().toISOString().slice(0, 7);
+
+      this.logger.log(`Goals update completed for ${month}`);
+
+      return {
+        month,
+        updated: true,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Error in goals update cron job: ${error.message}`);
+      return {
+        month: new Date().toISOString().slice(0, 7),
+        updated: false,
+        executedAt: new Date(),
+      };
     }
   }
 }

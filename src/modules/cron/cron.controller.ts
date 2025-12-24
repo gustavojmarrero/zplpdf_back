@@ -1,6 +1,13 @@
 import { Controller, Post, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiHeader } from '@nestjs/swagger';
-import { CronService, ResetUsageResult, CleanupErrorsResult } from './cron.service.js';
+import {
+  CronService,
+  ResetUsageResult,
+  CleanupErrorsResult,
+  UpdateExchangeRateResult,
+  GenerateRecurringExpensesResult,
+  UpdateGoalsResult,
+} from './cron.service.js';
 import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 
 @ApiTags('cron')
@@ -63,5 +70,98 @@ export class CronController {
   })
   async cleanupErrors(): Promise<CleanupErrorsResult> {
     return this.cronService.cleanupOldErrors();
+  }
+
+  @Post('update-exchange-rates')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Update USD/MXN exchange rate from Banxico (Cloud Scheduler)',
+    description: 'Fetches the latest exchange rate from Banxico API and caches it. Should run daily at 6:00 AM (GMT-6).',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Exchange rate update completed',
+    schema: {
+      properties: {
+        success: { type: 'boolean', example: true },
+        rate: { type: 'number', example: 17.25 },
+        source: { type: 'string', example: 'banxico' },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid cron secret',
+  })
+  async updateExchangeRates(): Promise<UpdateExchangeRateResult> {
+    return this.cronService.updateExchangeRate();
+  }
+
+  @Post('generate-recurring-expenses')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Generate recurring expenses (Cloud Scheduler)',
+    description: 'Auto-generates charges for recurring expenses that are due today. Should run daily at 00:05 (GMT-6).',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Recurring expenses generated',
+    schema: {
+      properties: {
+        generated: { type: 'number', example: 3 },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid cron secret',
+  })
+  async generateRecurringExpenses(): Promise<GenerateRecurringExpensesResult> {
+    return this.cronService.generateRecurringExpenses();
+  }
+
+  @Post('update-goals')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Update monthly goals progress (Cloud Scheduler)',
+    description: 'Updates the actual values for the current month goals. Should run every hour.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Goals progress updated',
+    schema: {
+      properties: {
+        month: { type: 'string', example: '2025-01' },
+        updated: { type: 'boolean', example: true },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid cron secret',
+  })
+  async updateGoals(): Promise<UpdateGoalsResult> {
+    return this.cronService.updateGoals();
   }
 }

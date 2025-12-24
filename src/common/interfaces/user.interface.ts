@@ -1,5 +1,6 @@
 export type PlanType = 'free' | 'pro' | 'enterprise';
 export type UserRole = 'user' | 'admin';
+export type CountrySource = 'ip' | 'stripe' | 'manual';
 
 export interface PlanLimits {
   maxLabelsPerPdf: number;
@@ -20,6 +21,10 @@ export interface User {
   // Campos de simulación de plan (solo para admins)
   simulatedPlan?: PlanType;
   simulationExpiresAt?: Date;
+  // Campos de geolocalización
+  country?: string; // Código ISO 3166-1 alpha-2 (MX, US, ES, etc.)
+  countrySource?: CountrySource;
+  countryDetectedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

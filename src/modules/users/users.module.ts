@@ -4,9 +4,10 @@ import { UsersService } from './users.service.js';
 import { CacheModule } from '../cache/cache.module.js';
 import { ZplModule } from '../zpl/zpl.module.js';
 import { PeriodModule } from '../../common/services/period.module.js';
+import { AdminModule } from '../admin/admin.module.js';
 
 @Module({
-  imports: [CacheModule, forwardRef(() => ZplModule), PeriodModule],
+  imports: [CacheModule, forwardRef(() => ZplModule), PeriodModule, forwardRef(() => AdminModule)],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

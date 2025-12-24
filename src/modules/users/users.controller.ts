@@ -6,7 +6,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -37,8 +39,13 @@ export class UsersController {
     description: 'User synchronized successfully',
     type: UserProfileDto,
   })
-  async syncUser(@CurrentUser() user: FirebaseUser): Promise<UserProfileDto> {
-    const syncedUser = await this.usersService.syncUser(user);
+  async syncUser(
+    @CurrentUser() user: FirebaseUser,
+    @Req() req: Request,
+  ): Promise<UserProfileDto> {
+    // Obtener IP del cliente (considera X-Forwarded-For para Cloud Run)
+    const clientIP = this.getClientIP(req);
+    const syncedUser = await this.usersService.syncUser(user, clientIP);
     return {
       id: syncedUser.id,
       email: syncedUser.email,
@@ -48,6 +55,21 @@ export class UsersController {
       createdAt: syncedUser.createdAt,
       hasStripeSubscription: !!syncedUser.stripeSubscriptionId,
     };
+  }
+
+  /**
+   * Extrae la IP real del cliente considerando proxies y Cloud Run
+   */
+  private getClientIP(req: Request): string | undefined {
+    // Cloud Run usa X-Forwarded-For
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (forwardedFor) {
+      const ips = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+      // El primer IP es el cliente real
+      return ips.split(',')[0].trim();
+    }
+    // Fallback a IP directa
+    return req.ip || req.socket?.remoteAddress;
   }
 
   @Get('me')
