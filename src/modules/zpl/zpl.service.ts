@@ -6,7 +6,6 @@ import { v4 as uuidv4 } from 'uuid';
 import PDFMerger from 'pdf-merger-js';
 import { Storage } from '@google-cloud/storage';
 import { ConfigService } from '@nestjs/config';
-import Bottleneck from 'bottleneck';
 import archiver from 'archiver';
 import { Writable } from 'stream';
 import { pdfToPng, PngPageOutput } from 'pdf-to-png-converter';
@@ -15,6 +14,8 @@ import { UsersService } from '../users/users.service.js';
 import { OutputFormat } from './enums/output-format.enum.js';
 import type { BatchJob, BatchFileJob, BatchLimits } from './interfaces/batch.interface.js';
 import { BATCH_LIMITS } from './interfaces/batch.interface.js';
+import { LabelaryQueueService } from './services/labelary-queue.service.js';
+import type { UserPlan, QueuePositionResponse } from './interfaces/queue.interface.js';
 
 export enum LabelSize {
   TWO_BY_ONE = '2x1',
@@ -75,19 +76,6 @@ export class ZplService {
   private readonly bucket: string;
   private readonly storageBasePath: string;
   private readonly URL_EXPIRATION_TIME = 15 * 60 * 1000; // 15 minutos en milisegundos
-  
-  // Limiter para la API de Labelary (más conservador para evitar 429)
-  private readonly labelaryLimiter = new Bottleneck({
-    maxConcurrent: 1,
-    minTime: 1000, // 1000ms entre llamadas = 1 llamada por segundo
-    reservoir: 3, // Máximo 3 solicitudes antes de esperar
-    reservoirRefreshAmount: 3,
-    reservoirRefreshInterval: 5 * 1000, // Refresca cada 5 segundos
-
-    // Estrategia de reintentos
-    retryLimit: 3,
-    retryDelay: 5000 // 5 segundos entre reintentos
-  });
 
   constructor(
     private configService: ConfigService,
@@ -95,6 +83,7 @@ export class ZplService {
     @Inject(forwardRef(() => UsersService))
     private usersService: UsersService,
     @Inject('GOOGLE_AUTH_OPTIONS') @Optional() private googleAuthOptions: any,
+    private labelaryQueueService: LabelaryQueueService,
   ) {
     // Inicializar el cliente de Storage usando GoogleAuthProvider
     // En Cloud Run, si no hay credenciales, usará ADC automáticamente
@@ -285,7 +274,7 @@ export class ZplService {
     userPlan?: 'free' | 'pro' | 'enterprise',
   ): Promise<void> {
     try {
-      await this.processZplConversion(zplContent, labelSize, jobId, outputFormat);
+      await this.processZplConversion(zplContent, labelSize, jobId, outputFormat, userId, userPlan);
 
       // Get the job to check if it completed successfully
       const job = this.jobs.get(jobId);
@@ -343,12 +332,16 @@ export class ZplService {
    * @param labelSize Tamaño de la etiqueta
    * @param jobId ID del trabajo
    * @param outputFormat Formato de salida
+   * @param userId ID del usuario (para sistema de colas)
+   * @param userPlan Plan del usuario (para prioridad en cola)
    */
   async processZplConversion(
     zplContent: string,
     labelSize: string,
     jobId: string,
     outputFormat: OutputFormat = OutputFormat.PDF,
+    userId?: string,
+    userPlan?: 'free' | 'pro' | 'enterprise',
   ): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job) {
@@ -369,18 +362,20 @@ export class ZplService {
       }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
 
       const size = job.labelSize;
+      const effectiveUserPlan: UserPlan = userPlan || 'free';
+      const effectiveUserId = userId || 'anonymous';
       let resultBuffer: Buffer;
       let contentType: string;
       let fileExtension: string;
 
       // Convertir según el formato solicitado
       if (outputFormat === OutputFormat.PDF) {
-        resultBuffer = await this.convertZplToPdf(zplContent, size);
+        resultBuffer = await this.convertZplToPdf(zplContent, size, jobId, effectiveUserId, effectiveUserPlan);
         contentType = 'application/pdf';
         fileExtension = 'pdf';
       } else {
         // PNG o JPEG - crear archivo ZIP con las imágenes
-        resultBuffer = await this.convertZplToImages(zplContent, size, outputFormat);
+        resultBuffer = await this.convertZplToImages(zplContent, size, outputFormat, jobId, effectiveUserId, effectiveUserPlan);
         contentType = 'application/zip';
         fileExtension = 'zip';
       }
@@ -601,9 +596,18 @@ export class ZplService {
    * Convierte ZPL a PDF
    * @param zplRaw Contenido ZPL
    * @param labelSize Tamaño de etiqueta
+   * @param jobId ID del trabajo
+   * @param userId ID del usuario
+   * @param userPlan Plan del usuario
    * @returns Buffer del PDF
    */
-  private async convertZplToPdf(zplRaw: string, labelSize: LabelSize): Promise<Buffer> {
+  private async convertZplToPdf(
+    zplRaw: string,
+    labelSize: LabelSize,
+    jobId: string,
+    userId: string,
+    userPlan: UserPlan,
+  ): Promise<Buffer> {
     try {
       if (!zplRaw) {
         throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
@@ -636,7 +640,8 @@ export class ZplService {
         });
 
         const chunkZpl = formattedBlocks.join('\n');
-        const pdfBuffer = await this.callLabelary(chunkZpl, labelSize);
+        const labelCount = chunkBlocks.length;
+        const pdfBuffer = await this.callLabelary(chunkZpl, labelSize, jobId, userId, userPlan, labelCount);
         chunkPdfs.push(pdfBuffer);
       }
 
@@ -659,12 +664,18 @@ export class ZplService {
    * @param zplRaw Contenido ZPL
    * @param labelSize Tamaño de etiqueta
    * @param outputFormat Formato de imagen (png o jpeg)
+   * @param jobId ID del trabajo
+   * @param userId ID del usuario
+   * @param userPlan Plan del usuario
    * @returns Buffer del archivo ZIP
    */
   private async convertZplToImages(
     zplRaw: string,
     labelSize: LabelSize,
     outputFormat: OutputFormat,
+    jobId: string,
+    userId: string,
+    userPlan: UserPlan,
   ): Promise<Buffer> {
     try {
       if (!zplRaw) {
@@ -699,9 +710,10 @@ export class ZplService {
         });
 
         const chunkZpl = formattedBlocks.join('\n');
+        const labelCount = chunkBlocks.length;
 
         // Obtener PDF del chunk desde Labelary
-        const pdfBuffer = await this.callLabelary(chunkZpl, labelSize);
+        const pdfBuffer = await this.callLabelary(chunkZpl, labelSize, jobId, userId, userPlan, labelCount);
 
         // Convertir PDF a imágenes PNG
         const images = await this.pdfToImages(pdfBuffer);
@@ -913,82 +925,84 @@ export class ZplService {
 
   /**
    * Llama a la API de Labelary para convertir ZPL a PDF
-   * @param zpl Cadena ZPL a convertir
+   * Usa el sistema de colas con prioridad por plan
+   * @param zplBatch Cadena ZPL a convertir
    * @param labelSize Tamaño de la etiqueta
+   * @param jobId ID del trabajo
+   * @param userId ID del usuario
+   * @param userPlan Plan del usuario (para prioridad en cola)
+   * @param labelCount Número de etiquetas en el batch
    * @returns Buffer del PDF
    */
-  private async callLabelary(zplBatch: string, labelSize: LabelSize): Promise<Buffer> {
-    // Usar el limiter para controlar el rate de llamadas a Labelary
-    return this.labelaryLimiter.schedule(async () => {
-      try {
-        const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${labelSize}`;
+  private async callLabelary(
+    zplBatch: string,
+    labelSize: LabelSize,
+    jobId: string,
+    userId: string,
+    userPlan: UserPlan,
+    labelCount: number,
+  ): Promise<Buffer> {
+    // Validar límite de etiquetas por solicitud
+    const actualLabelCount = (zplBatch.match(/\^XA/g) || []).length;
+    if (actualLabelCount > this.CHUNK_SIZE) {
+      throw new HttpException(
+        `El número de etiquetas (${actualLabelCount}) excede el límite permitido (${this.CHUNK_SIZE} etiquetas por solicitud)`,
+        HttpStatus.PAYLOAD_TOO_LARGE,
+      );
+    }
 
-        const labelCount = (zplBatch.match(/\^XA/g) || []).length;
+    try {
+      // Usar el sistema de colas con prioridad
+      return await this.labelaryQueueService.enqueue(
+        jobId,
+        userId,
+        userPlan,
+        zplBatch,
+        labelSize,
+        labelCount,
+      );
+    } catch (error: any) {
+      // Manejar errores específicos
+      if (error instanceof HttpException) {
+        throw error;
+      }
 
-        if (labelCount > this.CHUNK_SIZE) {
-          throw new HttpException(
-            `El número de etiquetas (${labelCount}) excede el límite permitido (${this.CHUNK_SIZE} etiquetas por solicitud)`,
-            HttpStatus.PAYLOAD_TOO_LARGE
-          );
-        }
-
-        const response = await axios.post(url, zplBatch, {
-          headers: {
-            Accept: 'application/pdf',
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          responseType: 'arraybuffer',
-        });
-
-        if (response.status !== 200) {
-          throw new Error(`Labelary API error: ${response.status}`);
-        }
-
-        return Buffer.from(response.data);
-      } catch (error) {
-        if (error instanceof HttpException) {
-          throw error;
-        }
-        // Manejar rate limit de Labelary
-        if (error.response?.status === 429) {
-          this.logger.warn('Rate limit de Labelary alcanzado, reintentando...');
-          // Log rate limit warning
-          this.logError(
-            'TIMEOUT',
-            'LABELARY_RATE_LIMIT',
-            'Labelary API rate limit exceeded',
-            'warning',
-            { labelSize },
-          );
-          throw new Error('Rate limit exceeded');
-        }
-        if (error.response?.status === 413) {
-          this.logError(
-            'LABEL_LIMIT_EXCEEDED',
-            'LABELARY_PAYLOAD_TOO_LARGE',
-            'Labels exceed 50 per request limit',
-            'error',
-            { labelSize },
-          );
-          throw new HttpException(
-            'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
-            HttpStatus.PAYLOAD_TOO_LARGE
-          );
-        }
-        // Log generic Labelary error
+      if (error.response?.status === 413) {
         this.logError(
-          'SERVER_ERROR',
-          'LABELARY_API_ERROR',
-          `Labelary API error: ${error.message}`,
+          'LABEL_LIMIT_EXCEEDED',
+          'LABELARY_PAYLOAD_TOO_LARGE',
+          'Labels exceed 50 per request limit',
           'error',
-          { status: error.response?.status },
+          { labelSize },
         );
         throw new HttpException(
-          'Error in Labelary API conversion',
-          HttpStatus.INTERNAL_SERVER_ERROR,
+          'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
+          HttpStatus.PAYLOAD_TOO_LARGE,
         );
       }
-    });
+
+      // Log generic Labelary error
+      this.logError(
+        'SERVER_ERROR',
+        'LABELARY_API_ERROR',
+        `Labelary API error: ${error.message}`,
+        'error',
+        { status: error.response?.status },
+      );
+      throw new HttpException(
+        'Error in Labelary API conversion',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /**
+   * Obtiene la posición en cola de un job
+   * @param jobId ID del trabajo
+   * @returns Información de posición en cola
+   */
+  getQueuePosition(jobId: string): QueuePositionResponse {
+    return this.labelaryQueueService.getQueuePosition(jobId);
   }
 
   /**
@@ -1223,46 +1237,13 @@ export class ZplService {
    * @returns Buffer de la imagen PNG
    */
   private async getSingleLabelaryPngImage(zplContent: string, labelSize: LabelSize): Promise<Buffer> {
-    return this.labelaryLimiter.schedule(async () => {
-      try {
-        const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${labelSize}/0/`;
-        
-        this.logger.debug(`Enviando solicitud a Labelary para una etiqueta`);
-
-        const response = await axios({
-          method: 'post',
-          url: url,
-          data: zplContent,
-          headers: {
-            Accept: 'image/png',
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          responseType: 'arraybuffer',
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          transformRequest: [(data) => data],
-        });
-
-        if (response.status !== 200) {
-          throw new Error(`Labelary API respondió con estado ${response.status}`);
-        }
-
-        return Buffer.from(response.data);
-      } catch (error) {
-        this.logger.error(`Error en Labelary API: ${error.message}`);
-        if (error.response?.data) {
-          const errorText = Buffer.from(error.response.data).toString();
-          this.logger.error(`Respuesta de error de Labelary: ${errorText}`);
-        }
-        
-        // Si es un error 429 (rate limit), lanzar un error especial para que Bottleneck lo reintente
-        if (error.response?.status === 429) {
-          throw new Bottleneck.BottleneckError(`Rate limit excedido: ${error.message}`);
-        }
-        
-        throw new Error(`Error al obtener imagen de Labelary API: ${error.message}`);
-      }
-    });
+    try {
+      this.logger.debug(`Enviando solicitud a Labelary para una etiqueta PNG`);
+      return await this.labelaryQueueService.enqueuePngDirect(zplContent, labelSize);
+    } catch (error) {
+      this.logger.error(`Error en Labelary API (PNG): ${error.message}`);
+      throw error;
+    }
   }
 
   /**
@@ -1535,9 +1516,20 @@ export class ZplService {
     let completedCount = 0;
     let failedCount = 0;
 
-    // Obtener el userId del batch desde Firestore
+    // Obtener el userId y userPlan del batch desde Firestore
     const batch = await this.firestoreService.getBatchJob(batchId);
     const userId = batch?.userId;
+
+    // Obtener el plan del usuario (batch solo disponible para pro/enterprise)
+    let userPlan: UserPlan = 'pro';
+    if (userId) {
+      try {
+        const user = await this.usersService.getUserById(userId);
+        userPlan = (user?.plan as UserPlan) || 'pro';
+      } catch {
+        userPlan = 'pro'; // Default para batch
+      }
+    }
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -1564,7 +1556,7 @@ export class ZplService {
         let fileExtension: string;
 
         if (outputFormat === 'pdf') {
-          resultBuffer = await this.convertZplToPdf(file.content, size);
+          resultBuffer = await this.convertZplToPdf(file.content, size, job.jobId, userId || 'batch', userPlan);
           contentType = 'application/pdf';
           fileExtension = 'pdf';
         } else {
@@ -1572,6 +1564,9 @@ export class ZplService {
             file.content,
             size,
             outputFormat === 'png' ? OutputFormat.PNG : OutputFormat.JPEG,
+            job.jobId,
+            userId || 'batch',
+            userPlan,
           );
           contentType = 'application/zip';
           fileExtension = 'zip';

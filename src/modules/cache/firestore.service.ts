@@ -6,6 +6,7 @@ import type { User, PlanType } from '../../common/interfaces/user.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
+import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
 import { getStartOfDayInTimezone, getDateStringInTimezone } from '../../utils/timezone.util.js';
 import { ErrorIdGenerator } from '../../common/utils/error-id-generator.js';
 
@@ -2448,6 +2449,155 @@ export class FirestoreService {
       };
     } catch (error) {
       this.logger.error(`Error al obtener conversiones paginadas: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== Labelary Hourly Stats ==============
+
+  private readonly labelaryStatsCollection = 'labelary_hourly_stats';
+
+  /**
+   * Guarda o actualiza estadísticas por hora de Labelary
+   * Usa transacción para hacer merge de datos existentes
+   */
+  async saveLabelaryHourlyStats(stats: HourlyLabelaryStats): Promise<void> {
+    try {
+      const docRef = this.firestore
+        .collection(this.labelaryStatsCollection)
+        .doc(stats.hourKey);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const doc = await transaction.get(docRef);
+
+        if (doc.exists) {
+          const existing = doc.data() as HourlyLabelaryStats;
+          transaction.update(docRef, {
+            totalCalls: existing.totalCalls + stats.totalCalls,
+            successCount: existing.successCount + stats.successCount,
+            errorCount: existing.errorCount + stats.errorCount,
+            rateLimitHits: existing.rateLimitHits + stats.rateLimitHits,
+            totalResponseTimeMs:
+              existing.totalResponseTimeMs + stats.totalResponseTimeMs,
+            minResponseTimeMs: Math.min(
+              existing.minResponseTimeMs || Infinity,
+              stats.minResponseTimeMs,
+            ),
+            maxResponseTimeMs: Math.max(
+              existing.maxResponseTimeMs || 0,
+              stats.maxResponseTimeMs,
+            ),
+            labelCount: existing.labelCount + stats.labelCount,
+            updatedAt: new Date(),
+          });
+        } else {
+          transaction.set(docRef, {
+            ...stats,
+            updatedAt: new Date(),
+          });
+        }
+      });
+
+      this.logger.debug(`Labelary stats saved for hour: ${stats.hourKey}`);
+    } catch (error) {
+      this.logger.error(`Error saving Labelary hourly stats: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene estadísticas por hora en un rango de tiempo
+   */
+  async getLabelaryHourlyStatsRange(
+    startHour: string,
+    endHour: string,
+  ): Promise<(HourlyLabelaryStats & { avgResponseTimeMs: number })[]> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.labelaryStatsCollection)
+        .where('hourKey', '>=', startHour)
+        .where('hourKey', '<=', endHour)
+        .orderBy('hourKey', 'asc')
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data() as HourlyLabelaryStats;
+        return {
+          ...data,
+          avgResponseTimeMs:
+            data.totalCalls > 0
+              ? Math.round(data.totalResponseTimeMs / data.totalCalls)
+              : 0,
+        };
+      });
+    } catch (error) {
+      this.logger.error(`Error getting Labelary hourly stats: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene estadísticas de una hora específica
+   */
+  async getLabelaryHourlyStats(
+    hourKey: string,
+  ): Promise<(HourlyLabelaryStats & { avgResponseTimeMs: number }) | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.labelaryStatsCollection)
+        .doc(hourKey)
+        .get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data() as HourlyLabelaryStats;
+      return {
+        ...data,
+        avgResponseTimeMs:
+          data.totalCalls > 0
+            ? Math.round(data.totalResponseTimeMs / data.totalCalls)
+            : 0,
+      };
+    } catch (error) {
+      this.logger.error(`Error getting Labelary stats for ${hourKey}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Elimina estadísticas antiguas (más de N días)
+   */
+  async cleanupOldLabelaryStats(daysToKeep: number = 90): Promise<number> {
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+
+      // Formato: "2025-12-23T14"
+      const cutoffHour = cutoffDate.toISOString().slice(0, 13);
+
+      const snapshot = await this.firestore
+        .collection(this.labelaryStatsCollection)
+        .where('hourKey', '<', cutoffHour)
+        .get();
+
+      const batch = this.firestore.batch();
+      let count = 0;
+
+      snapshot.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+        count++;
+      });
+
+      if (count > 0) {
+        await batch.commit();
+        this.logger.log(`Cleaned up ${count} old Labelary stats documents`);
+      }
+
+      return count;
+    } catch (error) {
+      this.logger.error(`Error cleaning up old Labelary stats: ${error.message}`);
       throw error;
     }
   }

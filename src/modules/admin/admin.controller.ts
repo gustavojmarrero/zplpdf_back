@@ -406,4 +406,64 @@ export class AdminController {
     this.logger.log(`Admin ${admin.email} stopping plan simulation`);
     return this.adminService.stopSimulation(admin.uid, admin);
   }
+
+  // ==================== Labelary Analytics ====================
+
+  @Get('labelary-stats')
+  @ApiOperation({
+    summary: 'Get Labelary API statistics',
+    description: 'Returns hourly statistics of Labelary API usage including calls, errors, rate limits, and response times.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Labelary statistics retrieved successfully',
+    schema: {
+      properties: {
+        hourlyData: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              hourKey: { type: 'string', example: '2025-12-23T14' },
+              totalCalls: { type: 'number', example: 150 },
+              successCount: { type: 'number', example: 145 },
+              errorCount: { type: 'number', example: 3 },
+              rateLimitHits: { type: 'number', example: 2 },
+              avgResponseTimeMs: { type: 'number', example: 850 },
+              labelCount: { type: 'number', example: 1200 },
+            },
+          },
+        },
+        summary: {
+          type: 'object',
+          properties: {
+            totalCalls: { type: 'number', example: 2500 },
+            avgResponseTimeMs: { type: 'number', example: 800 },
+            errorRate: { type: 'number', example: 1.5 },
+            rateLimitRate: { type: 'number', example: 0.8 },
+            peakHour: { type: 'string', example: '2025-12-23T14' },
+            peakCallCount: { type: 'number', example: 200 },
+            totalLabelsProcessed: { type: 'number', example: 15000 },
+          },
+        },
+        period: {
+          type: 'object',
+          properties: {
+            hours: { type: 'number', example: 24 },
+            startHour: { type: 'string', example: '2025-12-22T14' },
+            endHour: { type: 'string', example: '2025-12-23T14' },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getLabelaryStats(
+    @Query('hours') hours: string = '24',
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting Labelary stats for ${hours} hours`);
+    return this.adminService.getLabelaryStats(parseInt(hours, 10) || 24);
+  }
 }

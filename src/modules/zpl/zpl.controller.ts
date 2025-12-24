@@ -312,6 +312,48 @@ export class ZplController {
     return await this.zplService.getConversionStatus(jobId);
   }
 
+  @Get('queue-position/:jobId')
+  @ApiOperation({
+    summary: 'Obtener posición en cola de Labelary',
+    description: 'Consulta la posición actual de un trabajo en la cola de procesamiento de Labelary',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Posición en cola del trabajo',
+    schema: {
+      properties: {
+        jobId: {
+          type: 'string',
+          example: 'abc123',
+        },
+        status: {
+          type: 'string',
+          example: 'queued',
+          enum: ['queued', 'processing', 'completed', 'failed', 'not_found'],
+        },
+        position: {
+          type: 'number',
+          example: 3,
+          nullable: true,
+        },
+        estimatedWaitSeconds: {
+          type: 'number',
+          example: 6,
+        },
+        queueLength: {
+          type: 'object',
+          properties: {
+            pro: { type: 'number', example: 2 },
+            free: { type: 'number', example: 5 },
+          },
+        },
+      },
+    },
+  })
+  getQueuePosition(@Param('jobId') jobId: string) {
+    return this.zplService.getQueuePosition(jobId);
+  }
+
   @Get('download/:jobId')
   @UseGuards(FirebaseAuthGuard)
   @ApiBearerAuth()

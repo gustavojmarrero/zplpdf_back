@@ -4,10 +4,12 @@ import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { BillingService } from '../billing/billing.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
+import { LabelaryAnalyticsService } from '../zpl/services/labelary-analytics.service.js';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
 import type { AdminUserData } from '../../common/decorators/admin-user.decorator.js';
 import type { AdminMetricsResponseDto } from './dto/admin-metrics.dto.js';
+import type { LabelaryStatsResponse } from '../zpl/interfaces/labelary-analytics.interface.js';
 import type {
   GetUsersQueryDto,
   AdminUsersResponseDto,
@@ -42,6 +44,7 @@ export class AdminService {
     private readonly billingService: BillingService,
     private readonly configService: ConfigService,
     private readonly periodCalculatorService: PeriodCalculatorService,
+    private readonly labelaryAnalyticsService: LabelaryAnalyticsService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (stripeSecretKey) {
@@ -1002,5 +1005,18 @@ export class AdminService {
         originalPlan: user.plan,
       },
     };
+  }
+
+  // ==================== Labelary Stats ====================
+
+  async getLabelaryStats(hours: number = 24): Promise<LabelaryStatsResponse> {
+    this.logger.log(`Fetching Labelary stats for last ${hours} hours`);
+
+    try {
+      return await this.labelaryAnalyticsService.getHourlyStats(hours);
+    } catch (error) {
+      this.logger.error(`Error fetching Labelary stats: ${error.message}`);
+      throw error;
+    }
   }
 }

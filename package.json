@@ -20,7 +20,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "deploy:build": "gcloud builds submit --tag gcr.io/intranet-guatever/zplpdf-service",
-    "deploy:run": "gcloud run deploy zplpdf-service --image gcr.io/intranet-guatever/zplpdf-service --platform managed --region us-central1 --allow-unauthenticated"
+    "deploy:run": "gcloud run deploy zplpdf-service --image gcr.io/intranet-guatever/zplpdf-service --platform managed --region us-central1 --max-instances=1 --allow-unauthenticated"
   },
   "dependencies": {
     "@google-cloud/firestore": "^7.11.0",
