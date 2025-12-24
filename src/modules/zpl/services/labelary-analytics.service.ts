@@ -65,8 +65,15 @@ export class LabelaryAnalyticsService implements OnModuleDestroy {
 
   /**
    * Registra una llamada exitosa a Labelary
+   * @param responseTimeMs Tiempo de respuesta en ms
+   * @param labelCount Total de labels procesados (incluyendo duplicados por ^PQ)
+   * @param uniqueLabelCount Labels únicos en el batch (después de deduplicación)
    */
-  async trackSuccess(responseTimeMs: number, labelCount: number = 1): Promise<void> {
+  async trackSuccess(
+    responseTimeMs: number,
+    labelCount: number = 1,
+    uniqueLabelCount: number = 1,
+  ): Promise<void> {
     const hourKey = this.getHourKey();
     const stats = this.getOrCreateStats(hourKey);
 
@@ -74,10 +81,13 @@ export class LabelaryAnalyticsService implements OnModuleDestroy {
     stats.successCount++;
     stats.totalResponseTimeMs += responseTimeMs;
     stats.labelCount += labelCount;
+    stats.uniqueLabelCount += uniqueLabelCount;
     stats.minResponseTimeMs = Math.min(stats.minResponseTimeMs, responseTimeMs);
     stats.maxResponseTimeMs = Math.max(stats.maxResponseTimeMs, responseTimeMs);
 
-    this.logger.debug(`Tracked success: ${responseTimeMs}ms, ${labelCount} labels`);
+    this.logger.debug(
+      `Tracked success: ${responseTimeMs}ms, ${labelCount} labels (${uniqueLabelCount} unique)`,
+    );
   }
 
   /**
@@ -136,6 +146,7 @@ export class LabelaryAnalyticsService implements OnModuleDestroy {
         minResponseTimeMs: Infinity,
         maxResponseTimeMs: 0,
         labelCount: 0,
+        uniqueLabelCount: 0,
       });
     }
     return this.statsBuffer.get(hourKey)!;

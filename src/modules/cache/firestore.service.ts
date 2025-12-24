@@ -2488,6 +2488,8 @@ export class FirestoreService {
               stats.maxResponseTimeMs,
             ),
             labelCount: existing.labelCount + stats.labelCount,
+            uniqueLabelCount:
+              (existing.uniqueLabelCount || 0) + (stats.uniqueLabelCount || 0),
             updatedAt: new Date(),
           });
         } else {
@@ -2598,6 +2600,201 @@ export class FirestoreService {
       return count;
     } catch (error) {
       this.logger.error(`Error cleaning up old Labelary stats: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene estadísticas de Labelary para el día actual (agregadas por hora)
+   * Retorna datos agregados de todas las horas del día en GMT-6
+   */
+  async getLabelaryTodayStats(): Promise<{
+    totalCalls: number;
+    successCount: number;
+    errorCount: number;
+    rateLimitHits: number;
+    avgResponseTimeMs: number;
+    labelCount: number;
+    uniqueLabelCount: number;
+    peakHour: string;
+    peakHourRequests: number;
+  }> {
+    try {
+      const today = getDateStringInTimezone(new Date());
+      const startHour = `${today}T00`;
+      const endHour = `${today}T23`;
+
+      const snapshot = await this.firestore
+        .collection(this.labelaryStatsCollection)
+        .where('hourKey', '>=', startHour)
+        .where('hourKey', '<=', endHour)
+        .get();
+
+      let totalCalls = 0;
+      let successCount = 0;
+      let errorCount = 0;
+      let rateLimitHits = 0;
+      let totalResponseTimeMs = 0;
+      let labelCount = 0;
+      let uniqueLabelCount = 0;
+      let peakHour = '';
+      let peakHourRequests = 0;
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data() as HourlyLabelaryStats;
+        totalCalls += data.totalCalls;
+        successCount += data.successCount;
+        errorCount += data.errorCount;
+        rateLimitHits += data.rateLimitHits;
+        totalResponseTimeMs += data.totalResponseTimeMs;
+        labelCount += data.labelCount;
+        uniqueLabelCount += data.uniqueLabelCount || 0;
+
+        if (data.totalCalls > peakHourRequests) {
+          peakHourRequests = data.totalCalls;
+          // Extraer solo la hora del hourKey (e.g., "2025-12-23T14" -> "14:00")
+          const hourNum = data.hourKey.split('T')[1];
+          peakHour = `${hourNum}:00`;
+        }
+      }
+
+      return {
+        totalCalls,
+        successCount,
+        errorCount,
+        rateLimitHits,
+        avgResponseTimeMs:
+          totalCalls > 0 ? Math.round(totalResponseTimeMs / totalCalls) : 0,
+        labelCount,
+        uniqueLabelCount,
+        peakHour: peakHour || '00:00',
+        peakHourRequests,
+      };
+    } catch (error) {
+      this.logger.error(`Error getting today Labelary stats: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene histórico semanal de estadísticas de Labelary
+   * Agrega datos por día para los últimos N días
+   */
+  async getLabelaryWeeklyHistory(
+    days: number = 7,
+  ): Promise<
+    Array<{
+      date: string;
+      requests: number;
+      errors: number;
+      uniqueLabels: number;
+    }>
+  > {
+    try {
+      const results: Array<{
+        date: string;
+        requests: number;
+        errors: number;
+        uniqueLabels: number;
+      }> = [];
+
+      // Calcular fecha de inicio (hace N días)
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days + 1);
+
+      for (let i = 0; i < days; i++) {
+        const currentDate = new Date(startDate);
+        currentDate.setDate(startDate.getDate() + i);
+        const dateStr = getDateStringInTimezone(currentDate);
+
+        const startHour = `${dateStr}T00`;
+        const endHour = `${dateStr}T23`;
+
+        const snapshot = await this.firestore
+          .collection(this.labelaryStatsCollection)
+          .where('hourKey', '>=', startHour)
+          .where('hourKey', '<=', endHour)
+          .get();
+
+        let requests = 0;
+        let errors = 0;
+        let uniqueLabels = 0;
+
+        for (const doc of snapshot.docs) {
+          const data = doc.data() as HourlyLabelaryStats;
+          requests += data.totalCalls;
+          errors += data.errorCount + data.rateLimitHits;
+          uniqueLabels += data.uniqueLabelCount || 0;
+        }
+
+        results.push({
+          date: dateStr,
+          requests,
+          errors,
+          uniqueLabels,
+        });
+      }
+
+      return results;
+    } catch (error) {
+      this.logger.error(`Error getting weekly Labelary history: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene la distribución horaria del día actual
+   */
+  async getLabelaryHourlyDistribution(): Promise<
+    Array<{
+      hour: string;
+      requests: number;
+      errors: number;
+    }>
+  > {
+    try {
+      const today = getDateStringInTimezone(new Date());
+      const startHour = `${today}T00`;
+      const endHour = `${today}T23`;
+
+      const snapshot = await this.firestore
+        .collection(this.labelaryStatsCollection)
+        .where('hourKey', '>=', startHour)
+        .where('hourKey', '<=', endHour)
+        .orderBy('hourKey', 'asc')
+        .get();
+
+      // Crear array con todas las 24 horas
+      const hourlyMap = new Map<string, { requests: number; errors: number }>();
+
+      // Inicializar todas las horas con 0
+      for (let h = 0; h < 24; h++) {
+        const hourStr = String(h).padStart(2, '0');
+        hourlyMap.set(`${hourStr}:00`, { requests: 0, errors: 0 });
+      }
+
+      // Llenar con datos reales
+      for (const doc of snapshot.docs) {
+        const data = doc.data() as HourlyLabelaryStats;
+        const hourNum = data.hourKey.split('T')[1];
+        const hourKey = `${hourNum}:00`;
+
+        hourlyMap.set(hourKey, {
+          requests: data.totalCalls,
+          errors: data.errorCount + data.rateLimitHits,
+        });
+      }
+
+      // Convertir a array
+      return Array.from(hourlyMap.entries())
+        .map(([hour, data]) => ({
+          hour,
+          requests: data.requests,
+          errors: data.errors,
+        }))
+        .sort((a, b) => a.hour.localeCompare(b.hour));
+    } catch (error) {
+      this.logger.error(`Error getting hourly distribution: ${error.message}`);
       throw error;
     }
   }

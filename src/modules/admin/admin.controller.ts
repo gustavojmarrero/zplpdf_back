@@ -466,4 +466,85 @@ export class AdminController {
     this.logger.log(`Admin ${admin.email} requesting Labelary stats for ${hours} hours`);
     return this.adminService.getLabelaryStats(parseInt(hours, 10) || 24);
   }
+
+  // ==================== Labelary Metrics (Issue #10) ====================
+
+  @Get('labelary-metrics')
+  @ApiOperation({
+    summary: 'Get Labelary API metrics for dashboard',
+    description:
+      'Returns comprehensive metrics for the Labelary API usage dashboard including daily consumption, hourly distribution, weekly history, efficiency metrics, and saturation levels.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Labelary metrics retrieved successfully',
+    schema: {
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            summary: {
+              type: 'object',
+              properties: {
+                requestsToday: { type: 'number', example: 2450 },
+                dailyLimit: { type: 'number', example: 5000 },
+                peakHour: { type: 'string', example: '14:00' },
+                peakHourRequests: { type: 'number', example: 320 },
+                queuedUsers: { type: 'number', example: 3 },
+                errors429Today: { type: 'number', example: 12 },
+                avgResponseTime: { type: 'number', example: 245 },
+              },
+            },
+            hourlyDistribution: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  hour: { type: 'string', example: '00:00' },
+                  requests: { type: 'number', example: 45 },
+                  errors: { type: 'number', example: 0 },
+                },
+              },
+            },
+            weeklyHistory: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  date: { type: 'string', example: '2025-12-17' },
+                  requests: { type: 'number', example: 4200 },
+                  errors: { type: 'number', example: 5 },
+                  uniqueLabels: { type: 'number', example: 3800 },
+                },
+              },
+            },
+            efficiency: {
+              type: 'object',
+              properties: {
+                totalLabelsProcessed: { type: 'number', example: 15000 },
+                uniqueLabelsConverted: { type: 'number', example: 12500 },
+                deduplicationRatio: { type: 'number', example: 16.7 },
+                apiCallsSaved: { type: 'number', example: 2500 },
+              },
+            },
+            saturation: {
+              type: 'object',
+              properties: {
+                current: { type: 'number', example: 49 },
+                level: { type: 'string', enum: ['normal', 'warning', 'critical'], example: 'normal' },
+                estimatedExhaustion: { type: 'string', nullable: true, example: null },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getLabelaryMetrics(@AdminUser() admin: AdminUserData) {
+    this.logger.log(`Admin ${admin.email} requesting Labelary metrics`);
+    return this.adminService.getLabelaryMetrics();
+  }
 }

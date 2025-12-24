@@ -9,7 +9,11 @@ import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
 import type { AdminUserData } from '../../common/decorators/admin-user.decorator.js';
 import type { AdminMetricsResponseDto } from './dto/admin-metrics.dto.js';
-import type { LabelaryStatsResponse } from '../zpl/interfaces/labelary-analytics.interface.js';
+import type {
+  LabelaryStatsResponse,
+  LabelaryMetricsResponse,
+} from '../zpl/interfaces/labelary-analytics.interface.js';
+import { LabelaryQueueService } from '../zpl/services/labelary-queue.service.js';
 import type {
   GetUsersQueryDto,
   AdminUsersResponseDto,
@@ -45,6 +49,7 @@ export class AdminService {
     private readonly configService: ConfigService,
     private readonly periodCalculatorService: PeriodCalculatorService,
     private readonly labelaryAnalyticsService: LabelaryAnalyticsService,
+    private readonly labelaryQueueService: LabelaryQueueService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (stripeSecretKey) {
@@ -1018,5 +1023,116 @@ export class AdminService {
       this.logger.error(`Error fetching Labelary stats: ${error.message}`);
       throw error;
     }
+  }
+
+  // ==================== Labelary Metrics (Issue #10) ====================
+
+  private readonly DAILY_LIMIT = 5000; // Límite diario de requests a Labelary
+
+  async getLabelaryMetrics(): Promise<LabelaryMetricsResponse> {
+    this.logger.log('Fetching Labelary metrics for admin dashboard');
+
+    try {
+      // Ejecutar todas las consultas en paralelo
+      const [todayStats, hourlyDistribution, weeklyHistory, queueStats] = await Promise.all([
+        this.firestoreService.getLabelaryTodayStats(),
+        this.firestoreService.getLabelaryHourlyDistribution(),
+        this.firestoreService.getLabelaryWeeklyHistory(7),
+        Promise.resolve(this.labelaryQueueService.getQueueStats()),
+      ]);
+
+      // Calcular métricas de eficiencia
+      const totalLabelsProcessed = todayStats.labelCount;
+      const uniqueLabelsConverted = todayStats.uniqueLabelCount;
+      const apiCallsSaved = totalLabelsProcessed - uniqueLabelsConverted;
+      const deduplicationRatio =
+        totalLabelsProcessed > 0
+          ? Math.round(((totalLabelsProcessed - uniqueLabelsConverted) / totalLabelsProcessed) * 1000) / 10
+          : 0;
+
+      // Calcular saturación
+      const saturationPercent = Math.round((todayStats.totalCalls / this.DAILY_LIMIT) * 100);
+      const saturationLevel = this.calculateSaturationLevel(saturationPercent);
+      const estimatedExhaustion = this.calculateEstimatedExhaustion(
+        todayStats.totalCalls,
+        todayStats.peakHourRequests,
+      );
+
+      // Construir respuesta
+      const response: LabelaryMetricsResponse = {
+        success: true,
+        data: {
+          summary: {
+            requestsToday: todayStats.totalCalls,
+            dailyLimit: this.DAILY_LIMIT,
+            peakHour: todayStats.peakHour,
+            peakHourRequests: todayStats.peakHourRequests,
+            queuedUsers: queueStats.totalQueued,
+            errors429Today: todayStats.rateLimitHits,
+            avgResponseTime: todayStats.avgResponseTimeMs,
+          },
+          hourlyDistribution,
+          weeklyHistory,
+          efficiency: {
+            totalLabelsProcessed,
+            uniqueLabelsConverted,
+            deduplicationRatio,
+            apiCallsSaved,
+          },
+          saturation: {
+            current: saturationPercent,
+            level: saturationLevel,
+            estimatedExhaustion,
+          },
+        },
+      };
+
+      return response;
+    } catch (error) {
+      this.logger.error(`Error fetching Labelary metrics: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Determina el nivel de saturación basado en el porcentaje de uso
+   */
+  private calculateSaturationLevel(percent: number): 'normal' | 'warning' | 'critical' {
+    if (percent >= 90) return 'critical';
+    if (percent >= 70) return 'warning';
+    return 'normal';
+  }
+
+  /**
+   * Estima la hora de agotamiento del límite diario
+   * Basado en la tasa de consumo actual
+   */
+  private calculateEstimatedExhaustion(
+    currentRequests: number,
+    peakHourRequests: number,
+  ): string | null {
+    if (currentRequests >= this.DAILY_LIMIT) {
+      return 'Límite alcanzado';
+    }
+
+    if (peakHourRequests === 0) {
+      return null;
+    }
+
+    // Calcular horas restantes basado en la tasa de la hora pico
+    const remainingRequests = this.DAILY_LIMIT - currentRequests;
+    const hoursRemaining = Math.ceil(remainingRequests / peakHourRequests);
+
+    if (hoursRemaining > 24) {
+      return null; // No se agotará hoy
+    }
+
+    // Calcular hora estimada de agotamiento
+    const now = new Date();
+    const exhaustionTime = new Date(now.getTime() + hoursRemaining * 60 * 60 * 1000);
+    const hours = String(exhaustionTime.getHours()).padStart(2, '0');
+    const minutes = String(exhaustionTime.getMinutes()).padStart(2, '0');
+
+    return `~${hours}:${minutes}`;
   }
 }
