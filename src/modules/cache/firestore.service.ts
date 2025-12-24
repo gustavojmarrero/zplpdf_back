@@ -1438,8 +1438,16 @@ export class FirestoreService {
 
   async getUsersCount(): Promise<number> {
     try {
-      const snapshot = await this.firestore.collection(this.usersCollection).count().get();
-      return snapshot.data().count;
+      // Count total users and subtract admins
+      const [totalSnapshot, adminSnapshot] = await Promise.all([
+        this.firestore.collection(this.usersCollection).count().get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
+      ]);
+      return totalSnapshot.data().count - adminSnapshot.data().count;
     } catch (error) {
       this.logger.error(`Error al contar usuarios: ${error.message}`);
       throw error;
@@ -1448,8 +1456,8 @@ export class FirestoreService {
 
   async getUsersByPlan(): Promise<{ free: number; pro: number; enterprise: number }> {
     try {
-      // Use count() queries instead of full scan - 3 small queries vs 1 large
-      const [freeCount, proCount, enterpriseCount] = await Promise.all([
+      // Count users by plan and subtract admins from each plan
+      const [freeCount, proCount, enterpriseCount, freeAdminCount, proAdminCount, enterpriseAdminCount] = await Promise.all([
         this.firestore
           .collection(this.usersCollection)
           .where('plan', '==', 'free')
@@ -1465,12 +1473,31 @@ export class FirestoreService {
           .where('plan', '==', 'enterprise')
           .count()
           .get(),
+        // Count admins by plan to subtract
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'free')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'pro')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'enterprise')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
       ]);
 
       return {
-        free: freeCount.data().count,
-        pro: proCount.data().count,
-        enterprise: enterpriseCount.data().count,
+        free: freeCount.data().count - freeAdminCount.data().count,
+        pro: proCount.data().count - proAdminCount.data().count,
+        enterprise: enterpriseCount.data().count - enterpriseAdminCount.data().count,
       };
     } catch (error) {
       this.logger.error(`Error al obtener usuarios por plan: ${error.message}`);
@@ -1500,12 +1527,27 @@ export class FirestoreService {
       const startDateObj = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
       const startDate = getDateStringInTimezone(startDateObj);
 
-      const dailyStats = await this.getDailyStatsRange(startDate, endDate);
+      // Get daily stats and admin user IDs in parallel
+      const [dailyStats, adminSnapshot] = await Promise.all([
+        this.getDailyStatsRange(startDate, endDate),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('role', '==', 'admin')
+          .select()
+          .get(),
+      ]);
 
-      // Collect unique users across all days
+      // Get admin user IDs to exclude
+      const adminIds = new Set(adminSnapshot.docs.map((doc) => doc.id));
+
+      // Collect unique users across all days, excluding admins
       const uniqueUsers = new Set<string>();
       dailyStats.forEach((day) => {
-        day.activeUserIds?.forEach((userId) => uniqueUsers.add(userId));
+        day.activeUserIds?.forEach((userId) => {
+          if (!adminIds.has(userId)) {
+            uniqueUsers.add(userId);
+          }
+        });
       });
 
       return uniqueUsers.size;
@@ -1517,21 +1559,27 @@ export class FirestoreService {
 
   async getRecentRegistrations(limit: number = 10): Promise<User[]> {
     try {
+      // Fetch more than needed to account for admin users being filtered out
       const snapshot = await this.firestore
         .collection(this.usersCollection)
         .orderBy('createdAt', 'desc')
-        .limit(limit)
+        .limit(limit * 2)
         .get();
 
-      return snapshot.docs.map((doc) => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          ...data,
-          createdAt: data.createdAt?.toDate?.() || data.createdAt,
-          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
-        } as User;
-      });
+      const users = snapshot.docs
+        .map((doc) => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            ...data,
+            createdAt: data.createdAt?.toDate?.() || data.createdAt,
+            updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+          } as User;
+        })
+        // Exclude admin users from metrics
+        .filter((user) => user.role !== 'admin');
+
+      return users.slice(0, limit);
     } catch (error) {
       this.logger.error(`Error al obtener registros recientes: ${error.message}`);
       throw error;
@@ -1568,13 +1616,27 @@ export class FirestoreService {
         query = query.orderBy('createdAt', 'desc');
       }
 
-      // Get total count (without sort-dependent fields)
+      // Get total count (without sort-dependent fields), excluding admins
       let countQuery: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
-      if (plan) countQuery = countQuery.where('plan', '==', plan);
-      if (dateFrom) countQuery = countQuery.where('createdAt', '>=', dateFrom);
-      if (dateTo) countQuery = countQuery.where('createdAt', '<=', dateTo);
-      const countSnapshot = await countQuery.count().get();
-      const total = countSnapshot.data().count;
+      let countQueryAdmins: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
+      if (plan) {
+        countQuery = countQuery.where('plan', '==', plan);
+        countQueryAdmins = countQueryAdmins.where('plan', '==', plan);
+      }
+      if (dateFrom) {
+        countQuery = countQuery.where('createdAt', '>=', dateFrom);
+        countQueryAdmins = countQueryAdmins.where('createdAt', '>=', dateFrom);
+      }
+      if (dateTo) {
+        countQuery = countQuery.where('createdAt', '<=', dateTo);
+        countQueryAdmins = countQueryAdmins.where('createdAt', '<=', dateTo);
+      }
+      countQueryAdmins = countQueryAdmins.where('role', '==', 'admin');
+      const [countSnapshot, adminCountSnapshot] = await Promise.all([
+        countQuery.count().get(),
+        countQueryAdmins.count().get(),
+      ]);
+      const total = countSnapshot.data().count - adminCountSnapshot.data().count;
 
       // For pdfCount/lastActiveAt sorting, we need to fetch all users and sort in memory
       // For Firestore-sortable fields, use pagination
@@ -1619,6 +1681,11 @@ export class FirestoreService {
             // Ignore history errors
           }
 
+          // Exclude admin users from metrics
+          if (userData.role === 'admin') {
+            return null;
+          }
+
           // Apply search filter in memory (Firestore doesn't support LIKE queries)
           if (search) {
             const searchLower = search.toLowerCase();
@@ -1641,7 +1708,7 @@ export class FirestoreService {
         }),
       );
 
-      // Filter out null values (from search filter)
+      // Filter out null values (from search filter and admin filter)
       let filteredUsers = users.filter((u) => u !== null);
 
       // Sort in memory if needed (pdfCount, lastActiveAt, or search was applied)
@@ -1738,6 +1805,9 @@ export class FirestoreService {
 
         if (!userData) continue;
 
+        // Exclude admin users from metrics
+        if (userData.role === 'admin') continue;
+
         const plan = userData.plan as PlanType;
         const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
         const pdfLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
@@ -1813,6 +1883,9 @@ export class FirestoreService {
         const userData = userDataMap[userId];
 
         if (!userData) continue;
+
+        // Exclude admin users from metrics
+        if (userData.role === 'admin') continue;
 
         const plan = userData.plan as PlanType;
         const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
@@ -1890,6 +1963,9 @@ export class FirestoreService {
         const userData = userDataMap[userId];
 
         if (!userData) continue;
+
+        // Exclude admin users from metrics
+        if (userData.role === 'admin') continue;
 
         const plan = userData.plan as PlanType;
 
@@ -1978,6 +2054,9 @@ export class FirestoreService {
         const userData = userDataMap[userId];
 
         if (!userData) continue;
+
+        // Exclude admin users from metrics
+        if (userData.role === 'admin') continue;
 
         const pdfsUsed = usageData.pdfCount || 0;
 
@@ -2212,16 +2291,21 @@ export class FirestoreService {
         userStats[userId].labels += data.labelCount || 0;
       });
 
-      // Sort by pdfs and get top users
+      // Sort by pdfs and get top users (fetch more to account for admin filtering)
       const sortedUsers = Object.entries(userStats)
         .sort(([, a], [, b]) => b.pdfs - a.pdfs)
-        .slice(0, limit);
+        .slice(0, limit * 2);
 
-      // Get user details
-      const topUsers = await Promise.all(
+      // Get user details, excluding admins
+      const topUsers = (await Promise.all(
         sortedUsers.map(async ([userId, stats]) => {
           const userDoc = await this.firestore.collection(this.usersCollection).doc(userId).get();
           const userData = userDoc.exists ? userDoc.data() : { email: 'unknown', plan: 'free' };
+
+          // Exclude admin users from metrics
+          if (userData.role === 'admin') {
+            return null;
+          }
 
           return {
             id: userId,
@@ -2231,9 +2315,9 @@ export class FirestoreService {
             labels: stats.labels,
           };
         }),
-      );
+      )).filter((user) => user !== null);
 
-      return topUsers;
+      return topUsers.slice(0, limit);
     } catch (error) {
       this.logger.error(`Error al obtener top usuarios: ${error.message}`);
       throw error;
