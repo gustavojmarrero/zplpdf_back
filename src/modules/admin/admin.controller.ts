@@ -715,12 +715,20 @@ export class AdminController {
   })
   @ApiResponse({ status: 200, description: 'Expense summary retrieved successfully' })
   async getExpenseSummary(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-    @AdminUser() admin: AdminUserData,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @AdminUser() admin?: AdminUserData,
   ) {
-    this.logger.log(`Admin ${admin.email} requesting expense summary`);
-    return this.adminService.getExpenseSummary(new Date(startDate), new Date(endDate));
+    this.logger.log(`Admin ${admin?.email} requesting expense summary`);
+    // Default to current month if no dates provided
+    const now = new Date();
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = endDate
+      ? new Date(endDate)
+      : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    return this.adminService.getExpenseSummary(start, end);
   }
 
   // ==================== Goals ====================
