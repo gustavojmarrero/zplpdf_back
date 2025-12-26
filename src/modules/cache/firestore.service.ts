@@ -950,28 +950,12 @@ export class FirestoreService {
         errorId,
       } = filters;
 
-      let query: FirebaseFirestore.Query = this.firestore.collection(this.errorLogsCollection);
+      // Query base: solo orderBy para evitar necesidad de índices compuestos
+      let query: FirebaseFirestore.Query = this.firestore
+        .collection(this.errorLogsCollection)
+        .orderBy('createdAt', 'desc');
 
-      // Search by errorId first (exact match)
-      if (errorId) {
-        query = query.where('errorId', '==', errorId);
-      }
-
-      if (severity) {
-        query = query.where('severity', '==', severity);
-      }
-      if (type) {
-        query = query.where('type', '==', type);
-      }
-      if (userId) {
-        query = query.where('userId', '==', userId);
-      }
-      if (status) {
-        query = query.where('status', '==', status);
-      }
-      if (source) {
-        query = query.where('source', '==', source);
-      }
+      // Filtros de fecha funcionan con orderBy sin índice adicional
       if (startDate) {
         query = query.where('createdAt', '>=', startDate);
       }
@@ -979,22 +963,16 @@ export class FirestoreService {
         query = query.where('createdAt', '<=', endDate);
       }
 
-      query = query.orderBy('createdAt', 'desc');
+      // Traer todos los documentos para filtrar en memoria
+      const snapshot = await query.get();
 
-      // Get total count (without pagination)
-      const countSnapshot = await query.count().get();
-      const total = countSnapshot.data().count;
-
-      // Apply pagination
-      const offset = (page - 1) * limit;
-      const snapshot = await query.offset(offset).limit(limit).get();
-
-      const errors: ErrorLog[] = snapshot.docs.map((doc) => {
+      // Mapear documentos a ErrorLog
+      let allErrors: ErrorLog[] = snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           id: doc.id,
           ...data,
-          errorId: data.errorId || doc.id, // Fallback for old errors without errorId
+          errorId: data.errorId || doc.id,
           status: data.status || 'open',
           source: data.source || 'backend',
           createdAt: data.createdAt?.toDate?.() || data.createdAt,
@@ -1003,14 +981,40 @@ export class FirestoreService {
         } as ErrorLog;
       });
 
-      // Calculate summary
-      const summarySnapshot = await this.firestore.collection(this.errorLogsCollection).get();
+      // Filtrar en memoria para evitar queries compuestas que requieren índices
+      if (errorId) {
+        allErrors = allErrors.filter((e) => e.errorId === errorId);
+      }
+      if (severity) {
+        allErrors = allErrors.filter((e) => e.severity === severity);
+      }
+      if (type) {
+        allErrors = allErrors.filter((e) => e.type === type);
+      }
+      if (userId) {
+        allErrors = allErrors.filter((e) => e.userId === userId);
+      }
+      if (status) {
+        allErrors = allErrors.filter((e) => e.status === status);
+      }
+      if (source) {
+        allErrors = allErrors.filter((e) => e.source === source);
+      }
+
+      // Total después de filtrar
+      const total = allErrors.length;
+
+      // Aplicar paginación
+      const offset = (page - 1) * limit;
+      const errors = allErrors.slice(offset, offset + limit);
+
+      // Calculate summary from all docs (not filtered)
       const bySeverity: Record<string, number> = {};
       const byType: Record<string, number> = {};
       const byStatus: Record<string, number> = {};
       const bySource: Record<string, number> = {};
 
-      summarySnapshot.docs.forEach((doc) => {
+      snapshot.docs.forEach((doc) => {
         const data = doc.data();
         bySeverity[data.severity] = (bySeverity[data.severity] || 0) + 1;
         byType[data.type] = (byType[data.type] || 0) + 1;
