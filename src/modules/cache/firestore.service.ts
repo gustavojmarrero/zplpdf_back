@@ -3432,19 +3432,38 @@ export class FirestoreService {
     }>
   > {
     try {
-      const snapshot = await this.firestore
+      // Obtener todos los usuarios (sin filtrar por country)
+      const usersSnapshot = await this.firestore
         .collection(this.usersCollection)
-        .where('country', '!=', null)
         .get();
+
+      // Obtener países desde transacciones exitosas
+      const txSnapshot = await this.firestore
+        .collection(this.transactionsCollection)
+        .where('status', '==', 'succeeded')
+        .get();
+
+      // Mapear stripeCustomerId → país desde transacciones
+      const customerCountryMap = new Map<string, string>();
+      for (const doc of txSnapshot.docs) {
+        const data = doc.data();
+        if (data.stripeCustomerId && data.billingCountry) {
+          customerCountryMap.set(data.stripeCustomerId, data.billingCountry);
+        }
+      }
 
       const countryMap = new Map<
         string,
         { total: number; byPlan: { free: number; pro: number; enterprise: number } }
       >();
 
-      for (const doc of snapshot.docs) {
+      for (const doc of usersSnapshot.docs) {
         const data = doc.data();
-        const country = data.country || 'unknown';
+        // Prioridad: user.country > transacción.billingCountry > 'unknown'
+        const country =
+          data.country ||
+          customerCountryMap.get(data.stripeCustomerId) ||
+          'unknown';
 
         if (!countryMap.has(country)) {
           countryMap.set(country, {
@@ -3455,7 +3474,12 @@ export class FirestoreService {
 
         const countryData = countryMap.get(country)!;
         countryData.total++;
-        countryData.byPlan[data.plan as 'free' | 'pro' | 'enterprise']++;
+        const plan = data.plan as 'free' | 'pro' | 'enterprise';
+        if (plan && countryData.byPlan[plan] !== undefined) {
+          countryData.byPlan[plan]++;
+        } else {
+          countryData.byPlan.free++;
+        }
       }
 
       return Array.from(countryMap.entries())
