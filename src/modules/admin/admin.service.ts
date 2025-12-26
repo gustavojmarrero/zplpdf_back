@@ -1173,7 +1173,7 @@ export class AdminService {
   }
 
   async getChurnRate(period?: string) {
-    const validPeriod = (period as 'month' | 'quarter' | 'year') || 'month';
+    const validPeriod = (period as 'day' | 'week' | 'month' | 'quarter' | 'year') || 'month';
     return this.financeService.getChurnRate(validPeriod);
   }
 

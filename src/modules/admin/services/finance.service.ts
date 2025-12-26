@@ -175,7 +175,9 @@ export class FinanceService {
   /**
    * Obtiene tasa de churn por período
    */
-  async getChurnRate(period: 'month' | 'quarter' | 'year' = 'month'): Promise<ChurnData> {
+  async getChurnRate(
+    period: 'day' | 'week' | 'month' | 'quarter' | 'year' = 'month',
+  ): Promise<ChurnData> {
     const { startDate, endDate } = this.getPeriodDates(period);
 
     // Obtener usuarios churneados en el período
@@ -205,7 +207,7 @@ export class FinanceService {
     }
 
     // Tendencia de churn de los últimos 6 meses
-    const trend: Array<{ month: string; rate: number }> = [];
+    const trend: Array<{ month: string; churnRate: number }> = [];
     const now = new Date();
 
     for (let i = 5; i >= 0; i--) {
@@ -220,7 +222,7 @@ export class FinanceService {
 
       trend.push({
         month: monthStr,
-        rate: Math.round(monthRate * 100) / 100,
+        churnRate: Math.round(monthRate * 100) / 100,
       });
     }
 
@@ -228,6 +230,7 @@ export class FinanceService {
       period: period,
       churnRate: Math.round(churnRate * 100) / 100,
       churnedUsers,
+      totalSubscribers: activeSubscribers,
       churnedMrr,
       churnedMrrMxn,
       trend,

@@ -158,9 +158,10 @@ export interface ChurnData {
   period: string;
   churnRate: number; // Porcentaje
   churnedUsers: number;
+  totalSubscribers: number; // Total de suscriptores activos
   churnedMrr: number;
   churnedMrrMxn: number;
-  trend: Array<{ month: string; rate: number }>;
+  trend: Array<{ month: string; churnRate: number }>;
 }
 
 export interface LTVData {
