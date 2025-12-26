@@ -46,17 +46,32 @@ export class UsersService {
 
     if (existingUser) {
       // Update existing user
-      await this.firestoreService.updateUser(firebaseUser.uid, {
+      const updates: Partial<User> = {
         email: firebaseUser.email,
         displayName: firebaseUser.name,
         emailVerified,
-      });
+      };
+
+      // Detectar país si el usuario aún no lo tiene
+      if (!existingUser.country && clientIP) {
+        try {
+          const detectedCountry = await this.geoService.detectCountryByIP(clientIP);
+          if (detectedCountry) {
+            updates.country = detectedCountry;
+            updates.countrySource = 'ip';
+            updates.countryDetectedAt = new Date();
+            this.logger.log(`Detected country ${detectedCountry} for existing user ${firebaseUser.uid}`);
+          }
+        } catch (error) {
+          this.logger.warn(`Failed to detect country for ${firebaseUser.uid}: ${error.message}`);
+        }
+      }
+
+      await this.firestoreService.updateUser(firebaseUser.uid, updates);
 
       return {
         ...existingUser,
-        email: firebaseUser.email,
-        displayName: firebaseUser.name,
-        emailVerified,
+        ...updates,
       };
     }
 
