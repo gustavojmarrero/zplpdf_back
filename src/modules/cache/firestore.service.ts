@@ -3522,8 +3522,8 @@ export class FirestoreService {
         }
 
         const countryData = countryMap.get(country)!;
-        countryData.revenue += data.amount / 100; // Convertir de centavos
-        countryData.revenueMxn += data.amountMxn;
+        countryData.revenue += (data.amount || 0) / 100; // Convertir de centavos
+        countryData.revenueMxn += data.amountMxn || 0;
         countryData.transactions++;
       }
 
