@@ -10,6 +10,37 @@ import type {
   StripeTransaction,
 } from '../../../common/interfaces/finance.interface.js';
 
+// Mapa de códigos ISO a nombres de países
+const COUNTRY_NAMES: Record<string, string> = {
+  MX: 'México',
+  US: 'United States',
+  BR: 'Brasil',
+  AR: 'Argentina',
+  CL: 'Chile',
+  CO: 'Colombia',
+  PE: 'Perú',
+  EC: 'Ecuador',
+  VE: 'Venezuela',
+  UY: 'Uruguay',
+  PY: 'Paraguay',
+  BO: 'Bolivia',
+  CR: 'Costa Rica',
+  PA: 'Panamá',
+  GT: 'Guatemala',
+  HN: 'Honduras',
+  SV: 'El Salvador',
+  NI: 'Nicaragua',
+  DO: 'República Dominicana',
+  PR: 'Puerto Rico',
+  ES: 'España',
+  CA: 'Canada',
+  GB: 'United Kingdom',
+  DE: 'Germany',
+  FR: 'France',
+  IT: 'Italy',
+  PT: 'Portugal',
+};
+
 @Injectable()
 export class FinanceService {
   private readonly logger = new Logger(FinanceService.name);
@@ -87,37 +118,82 @@ export class FinanceService {
     startDate: Date,
     endDate: Date,
   ): Promise<{
-    byCurrency: { usd: number; mxn: number };
-    byCountry: Array<{ country: string; revenue: number; revenueMxn: number; transactions: number }>;
-    transactions: StripeTransaction[];
-    total: number;
+    byCurrency: {
+      usd: { amount: number; amountMxn: number; transactions: number };
+      mxn: { amount: number; amountMxn: number; transactions: number };
+    };
+    byCountry: Array<{
+      country: string;
+      countryName: string;
+      amount: number;
+      transactions: number;
+    }>;
   }> {
-    const revenue = await this.firestoreService.getRevenueByPeriod(startDate, endDate);
-    const revenueByCountry = await this.firestoreService.getRevenueByCountry(startDate, endDate);
+    // Obtener transacciones del período
     const { transactions } = await this.firestoreService.getTransactions({
       startDate,
       endDate,
       status: 'succeeded',
-      limit: 100,
+      limit: 1000,
     });
 
-    return {
-      byCurrency: {
-        usd: revenue.totalUsd,
-        mxn: revenue.totalMxn,
-      },
-      byCountry: revenueByCountry,
-      transactions,
-      total: revenue.count,
+    // Calcular por moneda
+    const byCurrency = {
+      usd: { amount: 0, amountMxn: 0, transactions: 0 },
+      mxn: { amount: 0, amountMxn: 0, transactions: 0 },
     };
+
+    const countryMap = new Map<string, { amount: number; transactions: number }>();
+
+    for (const tx of transactions) {
+      const curr = tx.currency as 'usd' | 'mxn';
+      if (curr === 'usd' || curr === 'mxn') {
+        byCurrency[curr].amount += (tx.amount || 0) / 100;
+        byCurrency[curr].amountMxn += tx.amountMxn || (tx.amount || 0) / 100;
+        byCurrency[curr].transactions++;
+      }
+
+      // Agregar a byCountry
+      const country = tx.billingCountry || 'Unknown';
+      if (!countryMap.has(country)) {
+        countryMap.set(country, { amount: 0, transactions: 0 });
+      }
+      const countryData = countryMap.get(country)!;
+      countryData.amount += (tx.amount || 0) / 100;
+      countryData.transactions++;
+    }
+
+    // Convertir mapa a array con nombres de países
+    const byCountry = Array.from(countryMap.entries())
+      .map(([country, data]) => ({
+        country,
+        countryName: COUNTRY_NAMES[country] || country,
+        amount: data.amount,
+        transactions: data.transactions,
+      }))
+      .sort((a, b) => b.amount - a.amount);
+
+    return { byCurrency, byCountry };
   }
 
   /**
    * Obtiene historial de MRR por mes
+   * Retorna objeto con history y current para el frontend
    */
-  async getMRRHistory(months: number = 12): Promise<MRRHistoryItem[]> {
-    const history: MRRHistoryItem[] = [];
+  async getMRRHistory(months: number = 12): Promise<{
+    history: Array<{ month: string; mrr: number; mrrUsd: number }>;
+    current: { mrr: number; subscriberCount: number };
+  }> {
+    const historyItems: MRRHistoryItem[] = [];
     const now = new Date();
+
+    // Obtener tipo de cambio para conversión
+    let exchangeRate = 20;
+    try {
+      exchangeRate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+    } catch {
+      // Usar tasa por defecto
+    }
 
     for (let i = 0; i < months; i++) {
       const monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -159,7 +235,7 @@ export class FinanceService {
         }
       }
 
-      history.push({
+      historyItems.push({
         month: monthStr,
         mrr,
         mrrMxn: mrr,
@@ -169,7 +245,22 @@ export class FinanceService {
       });
     }
 
-    return history.reverse();
+    // Obtener datos actuales
+    const activeSubscribers = await this.firestoreService.getActiveSubscribersCount();
+    const currentRevenue = await this.getRevenue('month');
+
+    // Formatear respuesta para el frontend
+    return {
+      history: historyItems.reverse().map((h) => ({
+        month: h.month,
+        mrr: h.mrrMxn,
+        mrrUsd: h.mrrMxn / exchangeRate,
+      })),
+      current: {
+        mrr: currentRevenue.mrrMxn,
+        subscriberCount: activeSubscribers,
+      },
+    };
   }
 
   /**
@@ -363,7 +454,11 @@ export class FinanceService {
    */
   async getFinancialDashboard(): Promise<{
     revenue: RevenueData;
-    mrr: { current: number; history: MRRHistoryItem[] };
+    mrr: {
+      current: number;
+      subscriberCount: number;
+      history: Array<{ month: string; mrr: number; mrrUsd: number }>;
+    };
     churn: ChurnData;
     ltv: LTVData;
     profit: ProfitData;
@@ -376,7 +471,7 @@ export class FinanceService {
     }
 
     // Ejecutar consultas en paralelo
-    const [revenue, mrrHistory, churn, ltv, profit, subscribers] = await Promise.all([
+    const [revenue, mrrData, churn, ltv, profit, subscribers] = await Promise.all([
       this.getRevenue('month'),
       this.getMRRHistory(6),
       this.getChurnRate('month'),
@@ -388,8 +483,9 @@ export class FinanceService {
     const dashboard = {
       revenue,
       mrr: {
-        current: revenue.mrr,
-        history: mrrHistory,
+        current: mrrData.current.mrr,
+        subscriberCount: mrrData.current.subscriberCount,
+        history: mrrData.history,
       },
       churn,
       ltv,

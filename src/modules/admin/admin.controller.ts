@@ -591,11 +591,14 @@ export class AdminController {
     @Query('endDate') endDate: string,
     @AdminUser() admin: AdminUserData,
   ) {
-    if (!startDate || !endDate) {
-      throw new BadRequestException('startDate and endDate are required');
-    }
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+    // Default to current month if not provided
+    const now = new Date();
+    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    const start = startDate ? new Date(startDate) : defaultStart;
+    const end = endDate ? new Date(endDate) : defaultEnd;
+
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       throw new BadRequestException('Invalid date format. Use ISO 8601 format.');
     }
