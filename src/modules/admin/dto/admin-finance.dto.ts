@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsNumber, IsEnum, IsDateString, Min, Max } from 'class-validator';
+import { IsOptional, IsString, IsNumber, IsEnum, IsDateString, IsIn, IsObject, ValidateNested, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 
 // ==================== Revenue ====================
@@ -175,20 +175,63 @@ export class GetExpensesQueryDto {
 
 // ==================== Goals ====================
 
+export class GoalMetricConfigDto {
+  @ApiProperty({ description: 'Metric key identifier', example: 'revenue' })
+  @IsString()
+  key: string;
+
+  @ApiProperty({ description: 'Display label', example: 'Ingresos' })
+  @IsString()
+  label: string;
+
+  @ApiProperty({ enum: ['currency', 'number', 'percentage'], description: 'Metric type' })
+  @IsIn(['currency', 'number', 'percentage'])
+  type: 'currency' | 'number' | 'percentage';
+
+  @ApiProperty({
+    enum: ['dollar', 'users', 'crown', 'trending', 'target', 'chart', 'ads', 'conversion'],
+    description: 'Icon identifier',
+  })
+  @IsIn(['dollar', 'users', 'crown', 'trending', 'target', 'chart', 'ads', 'conversion'])
+  icon: 'dollar' | 'users' | 'crown' | 'trending' | 'target' | 'chart' | 'ads' | 'conversion';
+
+  @ApiProperty({
+    enum: ['green', 'blue', 'purple', 'orange', 'pink', 'cyan', 'amber', 'red'],
+    description: 'Color theme',
+  })
+  @IsIn(['green', 'blue', 'purple', 'orange', 'pink', 'cyan', 'amber', 'red'])
+  color: 'green' | 'blue' | 'purple' | 'orange' | 'pink' | 'cyan' | 'amber' | 'red';
+
+  @ApiPropertyOptional({ enum: ['USD', 'MXN'], description: 'Currency (for currency type metrics)' })
+  @IsOptional()
+  @IsIn(['USD', 'MXN'])
+  currency?: 'USD' | 'MXN';
+
+  @ApiProperty({ description: 'Display order', example: 1 })
+  @IsNumber()
+  order: number;
+}
+
 export class SetGoalsDto {
   @ApiProperty({ description: 'Month in YYYY-MM format', example: '2025-01' })
   @IsString()
   month: string;
 
   @ApiProperty({
-    description: 'Monthly targets',
-    example: { revenue: 50000, newUsers: 100, proConversions: 10 },
+    description: 'Monthly targets (dynamic key-value pairs)',
+    example: { revenue: 50000, newUsers: 100, proConversions: 10, traffic: 5000 },
   })
-  targets: {
-    revenue: number;
-    newUsers: number;
-    proConversions: number;
-  };
+  @IsObject()
+  targets: Record<string, number>;
+
+  @ApiPropertyOptional({
+    description: 'Metric configurations (optional, uses defaults if not provided)',
+    type: [GoalMetricConfigDto],
+  })
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => GoalMetricConfigDto)
+  metrics?: GoalMetricConfigDto[];
 }
 
 export class GetGoalsQueryDto {
@@ -196,6 +239,16 @@ export class GetGoalsQueryDto {
   @IsOptional()
   @IsString()
   month?: string;
+}
+
+export class GetGoalsHistoryQueryDto {
+  @ApiPropertyOptional({ description: 'Number of months to retrieve', default: 6 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(24)
+  months?: number;
 }
 
 // ==================== Geography ====================

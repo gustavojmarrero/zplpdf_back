@@ -1247,4 +1247,12 @@ export class AdminService {
   async checkGoalAlerts() {
     return this.goalsService.checkAlerts();
   }
+
+  async getGoalsHistory(months: number) {
+    const result = await this.goalsService.getHistory(months);
+    return {
+      success: true,
+      data: result,
+    };
+  }
 }

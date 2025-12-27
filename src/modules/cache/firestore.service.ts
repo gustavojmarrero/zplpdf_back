@@ -3287,6 +3287,7 @@ export class FirestoreService {
         month: data.month,
         targets: data.targets,
         actual: data.actual,
+        metrics: data.metrics,
         alerts: data.alerts,
         createdBy: data.createdBy,
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
@@ -3300,8 +3301,8 @@ export class FirestoreService {
 
   async updateGoalActuals(
     month: string,
-    actual: { revenue: number; newUsers: number; proConversions: number },
-    alerts?: { belowPaceRevenue: boolean; belowPaceUsers: boolean; belowPaceConversions: boolean },
+    actual: Record<string, number>,
+    alerts?: Record<string, boolean>,
   ): Promise<void> {
     try {
       const docId = `goal_${month.replace(/-/g, '')}`;

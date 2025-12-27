@@ -60,6 +60,7 @@ import {
   GetExpensesQueryDto,
   SetGoalsDto,
   GetGoalsQueryDto,
+  GetGoalsHistoryQueryDto,
   GetGeoRevenueQueryDto,
   GetChurnQueryDto,
   GetProfitQueryDto,
@@ -798,6 +799,46 @@ export class AdminController {
   async checkGoalAlerts(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} checking goal alerts`);
     return this.adminService.checkGoalAlerts();
+  }
+
+  @Get('goals/history')
+  @ApiOperation({
+    summary: 'Get goals history',
+    description: 'Returns goal history for the last N months with targets, achieved values, and status.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Goals history retrieved successfully',
+    schema: {
+      properties: {
+        success: { type: 'boolean', example: true },
+        data: {
+          type: 'object',
+          properties: {
+            history: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  month: { type: 'string', example: '2025-01' },
+                  targets: { type: 'object', example: { revenue: 50000, newUsers: 100 } },
+                  achieved: { type: 'object', example: { revenue: 45000, newUsers: 95 } },
+                  metrics: { type: 'array' },
+                  status: { type: 'string', enum: ['on_track', 'at_risk', 'behind', 'achieved'] },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  async getGoalsHistory(
+    @Query() query: GetGoalsHistoryQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ) {
+    this.logger.log(`Admin ${admin.email} requesting goals history`);
+    return this.adminService.getGoalsHistory(query.months || 6);
   }
 
   // ==================== Geography ====================

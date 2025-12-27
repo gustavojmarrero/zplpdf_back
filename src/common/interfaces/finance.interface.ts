@@ -74,16 +74,33 @@ export interface Expense {
 // Monthly Goals (Objetivos mensuales)
 // ============================================
 
-export interface GoalTargets {
-  revenue: number; // Ingreso objetivo en MXN
-  newUsers: number; // Nuevos usuarios objetivo
-  proConversions: number; // Conversiones Free->Pro objetivo
+// Targets dinámicos - permite cualquier métrica
+export type GoalTargets = Record<string, number>;
+
+// Configuración de una métrica individual
+export interface GoalMetricConfig {
+  key: string; // e.g., 'revenue', 'traffic', 'cac'
+  label: string;
+  type: 'currency' | 'number' | 'percentage';
+  icon: 'dollar' | 'users' | 'crown' | 'trending' | 'target' | 'chart' | 'ads' | 'conversion';
+  color: 'green' | 'blue' | 'purple' | 'orange' | 'pink' | 'cyan' | 'amber' | 'red';
+  currency?: 'USD' | 'MXN';
+  order: number;
 }
 
+// Métricas por defecto
+export const DEFAULT_GOAL_METRICS: GoalMetricConfig[] = [
+  { key: 'revenue', label: 'Ingresos', type: 'currency', icon: 'dollar', color: 'green', currency: 'USD', order: 1 },
+  { key: 'newUsers', label: 'Nuevos Usuarios', type: 'number', icon: 'users', color: 'blue', order: 2 },
+  { key: 'proConversions', label: 'Conversiones Pro', type: 'number', icon: 'crown', color: 'purple', order: 3 },
+  { key: 'traffic', label: 'Tráfico', type: 'number', icon: 'trending', color: 'cyan', order: 4 },
+  { key: 'conversionRate', label: 'Tasa de Conversión', type: 'percentage', icon: 'conversion', color: 'orange', order: 5 },
+  { key: 'adsSpend', label: 'Inversión en Ads', type: 'currency', icon: 'ads', color: 'pink', currency: 'USD', order: 6 },
+  { key: 'cac', label: 'CAC', type: 'currency', icon: 'target', color: 'amber', currency: 'USD', order: 7 },
+];
+
 export interface GoalAlerts {
-  belowPaceRevenue: boolean;
-  belowPaceUsers: boolean;
-  belowPaceConversions: boolean;
+  [key: string]: boolean; // Dinámico: belowPace + metricKey
 }
 
 export interface MonthlyGoal {
@@ -91,10 +108,20 @@ export interface MonthlyGoal {
   month: string; // YYYY-MM
   targets: GoalTargets;
   actual?: GoalTargets; // Se actualiza automáticamente
+  metrics?: GoalMetricConfig[]; // Configuración de métricas (usa defaults si no se especifica)
   alerts?: GoalAlerts; // Generadas por cron si vas por debajo
   createdBy: string;
   createdAt: Date;
   updatedAt?: Date;
+}
+
+// Historial de metas
+export interface GoalHistoryItem {
+  month: string;
+  targets: GoalTargets;
+  achieved: GoalTargets;
+  metrics?: GoalMetricConfig[];
+  status: 'on_track' | 'at_risk' | 'behind' | 'achieved';
 }
 
 // ============================================
