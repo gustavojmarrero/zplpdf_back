@@ -129,6 +129,7 @@ export class PaymentsService {
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
+      billing_address_collection: 'required',
       line_items: [
         {
           price: priceId,
