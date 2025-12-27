@@ -57,10 +57,13 @@ export class GetTransactionsQueryDto {
   @IsEnum(['usd', 'mxn'])
   currency?: 'usd' | 'mxn';
 
-  @ApiPropertyOptional({ enum: ['subscription', 'refund'], description: 'Filter by type' })
+  @ApiPropertyOptional({
+    enum: ['subscription', 'upgrade', 'renewal', 'one_time', 'refund', 'chargeback'],
+    description: 'Filter by type',
+  })
   @IsOptional()
-  @IsEnum(['subscription', 'refund'])
-  type?: 'subscription' | 'refund';
+  @IsEnum(['subscription', 'upgrade', 'renewal', 'one_time', 'refund', 'chargeback'])
+  type?: 'subscription' | 'upgrade' | 'renewal' | 'one_time' | 'refund' | 'chargeback';
 }
 
 // ==================== Expenses ====================

@@ -1167,7 +1167,7 @@ export class AdminService {
     startDate?: Date;
     endDate?: Date;
     currency?: 'usd' | 'mxn';
-    type?: 'subscription' | 'refund';
+    type?: 'subscription' | 'upgrade' | 'renewal' | 'one_time' | 'refund' | 'chargeback';
   }) {
     return this.firestoreService.getTransactions(filters);
   }

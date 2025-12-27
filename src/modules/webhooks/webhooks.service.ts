@@ -69,6 +69,12 @@ export class WebhooksService {
         );
         break;
 
+      case 'invoice.payment_succeeded':
+        await this.paymentsService.handleInvoicePaid(
+          event.data.object as Stripe.Invoice,
+        );
+        break;
+
       default:
         this.logger.log(`Unhandled event type: ${event.type}`);
     }

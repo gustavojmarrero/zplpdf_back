@@ -228,6 +228,10 @@ export class PaymentsService {
 
     this.logger.log(`User ${userId} upgraded to Pro plan`);
 
+    // Determine transaction type based on previous plan
+    const previousPlan = user?.plan || 'free';
+    const transactionType = previousPlan === 'free' ? 'subscription' : 'upgrade';
+
     // Save transaction record
     const transactionId = this.generateTransactionId();
     const transaction: StripeTransaction = {
@@ -240,7 +244,7 @@ export class PaymentsService {
       currency,
       amountMxn,
       exchangeRate,
-      type: 'subscription',
+      type: transactionType,
       plan: 'pro',
       stripeCustomerId: session.customer as string,
       stripeSubscriptionId: subscriptionId,
@@ -389,5 +393,99 @@ export class PaymentsService {
 
     // Note: Don't immediately downgrade - Stripe will retry and send subscription.updated
     // if the final retry fails. This handler is for logging and notifications only.
+  }
+
+  async handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
+    const billingReason = invoice.billing_reason;
+
+    // Skip subscription_create - already handled by checkout.session.completed
+    if (billingReason === 'subscription_create') {
+      this.logger.log(`Skipping invoice ${invoice.id}: subscription_create handled by checkout`);
+      return;
+    }
+
+    // Only process renewals (subscription_cycle) and updates (subscription_update)
+    if (!['subscription_cycle', 'subscription_update'].includes(billingReason || '')) {
+      this.logger.log(`Skipping invoice ${invoice.id}: billing_reason=${billingReason}`);
+      return;
+    }
+
+    const customerId = invoice.customer as string;
+    const user = await this.firestoreService.getUserByStripeCustomerId(customerId);
+
+    if (!user) {
+      this.logger.error(`No user found for customer: ${customerId} on invoice paid`);
+      return;
+    }
+
+    const currency = (invoice.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
+    const amount = invoice.amount_paid || 0;
+
+    // Calculate MXN amount
+    let amountMxn = amount / 100;
+    let exchangeRate = 1;
+    if (currency === 'usd') {
+      try {
+        const conversion = await this.exchangeRateService.convertUsdToMxn(
+          amount / 100,
+          this.firestoreService,
+        );
+        amountMxn = conversion.amountMxn;
+        exchangeRate = conversion.rate;
+      } catch (error) {
+        this.logger.warn(`Failed to get exchange rate: ${error.message}`);
+        exchangeRate = 20;
+        amountMxn = (amount / 100) * exchangeRate;
+      }
+    }
+
+    // Determine transaction type
+    const transactionType = billingReason === 'subscription_cycle' ? 'renewal' : 'upgrade';
+
+    // Save transaction record
+    const transactionId = this.generateTransactionId();
+    const transaction: StripeTransaction = {
+      id: transactionId,
+      stripeEventId: invoice.id || '',
+      stripeEventType: 'invoice.payment_succeeded',
+      userId: user.id,
+      userEmail: user.email,
+      amount,
+      currency,
+      amountMxn,
+      exchangeRate,
+      type: transactionType,
+      plan: 'pro',
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: user.stripeSubscriptionId || undefined,
+      stripeInvoiceId: invoice.id || undefined,
+      status: 'succeeded',
+      billingCountry: user.country,
+      createdAt: new Date(),
+    };
+
+    await this.firestoreService.saveTransaction(transaction);
+    this.logger.log(`Saved ${transactionType} transaction: ${transactionId} for user ${user.id}`);
+
+    // Save subscription event for renewal tracking
+    if (billingReason === 'subscription_cycle') {
+      const subscriptionEvent: SubscriptionEvent = {
+        id: this.generateSubscriptionEventId(),
+        userId: user.id,
+        userEmail: user.email,
+        eventType: 'renewed',
+        plan: 'pro',
+        previousPlan: 'pro',
+        currency,
+        mrr: amount / 100,
+        mrrMxn: amountMxn,
+        stripeSubscriptionId: user.stripeSubscriptionId || '',
+        country: user.country,
+        createdAt: new Date(),
+      };
+
+      await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
+      this.logger.log(`Saved subscription event: renewed for user ${user.id}`);
+    }
   }
 }

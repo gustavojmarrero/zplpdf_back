@@ -16,7 +16,13 @@ export interface ExchangeRate {
 // Stripe Transactions (Transacciones)
 // ============================================
 
-export type TransactionType = 'subscription' | 'refund' | 'chargeback';
+export type TransactionType =
+  | 'subscription'
+  | 'upgrade'
+  | 'renewal'
+  | 'one_time'
+  | 'refund'
+  | 'chargeback';
 export type TransactionStatus = 'succeeded' | 'failed' | 'refunded' | 'pending';
 
 export interface StripeTransaction {
