@@ -62,7 +62,9 @@ export class GoalsService {
     const existing = await this.firestoreService.getGoal(data.month);
 
     // Usar métricas proporcionadas o defaults filtrados por los targets enviados
-    const metrics = data.metrics || this.getRelevantDefaultMetrics(Object.keys(data.targets));
+    // Convertir a objetos planos para Firestore (no acepta objetos con prototipos)
+    const rawMetrics = data.metrics || this.getRelevantDefaultMetrics(Object.keys(data.targets));
+    const metrics = rawMetrics.map((m) => ({ ...m }));
 
     // Inicializar actual con las métricas definidas
     const initialActual: GoalTargets = {};
@@ -76,7 +78,7 @@ export class GoalsService {
       targets: data.targets,
       actual: initialActual,
       metrics,
-      alerts: existing?.alerts,
+      alerts: existing?.alerts || {},
       createdBy: adminEmail,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
