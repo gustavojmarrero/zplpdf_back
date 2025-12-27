@@ -11,6 +11,7 @@ import {
   Logger,
   HttpCode,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -590,8 +591,16 @@ export class AdminController {
     @Query('endDate') endDate: string,
     @AdminUser() admin: AdminUserData,
   ) {
+    if (!startDate || !endDate) {
+      throw new BadRequestException('startDate and endDate are required');
+    }
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new BadRequestException('Invalid date format. Use ISO 8601 format.');
+    }
     this.logger.log(`Admin ${admin.email} requesting revenue breakdown`);
-    return this.adminService.getRevenueBreakdown(new Date(startDate), new Date(endDate));
+    return this.adminService.getRevenueBreakdown(start, end);
   }
 
   @Get('transactions')

@@ -3048,9 +3048,9 @@ export class FirestoreService {
       for (const doc of snapshot.docs) {
         const data = doc.data();
         if (data.currency === 'usd') {
-          totalUsd += data.amount;
+          totalUsd += data.amount || 0;
         } else {
-          totalMxn += data.amount;
+          totalMxn += data.amount || 0;
         }
       }
 
