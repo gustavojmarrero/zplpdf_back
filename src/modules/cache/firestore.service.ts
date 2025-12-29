@@ -2557,6 +2557,10 @@ export class FirestoreService {
   // ============== Labelary Hourly Stats ==============
 
   private readonly labelaryStatsCollection = 'labelary_hourly_stats';
+  // Email collections
+  private readonly emailQueueCollection = 'email_queue';
+  private readonly emailEventsCollection = 'email_events';
+  private readonly abVariantsCollection = 'ab_variants';
 
   /**
    * Guarda o actualiza estadísticas por hora de Labelary
@@ -3673,6 +3677,661 @@ export class FirestoreService {
       this.logger.error(`Error marking user ${userId} as notified: ${error.message}`);
       throw error;
     }
+  }
+
+  // ============== Email Queue Methods ==============
+
+  /**
+   * Create a new email in the queue
+   */
+  async createEmailQueue(data: {
+    userId: string;
+    userEmail: string;
+    emailType: string;
+    abVariant: string;
+    language: string;
+    scheduledFor: Date;
+    metadata?: Record<string, any>;
+  }): Promise<string> {
+    const docRef = this.firestore.collection(this.emailQueueCollection).doc();
+    const now = new Date();
+
+    await docRef.set({
+      ...data,
+      id: docRef.id,
+      status: 'pending',
+      scheduledFor: data.scheduledFor,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return docRef.id;
+  }
+
+  /**
+   * Get pending emails ready to be sent
+   */
+  async getPendingEmails(limit: number = 50): Promise<Array<{
+    id: string;
+    userId: string;
+    userEmail: string;
+    emailType: string;
+    abVariant: string;
+    language: string;
+    scheduledFor: Date;
+    metadata?: Record<string, any>;
+  }>> {
+    const now = new Date();
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'pending')
+      .where('scheduledFor', '<=', now)
+      .orderBy('scheduledFor', 'asc')
+      .limit(limit)
+      .get();
+
+    return snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        userId: data.userId,
+        userEmail: data.userEmail,
+        emailType: data.emailType,
+        abVariant: data.abVariant,
+        language: data.language,
+        scheduledFor: data.scheduledFor?.toDate?.() || data.scheduledFor,
+        metadata: data.metadata,
+      };
+    });
+  }
+
+  /**
+   * Update email queue status after sending
+   */
+  async updateEmailQueueStatus(
+    emailId: string,
+    status: 'sent' | 'failed',
+    resendId?: string,
+    errorMessage?: string,
+  ): Promise<void> {
+    const updates: Record<string, any> = {
+      status,
+      updatedAt: new Date(),
+    };
+
+    if (status === 'sent') {
+      updates.sentAt = new Date();
+      if (resendId) updates.resendId = resendId;
+    }
+
+    if (errorMessage) {
+      updates.errorMessage = errorMessage;
+    }
+
+    await this.firestore
+      .collection(this.emailQueueCollection)
+      .doc(emailId)
+      .update(updates);
+  }
+
+  /**
+   * Check if user has already received a specific email type
+   */
+  async hasUserReceivedEmail(userId: string, emailType: string): Promise<boolean> {
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('userId', '==', userId)
+      .where('emailType', '==', emailType)
+      .where('status', 'in', ['pending', 'sent'])
+      .limit(1)
+      .get();
+
+    return !snapshot.empty;
+  }
+
+  /**
+   * Get email queue item by Resend ID (for webhook matching)
+   */
+  async getEmailByResendId(resendId: string): Promise<{
+    id: string;
+    userId: string;
+    emailType: string;
+    abVariant: string;
+  } | null> {
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('resendId', '==', resendId)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) return null;
+
+    const doc = snapshot.docs[0];
+    const data = doc.data();
+    return {
+      id: doc.id,
+      userId: data.userId,
+      emailType: data.emailType,
+      abVariant: data.abVariant,
+    };
+  }
+
+  /**
+   * Cancel pending emails for a user (e.g., when they convert)
+   */
+  async cancelPendingEmails(userId: string, emailTypes?: string[]): Promise<number> {
+    let query = this.firestore
+      .collection(this.emailQueueCollection)
+      .where('userId', '==', userId)
+      .where('status', '==', 'pending');
+
+    if (emailTypes && emailTypes.length > 0) {
+      query = query.where('emailType', 'in', emailTypes);
+    }
+
+    const snapshot = await query.get();
+
+    const batch = this.firestore.batch();
+    snapshot.docs.forEach(doc => {
+      batch.update(doc.ref, {
+        status: 'cancelled',
+        updatedAt: new Date(),
+      });
+    });
+
+    await batch.commit();
+    return snapshot.size;
+  }
+
+  // ============== Email Events Methods ==============
+
+  /**
+   * Record an email event (delivery, open, click, etc.)
+   */
+  async createEmailEvent(data: {
+    emailQueueId: string;
+    userId: string;
+    eventType: string;
+    linkUrl?: string;
+    metadata?: Record<string, any>;
+  }): Promise<string> {
+    const docRef = this.firestore.collection(this.emailEventsCollection).doc();
+
+    await docRef.set({
+      ...data,
+      id: docRef.id,
+      timestamp: new Date(),
+    });
+
+    return docRef.id;
+  }
+
+  /**
+   * Get email metrics (totals and rates)
+   */
+  async getEmailMetrics(startDate?: Date, endDate?: Date): Promise<{
+    sent: number;
+    delivered: number;
+    opened: number;
+    clicked: number;
+    bounced: number;
+    complained: number;
+  }> {
+    // Count sent emails
+    let sentQuery = this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'sent');
+
+    if (startDate) {
+      sentQuery = sentQuery.where('sentAt', '>=', startDate);
+    }
+    if (endDate) {
+      sentQuery = sentQuery.where('sentAt', '<=', endDate);
+    }
+
+    const sentSnapshot = await sentQuery.get();
+    const sent = sentSnapshot.size;
+
+    // Count events by type
+    let eventsQuery: FirebaseFirestore.Query = this.firestore.collection(this.emailEventsCollection);
+
+    if (startDate) {
+      eventsQuery = eventsQuery.where('timestamp', '>=', startDate);
+    }
+    if (endDate) {
+      eventsQuery = eventsQuery.where('timestamp', '<=', endDate);
+    }
+
+    const eventsSnapshot = await eventsQuery.get();
+
+    const counts = {
+      delivered: 0,
+      opened: 0,
+      clicked: 0,
+      bounced: 0,
+      complained: 0,
+    };
+
+    // Count unique events per email (avoid counting multiple opens/clicks)
+    const uniqueEvents = new Map<string, Set<string>>();
+
+    eventsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const key = `${data.emailQueueId}-${data.eventType}`;
+
+      if (!uniqueEvents.has(key)) {
+        uniqueEvents.set(key, new Set());
+        counts[data.eventType as keyof typeof counts]++;
+      }
+    });
+
+    return { sent, ...counts };
+  }
+
+  /**
+   * Get A/B test results by email type
+   */
+  async getAbTestResults(emailType?: string): Promise<Array<{
+    emailType: string;
+    variants: Array<{
+      variant: string;
+      sent: number;
+      delivered: number;
+      opened: number;
+      clicked: number;
+    }>;
+  }>> {
+    // Get all sent emails grouped by type and variant
+    let query: FirebaseFirestore.Query = this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'sent');
+
+    if (emailType) {
+      query = query.where('emailType', '==', emailType);
+    }
+
+    const emailsSnapshot = await query.get();
+
+    // Build a map of emailId -> {emailType, variant}
+    const emailMap = new Map<string, { emailType: string; abVariant: string }>();
+    const typeVariantCounts = new Map<string, Map<string, { sent: number; delivered: number; opened: number; clicked: number }>>();
+
+    emailsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      emailMap.set(doc.id, { emailType: data.emailType, abVariant: data.abVariant });
+
+      // Initialize counts
+      if (!typeVariantCounts.has(data.emailType)) {
+        typeVariantCounts.set(data.emailType, new Map());
+      }
+      const variantMap = typeVariantCounts.get(data.emailType)!;
+      if (!variantMap.has(data.abVariant)) {
+        variantMap.set(data.abVariant, { sent: 0, delivered: 0, opened: 0, clicked: 0 });
+      }
+      variantMap.get(data.abVariant)!.sent++;
+    });
+
+    // Get events for these emails
+    const eventsSnapshot = await this.firestore.collection(this.emailEventsCollection).get();
+
+    // Track unique events per email
+    const processedEvents = new Set<string>();
+
+    eventsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const emailInfo = emailMap.get(data.emailQueueId);
+      if (!emailInfo) return;
+
+      const eventKey = `${data.emailQueueId}-${data.eventType}`;
+      if (processedEvents.has(eventKey)) return;
+      processedEvents.add(eventKey);
+
+      const counts = typeVariantCounts.get(emailInfo.emailType)?.get(emailInfo.abVariant);
+      if (counts && data.eventType in counts) {
+        counts[data.eventType as keyof typeof counts]++;
+      }
+    });
+
+    // Format results
+    const results: Array<{
+      emailType: string;
+      variants: Array<{
+        variant: string;
+        sent: number;
+        delivered: number;
+        opened: number;
+        clicked: number;
+      }>;
+    }> = [];
+
+    typeVariantCounts.forEach((variantMap, type) => {
+      const variants: Array<{
+        variant: string;
+        sent: number;
+        delivered: number;
+        opened: number;
+        clicked: number;
+      }> = [];
+
+      variantMap.forEach((counts, variant) => {
+        variants.push({ variant, ...counts });
+      });
+
+      results.push({ emailType: type, variants });
+    });
+
+    return results;
+  }
+
+  /**
+   * Get metrics grouped by email type
+   */
+  async getEmailMetricsByType(): Promise<Array<{
+    emailType: string;
+    sent: number;
+    delivered: number;
+    opened: number;
+    clicked: number;
+  }>> {
+    const emailsSnapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'sent')
+      .get();
+
+    const typeStats = new Map<string, {
+      emailIds: Set<string>;
+      sent: number;
+      delivered: number;
+      opened: number;
+      clicked: number;
+    }>();
+
+    emailsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      if (!typeStats.has(data.emailType)) {
+        typeStats.set(data.emailType, {
+          emailIds: new Set(),
+          sent: 0,
+          delivered: 0,
+          opened: 0,
+          clicked: 0,
+        });
+      }
+      const stats = typeStats.get(data.emailType)!;
+      stats.emailIds.add(doc.id);
+      stats.sent++;
+    });
+
+    // Get events
+    const eventsSnapshot = await this.firestore.collection(this.emailEventsCollection).get();
+    const processedEvents = new Set<string>();
+
+    eventsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+
+      // Find which type this email belongs to
+      let foundType: string | null = null;
+      for (const [type, stats] of typeStats) {
+        if (stats.emailIds.has(data.emailQueueId)) {
+          foundType = type;
+          break;
+        }
+      }
+
+      if (!foundType) return;
+
+      const eventKey = `${data.emailQueueId}-${data.eventType}`;
+      if (processedEvents.has(eventKey)) return;
+      processedEvents.add(eventKey);
+
+      const stats = typeStats.get(foundType)!;
+      if (data.eventType in stats) {
+        stats[data.eventType as keyof Omit<typeof stats, 'emailIds'>]++;
+      }
+    });
+
+    return Array.from(typeStats.entries()).map(([emailType, stats]) => ({
+      emailType,
+      sent: stats.sent,
+      delivered: stats.delivered,
+      opened: stats.opened,
+      clicked: stats.clicked,
+    }));
+  }
+
+  // ============== A/B Variants Methods ==============
+
+  /**
+   * Get active A/B variant configuration for an email type
+   */
+  async getAbVariantConfig(emailType: string): Promise<Array<{
+    id: string;
+    variant: string;
+    subjectLine: Record<string, string>;
+    trafficPercentage: number;
+  }>> {
+    const snapshot = await this.firestore
+      .collection(this.abVariantsCollection)
+      .where('emailType', '==', emailType)
+      .where('isActive', '==', true)
+      .get();
+
+    return snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        variant: data.variant,
+        subjectLine: data.subjectLine,
+        trafficPercentage: data.trafficPercentage,
+      };
+    });
+  }
+
+  /**
+   * Initialize default A/B variants (run once on setup)
+   */
+  async initializeAbVariants(): Promise<void> {
+    const defaultVariants = [
+      // Welcome emails
+      {
+        emailType: 'welcome',
+        variant: 'A',
+        subjectLine: { en: 'Welcome to ZPLPDF!', es: '¡Bienvenido a ZPLPDF!', zh: '欢迎使用ZPLPDF！' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      {
+        emailType: 'welcome',
+        variant: 'B',
+        subjectLine: { en: 'Your ZPL journey starts now', es: 'Tu viaje ZPL comienza ahora', zh: '您的ZPL之旅现在开始' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      // Tutorial emails
+      {
+        emailType: 'tutorial',
+        variant: 'A',
+        subjectLine: { en: 'Quick Tutorial: Convert your first ZPL', es: 'Tutorial rápido: Convierte tu primer ZPL', zh: '快速教程：转换您的第一个ZPL' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      {
+        emailType: 'tutorial',
+        variant: 'B',
+        subjectLine: { en: 'See ZPL to PDF in action', es: 'Ve ZPL a PDF en acción', zh: '查看ZPL转PDF的实际操作' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      // Help emails
+      {
+        emailType: 'help',
+        variant: 'A',
+        subjectLine: { en: 'Need help with ZPLPDF?', es: '¿Necesitas ayuda con ZPLPDF?', zh: '需要ZPLPDF的帮助吗？' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      {
+        emailType: 'help',
+        variant: 'B',
+        subjectLine: { en: "We noticed you haven't converted yet", es: 'Notamos que aún no has convertido', zh: '我们注意到您还没有转换' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      // Success story emails
+      {
+        emailType: 'success_story',
+        variant: 'A',
+        subjectLine: { en: 'How businesses use ZPLPDF', es: 'Cómo las empresas usan ZPLPDF', zh: '企业如何使用ZPLPDF' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      {
+        emailType: 'success_story',
+        variant: 'B',
+        subjectLine: { en: "You're doing great!", es: '¡Lo estás haciendo genial!', zh: '你做得很棒！' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      // Miss you emails
+      {
+        emailType: 'miss_you',
+        variant: 'A',
+        subjectLine: { en: 'We miss you at ZPLPDF', es: 'Te extrañamos en ZPLPDF', zh: '我们在ZPLPDF想念你' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+      {
+        emailType: 'miss_you',
+        variant: 'B',
+        subjectLine: { en: 'Still struggling with ZPL?', es: '¿Aún tienes problemas con ZPL?', zh: '还在为ZPL烦恼吗？' },
+        isActive: true,
+        trafficPercentage: 50,
+      },
+    ];
+
+    const batch = this.firestore.batch();
+
+    for (const variant of defaultVariants) {
+      // Check if already exists
+      const existing = await this.firestore
+        .collection(this.abVariantsCollection)
+        .where('emailType', '==', variant.emailType)
+        .where('variant', '==', variant.variant)
+        .limit(1)
+        .get();
+
+      if (existing.empty) {
+        const docRef = this.firestore.collection(this.abVariantsCollection).doc();
+        batch.set(docRef, {
+          ...variant,
+          id: docRef.id,
+          createdAt: new Date(),
+        });
+      }
+    }
+
+    await batch.commit();
+    this.logger.log('A/B variants initialized');
+  }
+
+  // ============== User Email Eligibility ==============
+
+  /**
+   * Get users eligible for onboarding emails
+   * Returns users who haven't received the specified email type
+   * and meet the criteria (days since creation, pdf count)
+   */
+  async getUsersEligibleForEmail(params: {
+    emailType: string;
+    minDaysSinceCreation: number;
+    maxDaysSinceCreation: number;
+    minPdfCount?: number;
+    maxPdfCount?: number;
+    limit?: number;
+  }): Promise<Array<{
+    userId: string;
+    userEmail: string;
+    displayName?: string;
+    language: string;
+    pdfCount: number;
+    createdAt: Date;
+  }>> {
+    const now = new Date();
+    const minDate = new Date(now);
+    minDate.setDate(minDate.getDate() - params.maxDaysSinceCreation);
+    const maxDate = new Date(now);
+    maxDate.setDate(maxDate.getDate() - params.minDaysSinceCreation);
+
+    // Get users created within the date range
+    const usersSnapshot = await this.firestore
+      .collection(this.usersCollection)
+      .where('createdAt', '>=', minDate)
+      .where('createdAt', '<=', maxDate)
+      .limit(params.limit || 100)
+      .get();
+
+    const eligibleUsers: Array<{
+      userId: string;
+      userEmail: string;
+      displayName?: string;
+      language: string;
+      pdfCount: number;
+      createdAt: Date;
+    }> = [];
+
+    for (const doc of usersSnapshot.docs) {
+      const userData = doc.data();
+
+      // Check if user already has this email type in queue
+      const hasEmail = await this.hasUserReceivedEmail(doc.id, params.emailType);
+      if (hasEmail) continue;
+
+      // Get user's PDF count from usage
+      const usageSnapshot = await this.firestore
+        .collection(this.usageCollection)
+        .where('userId', '==', doc.id)
+        .orderBy('periodEnd', 'desc')
+        .limit(1)
+        .get();
+
+      let pdfCount = 0;
+      if (!usageSnapshot.empty) {
+        pdfCount = usageSnapshot.docs[0].data().pdfCount || 0;
+      }
+
+      // Check PDF count criteria
+      if (params.minPdfCount !== undefined && pdfCount < params.minPdfCount) continue;
+      if (params.maxPdfCount !== undefined && pdfCount > params.maxPdfCount) continue;
+
+      // Determine language (default to 'en')
+      const language = this.detectLanguageFromCountry(userData.country) || 'en';
+
+      eligibleUsers.push({
+        userId: doc.id,
+        userEmail: userData.email,
+        displayName: userData.displayName,
+        language,
+        pdfCount,
+        createdAt: userData.createdAt?.toDate?.() || userData.createdAt,
+      });
+    }
+
+    return eligibleUsers;
+  }
+
+  /**
+   * Detect email language from country code
+   */
+  private detectLanguageFromCountry(country?: string): string {
+    if (!country) return 'en';
+
+    const spanishCountries = ['MX', 'ES', 'AR', 'CO', 'PE', 'CL', 'VE', 'EC', 'GT', 'CU', 'BO', 'DO', 'HN', 'SV', 'NI', 'CR', 'PA', 'UY', 'PR'];
+    const chineseCountries = ['CN', 'TW', 'HK', 'MO', 'SG'];
+
+    if (spanishCountries.includes(country)) return 'es';
+    if (chineseCountries.includes(country)) return 'zh';
+
+    return 'en';
   }
 
   /**

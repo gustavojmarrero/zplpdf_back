@@ -1,4 +1,4 @@
-import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { FirebaseAdminService } from '../auth/firebase-admin.service.js';
 import { PeriodCalculatorService, PeriodInfo } from '../../common/services/period-calculator.service.js';
@@ -12,6 +12,7 @@ import type { FirebaseUser } from '../../common/decorators/current-user.decorato
 import { BATCH_LIMITS } from '../zpl/interfaces/batch.interface.js';
 import { isBlockedEmailDomain } from '../../common/constants/blocked-email-domains.js';
 import { GeoService } from '../admin/services/geo.service.js';
+import { EmailService } from '../email/email.service.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -30,6 +31,8 @@ export class UsersService {
     private readonly firebaseAdminService: FirebaseAdminService,
     private readonly periodCalculatorService: PeriodCalculatorService,
     private readonly geoService: GeoService,
+    @Inject(forwardRef(() => EmailService))
+    private readonly emailService: EmailService,
   ) {}
 
   async syncUser(firebaseUser: FirebaseUser, clientIP?: string): Promise<User> {
@@ -106,6 +109,16 @@ export class UsersService {
 
     await this.firestoreService.createUser(newUser);
     this.logger.log(`New user created: ${firebaseUser.uid}`);
+
+    // Queue welcome email for new user (fire and forget)
+    this.emailService
+      .queueWelcomeEmail({
+        id: newUser.id,
+        email: newUser.email,
+        displayName: newUser.displayName,
+        language: country ? this.detectLanguageFromCountry(country) : undefined,
+      })
+      .catch((err) => this.logger.error(`Failed to queue welcome email: ${err.message}`));
 
     return newUser;
   }
@@ -388,5 +401,23 @@ export class UsersService {
       return user.simulatedPlan;
     }
     return user.plan;
+  }
+
+  /**
+   * Detect email language from country code
+   */
+  private detectLanguageFromCountry(country?: string): string {
+    if (!country) return 'en';
+
+    const spanishCountries = [
+      'MX', 'ES', 'AR', 'CO', 'PE', 'CL', 'VE', 'EC', 'GT', 'CU',
+      'BO', 'DO', 'HN', 'SV', 'NI', 'CR', 'PA', 'UY', 'PR',
+    ];
+    const chineseCountries = ['CN', 'TW', 'HK', 'MO', 'SG'];
+
+    if (spanishCountries.includes(country)) return 'es';
+    if (chineseCountries.includes(country)) return 'zh';
+
+    return 'en';
   }
 }

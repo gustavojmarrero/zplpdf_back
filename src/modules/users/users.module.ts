@@ -5,9 +5,16 @@ import { CacheModule } from '../cache/cache.module.js';
 import { ZplModule } from '../zpl/zpl.module.js';
 import { PeriodModule } from '../../common/services/period.module.js';
 import { AdminModule } from '../admin/admin.module.js';
+import { EmailModule } from '../email/email.module.js';
 
 @Module({
-  imports: [CacheModule, forwardRef(() => ZplModule), PeriodModule, forwardRef(() => AdminModule)],
+  imports: [
+    CacheModule,
+    forwardRef(() => ZplModule),
+    PeriodModule,
+    forwardRef(() => AdminModule),
+    forwardRef(() => EmailModule),
+  ],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

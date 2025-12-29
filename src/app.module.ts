@@ -14,6 +14,7 @@ import { ContactModule } from './modules/contact/contact.module.js';
 import { CronModule } from './modules/cron/cron.module.js';
 import { AdminModule } from './modules/admin/admin.module.js';
 import { ErrorsModule } from './modules/errors/errors.module.js';
+import { EmailModule } from './modules/email/email.module.js';
 import appConfig from './config/app.config.js';
 import { GoogleAuthProvider } from './config/google-auth.provider.js';
 
@@ -41,6 +42,7 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
     ZplModule,
     AdminModule,
     ErrorsModule,
+    EmailModule,
   ],
   controllers: [AppController],
   providers: [
