@@ -4320,6 +4320,124 @@ export class FirestoreService {
   }
 
   /**
+   * Get onboarding funnel data for a given period
+   */
+  async getOnboardingFunnel(period: 'day' | 'week' | 'month' = 'month'): Promise<{
+    registeredUsers: number;
+    receivedWelcome: number;
+    openedWelcome: number;
+    clickedWelcome: number;
+    firstPdfGenerated: number;
+    activatedIn7Days: number;
+  }> {
+    const now = new Date();
+    const startDate = new Date(now);
+
+    // Calculate start date based on period
+    switch (period) {
+      case 'day':
+        startDate.setDate(startDate.getDate() - 1);
+        break;
+      case 'week':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'month':
+      default:
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+    }
+
+    // Get registered users in period
+    const usersSnapshot = await this.firestore
+      .collection(this.usersCollection)
+      .where('createdAt', '>=', startDate)
+      .get();
+
+    const registeredUsers = usersSnapshot.size;
+    const userIds = new Set(usersSnapshot.docs.map(doc => doc.id));
+
+    // Get welcome emails sent to these users
+    const welcomeEmailsSnapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('emailType', '==', 'welcome')
+      .where('status', '==', 'sent')
+      .where('createdAt', '>=', startDate)
+      .get();
+
+    // Filter to only users in our period
+    const welcomeEmails = welcomeEmailsSnapshot.docs.filter(doc => userIds.has(doc.data().userId));
+    const receivedWelcome = welcomeEmails.length;
+    const welcomeEmailIds = new Set(welcomeEmails.map(doc => doc.id));
+
+    // Get events for welcome emails
+    const eventsSnapshot = await this.firestore
+      .collection(this.emailEventsCollection)
+      .where('timestamp', '>=', startDate)
+      .get();
+
+    // Count unique opens and clicks for welcome emails
+    const openedUsers = new Set<string>();
+    const clickedUsers = new Set<string>();
+
+    eventsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      if (!welcomeEmailIds.has(data.emailQueueId)) return;
+
+      const welcomeEmail = welcomeEmails.find(e => e.id === data.emailQueueId);
+      if (!welcomeEmail) return;
+
+      const userId = welcomeEmail.data().userId;
+
+      if (data.eventType === 'opened') {
+        openedUsers.add(userId);
+      } else if (data.eventType === 'clicked') {
+        clickedUsers.add(userId);
+      }
+    });
+
+    // Get users who generated at least 1 PDF
+    let firstPdfGenerated = 0;
+    let activatedIn7Days = 0;
+
+    for (const doc of usersSnapshot.docs) {
+      const userData = doc.data();
+      const userCreatedAt = userData.createdAt?.toDate?.() || userData.createdAt;
+
+      // Check if user has any conversions
+      const conversionsSnapshot = await this.firestore
+        .collection(this.historyCollection)
+        .where('userId', '==', doc.id)
+        .where('status', '==', 'completed')
+        .limit(1)
+        .get();
+
+      if (!conversionsSnapshot.empty) {
+        firstPdfGenerated++;
+
+        // Check if first conversion was within 7 days of registration
+        const firstConversion = conversionsSnapshot.docs[0].data();
+        const conversionDate = firstConversion.createdAt?.toDate?.() || firstConversion.createdAt;
+
+        if (userCreatedAt && conversionDate) {
+          const daysDiff = Math.floor((conversionDate.getTime() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysDiff <= 7) {
+            activatedIn7Days++;
+          }
+        }
+      }
+    }
+
+    return {
+      registeredUsers,
+      receivedWelcome,
+      openedWelcome: openedUsers.size,
+      clickedWelcome: clickedUsers.size,
+      firstPdfGenerated,
+      activatedIn7Days,
+    };
+  }
+
+  /**
    * Detect email language from country code
    */
   private detectLanguageFromCountry(country?: string): string {

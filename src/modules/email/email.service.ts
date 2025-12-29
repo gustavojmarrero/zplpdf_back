@@ -472,4 +472,18 @@ export class EmailService {
     // Cancel tutorial, help, miss_you emails since user is now active
     return this.firestoreService.cancelPendingEmails(userId, ['tutorial', 'help', 'miss_you']);
   }
+
+  /**
+   * Get onboarding funnel data for admin dashboard
+   */
+  async getFunnel(period: 'day' | 'week' | 'month' = 'month'): Promise<{
+    registeredUsers: number;
+    receivedWelcome: number;
+    openedWelcome: number;
+    clickedWelcome: number;
+    firstPdfGenerated: number;
+    activatedIn7Days: number;
+  }> {
+    return this.firestoreService.getOnboardingFunnel(period);
+  }
 }

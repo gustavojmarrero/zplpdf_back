@@ -64,3 +64,23 @@ export class EmailMetricsByTypeDto {
   @ApiProperty({ type: EmailMetricsDto, description: 'Metrics for this email type' })
   metrics: EmailMetricsDto;
 }
+
+export class OnboardingFunnelDto {
+  @ApiProperty({ example: 1000, description: 'Total registered users in period' })
+  registeredUsers: number;
+
+  @ApiProperty({ example: 950, description: 'Users who received welcome email' })
+  receivedWelcome: number;
+
+  @ApiProperty({ example: 475, description: 'Users who opened welcome email' })
+  openedWelcome: number;
+
+  @ApiProperty({ example: 142, description: 'Users who clicked in welcome email' })
+  clickedWelcome: number;
+
+  @ApiProperty({ example: 300, description: 'Users who generated at least 1 PDF' })
+  firstPdfGenerated: number;
+
+  @ApiProperty({ example: 280, description: 'Users activated (≥1 PDF) within 7 days' })
+  activatedIn7Days: number;
+}

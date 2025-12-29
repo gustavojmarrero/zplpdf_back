@@ -17,7 +17,7 @@ import { EmailService } from './email.service.js';
 import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { ResendWebhookDto } from './dto/resend-webhook.dto.js';
-import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto } from './dto/email-metrics.dto.js';
+import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto, OnboardingFunnelDto } from './dto/email-metrics.dto.js';
 import type { ProcessQueueResult, ScheduleEmailsResult } from './interfaces/email.interface.js';
 
 @ApiTags('email')
@@ -252,5 +252,29 @@ export class EmailController {
   })
   async getEmailMetricsByType(): Promise<EmailMetricsByTypeDto[]> {
     return this.emailService.getMetricsByType();
+  }
+
+  @Get('api/admin/email-metrics/funnel')
+  @UseGuards(AdminAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get onboarding funnel data',
+    description: 'Returns funnel metrics from registration to activation, including email engagement.',
+  })
+  @ApiQuery({
+    name: 'period',
+    required: false,
+    enum: ['day', 'week', 'month'],
+    description: 'Time period for funnel data (default: month)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Onboarding funnel data retrieved',
+    type: OnboardingFunnelDto,
+  })
+  async getOnboardingFunnel(
+    @Query('period') period?: 'day' | 'week' | 'month',
+  ): Promise<OnboardingFunnelDto> {
+    return this.emailService.getFunnel(period || 'month');
   }
 }
