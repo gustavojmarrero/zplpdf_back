@@ -3596,4 +3596,110 @@ export class FirestoreService {
       return 0;
     }
   }
+
+  // ============== User Inactivity Methods (for GA4) ==============
+
+  /**
+   * Get users who have been inactive for exactly N days (±1 day window)
+   * and have not been notified yet for that inactivity level
+   * @param daysInactive Number of days of inactivity to check
+   * @param notificationField Field to check for notification status
+   * @returns Array of inactive users
+   */
+  async getInactiveUsers(
+    daysInactive: 7 | 30,
+    notificationField: 'notifiedInactive7Days' | 'notifiedInactive30Days',
+  ): Promise<User[]> {
+    try {
+      const now = new Date();
+
+      // Target date: exactly N days ago
+      const targetDate = new Date(now);
+      targetDate.setDate(targetDate.getDate() - daysInactive);
+
+      // Window: from N+1 days ago to N days ago (to catch users in that 24h window)
+      const windowStart = new Date(now);
+      windowStart.setDate(windowStart.getDate() - (daysInactive + 1));
+
+      const windowEnd = new Date(now);
+      windowEnd.setDate(windowEnd.getDate() - daysInactive);
+
+      // Query users whose lastActivityAt falls within the window
+      // and have not been notified yet
+      const snapshot = await this.firestore
+        .collection(this.usersCollection)
+        .where('lastActivityAt', '>=', windowStart)
+        .where('lastActivityAt', '<', windowEnd)
+        .get();
+
+      const users: User[] = [];
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        // Filter out users who have already been notified
+        if (data[notificationField] === true) {
+          continue;
+        }
+        users.push(this.docToUser(doc));
+      }
+
+      this.logger.log(
+        `Found ${users.length} users inactive for ${daysInactive} days (not yet notified)`,
+      );
+      return users;
+    } catch (error) {
+      this.logger.error(`Error getting inactive users (${daysInactive} days): ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Mark a user as notified for inactivity
+   * @param userId User ID to update
+   * @param notificationField Field to set as true
+   */
+  async markUserInactiveNotified(
+    userId: string,
+    notificationField: 'notifiedInactive7Days' | 'notifiedInactive30Days',
+  ): Promise<void> {
+    try {
+      await this.firestore
+        .collection(this.usersCollection)
+        .doc(userId)
+        .update({
+          [notificationField]: true,
+          updatedAt: new Date(),
+        });
+    } catch (error) {
+      this.logger.error(`Error marking user ${userId} as notified: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Helper method to convert Firestore doc to User
+   */
+  private docToUser(doc: FirebaseFirestore.DocumentSnapshot): User {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      email: data.email,
+      displayName: data.displayName,
+      emailVerified: data.emailVerified ?? false,
+      plan: data.plan || 'free',
+      role: data.role || 'user',
+      stripeCustomerId: data.stripeCustomerId,
+      stripeSubscriptionId: data.stripeSubscriptionId,
+      planLimits: data.planLimits,
+      simulatedPlan: data.simulatedPlan,
+      simulationExpiresAt: data.simulationExpiresAt?.toDate?.() || data.simulationExpiresAt,
+      country: data.country,
+      countrySource: data.countrySource,
+      countryDetectedAt: data.countryDetectedAt?.toDate?.() || data.countryDetectedAt,
+      lastActivityAt: data.lastActivityAt?.toDate?.() || data.lastActivityAt,
+      notifiedInactive7Days: data.notifiedInactive7Days,
+      notifiedInactive30Days: data.notifiedInactive30Days,
+      createdAt: data.createdAt?.toDate?.() || data.createdAt,
+      updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+    };
+  }
 }

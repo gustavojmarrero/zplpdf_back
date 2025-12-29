@@ -308,6 +308,15 @@ export class UsersService {
       createdAt: new Date(),
     });
 
+    // Update lastActivityAt and reset inactive notification flags
+    this.firestoreService
+      .updateUser(userId, {
+        lastActivityAt: new Date(),
+        notifiedInactive7Days: false,
+        notifiedInactive30Days: false,
+      })
+      .catch((err) => this.logger.error(`Failed to update lastActivityAt: ${err.message}`));
+
     // Get user plan if not provided
     let plan = userPlan;
     if (!plan) {

@@ -4,6 +4,7 @@ import { PeriodCalculatorService } from '../../common/services/period-calculator
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import { ExpenseService } from '../admin/services/expense.service.js';
 import { GoalsService } from '../admin/services/goals.service.js';
+import { GA4Service } from '../analytics/ga4.service.js';
 
 export interface ResetUsageResult {
   resetCount: number;
@@ -33,6 +34,12 @@ export interface UpdateGoalsResult {
   executedAt: Date;
 }
 
+export interface CheckInactiveUsersResult {
+  notified7Days: number;
+  notified30Days: number;
+  executedAt: Date;
+}
+
 @Injectable()
 export class CronService {
   private readonly logger = new Logger(CronService.name);
@@ -46,6 +53,7 @@ export class CronService {
     private readonly expenseService: ExpenseService,
     @Inject(forwardRef(() => GoalsService))
     private readonly goalsService: GoalsService,
+    private readonly ga4Service: GA4Service,
   ) {}
 
   async resetExpiredUsage(): Promise<ResetUsageResult> {
@@ -191,6 +199,82 @@ export class CronService {
       return {
         month: new Date().toISOString().slice(0, 7),
         updated: false,
+        executedAt: new Date(),
+      };
+    }
+  }
+
+  /**
+   * Check for inactive users and send GA4 events
+   * Ejecutar diariamente a las 08:00 (GMT-6)
+   */
+  async checkInactiveUsers(): Promise<CheckInactiveUsersResult> {
+    this.logger.log('Starting inactive users check cron job...');
+
+    let notified7Days = 0;
+    let notified30Days = 0;
+
+    try {
+      // Check 7-day inactive users
+      const inactive7Days = await this.firestoreService.getInactiveUsers(7, 'notifiedInactive7Days');
+      this.logger.log(`Found ${inactive7Days.length} users inactive for 7 days`);
+
+      for (const user of inactive7Days) {
+        try {
+          // Send GA4 event
+          await this.ga4Service.trackInactivity({
+            userId: user.id,
+            userEmail: user.email,
+            daysInactive: 7,
+            userPlan: user.plan,
+            lastActivityAt: user.lastActivityAt,
+          });
+
+          // Mark as notified
+          await this.firestoreService.markUserInactiveNotified(user.id, 'notifiedInactive7Days');
+          notified7Days++;
+        } catch (error) {
+          this.logger.error(`Error processing 7-day inactive user ${user.id}: ${error.message}`);
+        }
+      }
+
+      // Check 30-day inactive users
+      const inactive30Days = await this.firestoreService.getInactiveUsers(30, 'notifiedInactive30Days');
+      this.logger.log(`Found ${inactive30Days.length} users inactive for 30 days`);
+
+      for (const user of inactive30Days) {
+        try {
+          // Send GA4 event
+          await this.ga4Service.trackInactivity({
+            userId: user.id,
+            userEmail: user.email,
+            daysInactive: 30,
+            userPlan: user.plan,
+            lastActivityAt: user.lastActivityAt,
+          });
+
+          // Mark as notified
+          await this.firestoreService.markUserInactiveNotified(user.id, 'notifiedInactive30Days');
+          notified30Days++;
+        } catch (error) {
+          this.logger.error(`Error processing 30-day inactive user ${user.id}: ${error.message}`);
+        }
+      }
+
+      this.logger.log(
+        `Inactive users check completed. Notified: ${notified7Days} (7 days), ${notified30Days} (30 days)`,
+      );
+
+      return {
+        notified7Days,
+        notified30Days,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Error in inactive users check cron job: ${error.message}`);
+      return {
+        notified7Days,
+        notified30Days,
         executedAt: new Date(),
       };
     }

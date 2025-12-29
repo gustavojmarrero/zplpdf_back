@@ -25,6 +25,10 @@ export interface User {
   country?: string; // Código ISO 3166-1 alpha-2 (MX, US, ES, etc.)
   countrySource?: CountrySource;
   countryDetectedAt?: Date;
+  // Campos de actividad e inactividad (para GA4)
+  lastActivityAt?: Date;
+  notifiedInactive7Days?: boolean;
+  notifiedInactive30Days?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

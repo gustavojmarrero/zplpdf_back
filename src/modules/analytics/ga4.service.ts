@@ -10,6 +10,14 @@ export interface TrackPurchaseParams {
   currency?: string;
 }
 
+export interface TrackInactivityParams {
+  userId: string;
+  userEmail: string;
+  daysInactive: 7 | 30;
+  userPlan: string;
+  lastActivityAt?: Date;
+}
+
 @Injectable()
 export class GA4Service {
   private readonly logger = new Logger(GA4Service.name);
@@ -81,6 +89,59 @@ export class GA4Service {
       return true;
     } catch (error) {
       this.logger.error(`GA4 tracking error: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Tracks user inactivity events in Google Analytics 4 using Measurement Protocol
+   * @param params Inactivity parameters
+   * @returns true if tracking was successful, false otherwise
+   */
+  async trackInactivity(params: TrackInactivityParams): Promise<boolean> {
+    if (!this.measurementId || !this.apiSecret) {
+      this.logger.debug('GA4 tracking skipped: not configured');
+      return false;
+    }
+
+    try {
+      const url = `${this.endpoint}?measurement_id=${this.measurementId}&api_secret=${this.apiSecret}`;
+
+      // Event name based on days inactive
+      const eventName = params.daysInactive === 7 ? 'user_inactive_7_days' : 'user_inactive_30_days';
+
+      const payload = {
+        client_id: params.userId,
+        user_id: params.userId,
+        events: [
+          {
+            name: eventName,
+            params: {
+              user_email: params.userEmail,
+              days_inactive: params.daysInactive,
+              user_plan: params.userPlan,
+              last_activity_at: params.lastActivityAt?.toISOString() || null,
+              source: 'server',
+            },
+          },
+        ],
+      };
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        this.logger.error(`GA4 inactivity tracking failed: ${response.status} ${response.statusText}`);
+        return false;
+      }
+
+      this.logger.log(`GA4 inactivity tracked: ${eventName} for user ${params.userId} (${params.userEmail})`);
+      return true;
+    } catch (error) {
+      this.logger.error(`GA4 inactivity tracking error: ${error.message}`);
       return false;
     }
   }

@@ -7,6 +7,7 @@ import {
   UpdateExchangeRateResult,
   GenerateRecurringExpensesResult,
   UpdateGoalsResult,
+  CheckInactiveUsersResult,
 } from './cron.service.js';
 import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 
@@ -163,5 +164,37 @@ export class CronController {
   })
   async updateGoals(): Promise<UpdateGoalsResult> {
     return this.cronService.updateGoals();
+  }
+
+  @Post('check-inactive-users')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Check inactive users and send GA4 events (Cloud Scheduler)',
+    description:
+      'Detects users inactive for 7 or 30 days and sends events to GA4 for email reactivation flows. Should run daily at 08:00 (GMT-6).',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Inactive users check completed',
+    schema: {
+      properties: {
+        notified7Days: { type: 'number', example: 5 },
+        notified30Days: { type: 'number', example: 2 },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid cron secret',
+  })
+  async checkInactiveUsers(): Promise<CheckInactiveUsersResult> {
+    return this.cronService.checkInactiveUsers();
   }
 }
