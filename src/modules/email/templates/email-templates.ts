@@ -17,6 +17,10 @@ interface TemplateData {
   pdfsThisMonth?: number;
   labelsThisMonth?: number;
   monthsAsPro?: number;
+  // FREE Reactivation fields
+  daysSinceRegistration?: number;
+  pdfsAvailable?: number;
+  labelCount?: number;
 }
 
 // Subject lines for each email type and variant
@@ -177,6 +181,67 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'Thank you for being a power user',
       es: 'Gracias por ser un power user',
       zh: '感谢您成为超级用户',
+    },
+  },
+  // FREE Reactivation emails
+  free_never_used_7d: {
+    A: {
+      en: '{name}, your ZPLPDF account is waiting',
+      es: '{name}, tu cuenta ZPLPDF te espera',
+      zh: '{name}，您的ZPLPDF账户在等您',
+    },
+    B: {
+      en: '🏷️ Create your first label in 30 seconds',
+      es: '🏷️ Crea tu primera etiqueta en 30 segundos',
+      zh: '🏷️ 30秒内创建您的第一个标签',
+    },
+  },
+  free_never_used_14d: {
+    A: {
+      en: '⏰ {name}, last call',
+      es: '⏰ {name}, última llamada',
+      zh: '⏰ {name}，最后提醒',
+    },
+    B: {
+      en: 'Need help getting started?',
+      es: '¿Necesitas ayuda para empezar?',
+      zh: '需要帮助开始吗？',
+    },
+  },
+  free_tried_abandoned: {
+    A: {
+      en: '{name}, we saw you started creating labels...',
+      es: '{name}, vimos que empezaste a crear etiquetas...',
+      zh: '{name}，我们看到您开始创建标签了...',
+    },
+    B: {
+      en: 'How was your experience?',
+      es: '¿Cómo fue tu experiencia?',
+      zh: '您的体验如何？',
+    },
+  },
+  free_dormant_30d: {
+    A: {
+      en: '{name}, did you find what you were looking for?',
+      es: '{name}, ¿encontraste lo que buscabas?',
+      zh: '{name}，您找到需要的了吗？',
+    },
+    B: {
+      en: 'We\'d love your feedback',
+      es: 'Nos encantaría saber tu opinión',
+      zh: '我们很想听听您的反馈',
+    },
+  },
+  free_abandoned_60d: {
+    A: {
+      en: '💔 {name}, we miss you',
+      es: '💔 {name}, te extrañamos',
+      zh: '💔 {name}，我们想念您',
+    },
+    B: {
+      en: 'A lot has changed at ZPLPDF',
+      es: 'Mucho ha cambiado en ZPLPDF',
+      zh: 'ZPLPDF有很多变化',
     },
   },
 };
@@ -1558,6 +1623,604 @@ function getProPowerUserContent(variant: AbVariant, lang: EmailLanguage, data: T
   return content[variant][lang];
 }
 
+// ============== FREE Reactivation Email Content ==============
+
+function getFreeNeverUsed7dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const appUrl = 'https://www.zplpdf.com';
+  const examplesUrl = 'https://www.zplpdf.com/examples';
+  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Your Account Is Ready!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, you signed up for ZPLPDF a week ago but haven't created your first label yet.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          🎯 <strong>Did you know you can create professional labels in 30 seconds?</strong>
+        </p>
+        ${ctaButton('CREATE MY FIRST LABEL →', appUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Don't have ZPL code? No problem. We have examples ready to try:
+        </p>
+        ${ctaButton('SEE LABEL EXAMPLES →', examplesUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Your free plan includes 25 PDFs per month. Use them!
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">¡Tu Cuenta Está Lista!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, te registraste en ZPLPDF hace una semana pero aún no has creado tu primera etiqueta.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          🎯 <strong>¿Sabías que puedes crear etiquetas profesionales en 30 segundos?</strong>
+        </p>
+        ${ctaButton('CREAR MI PRIMERA ETIQUETA →', appUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ¿No tienes código ZPL? No hay problema. Tenemos ejemplos listos para probar:
+        </p>
+        ${ctaButton('VER EJEMPLOS DE ETIQUETAS →', examplesUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Tu plan gratuito incluye 25 PDFs al mes. ¡Úsalos!
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您的账户已准备就绪！</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，您一周前注册了ZPLPDF，但还没有创建第一个标签。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          🎯 <strong>您知道可以在30秒内创建专业标签吗？</strong>
+        </p>
+        ${ctaButton('创建我的第一个标签 →', appUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          没有ZPL代码？没问题。我们有现成的示例供您尝试：
+        </p>
+        ${ctaButton('查看标签示例 →', examplesUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          您的免费计划每月包含25个PDF。使用它们吧！
+        </p>
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🏷️ 30 Seconds to Your First Label</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, creating labels with ZPLPDF is super easy:
+        </p>
+        <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Paste your ZPL code</li>
+          <li>Click Convert</li>
+          <li>Download your PDF</li>
+        </ol>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          That's it! No software to install, no complicated setup.
+        </p>
+        ${ctaButton('TRY IT NOW →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Need examples? <a href="${examplesUrl}" style="color: #2563eb;">Check our sample labels</a>
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🏷️ 30 Segundos para Tu Primera Etiqueta</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, crear etiquetas con ZPLPDF es súper fácil:
+        </p>
+        <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Pega tu código ZPL</li>
+          <li>Haz clic en Convertir</li>
+          <li>Descarga tu PDF</li>
+        </ol>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ¡Eso es todo! Sin software que instalar, sin configuración complicada.
+        </p>
+        ${ctaButton('PRUÉBALO AHORA →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          ¿Necesitas ejemplos? <a href="${examplesUrl}" style="color: #2563eb;">Mira nuestras etiquetas de muestra</a>
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🏷️ 30秒创建您的第一个标签</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，使用ZPLPDF创建标签非常简单：
+        </p>
+        <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>粘贴您的ZPL代码</li>
+          <li>点击转换</li>
+          <li>下载您的PDF</li>
+        </ol>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          就是这样！无需安装软件，无需复杂设置。
+        </p>
+        ${ctaButton('立即试用 →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          需要示例？<a href="${examplesUrl}" style="color: #2563eb;">查看我们的示例标签</a>
+        </p>
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+function getFreeNeverUsed14dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const appUrl = 'https://www.zplpdf.com';
+  const faqUrl = 'https://www.zplpdf.com/faq';
+  const examplesUrl = 'https://www.zplpdf.com/examples';
+  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⏰ Last Call</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, it's been 2 weeks since you signed up and you haven't tried ZPLPDF yet.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Is something holding you back?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Don't have ZPL code? → <a href="${examplesUrl}" style="color: #2563eb;">See examples</a></li>
+          <li>Have questions? → <a href="${faqUrl}" style="color: #2563eb;">Check FAQ</a></li>
+          <li>Need help? → Reply to this email</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Your free account is still active. If you don't use it, we'll keep it for you in case you change your mind.
+        </p>
+        ${ctaButton('TRY ZPLPDF NOW →', appUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⏰ Última Llamada</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, han pasado 2 semanas desde que te registraste y aún no has probado ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>¿Hay algo que te está frenando?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>¿No tienes código ZPL? → <a href="${examplesUrl}" style="color: #2563eb;">Ver ejemplos</a></li>
+          <li>¿Tienes dudas? → <a href="${faqUrl}" style="color: #2563eb;">Ver FAQ</a></li>
+          <li>¿Necesitas ayuda? → Responde este email</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Tu cuenta gratuita sigue activa. Si no la usas, la mantendremos por si cambias de opinión.
+        </p>
+        ${ctaButton('PROBAR ZPLPDF AHORA →', appUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⏰ 最后提醒</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，您注册已经两周了，但还没有尝试过ZPLPDF。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>有什么阻碍您吗？</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>没有ZPL代码？→ <a href="${examplesUrl}" style="color: #2563eb;">查看示例</a></li>
+          <li>有问题？→ <a href="${faqUrl}" style="color: #2563eb;">查看常见问题</a></li>
+          <li>需要帮助？→ 回复此邮件</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您的免费账户仍然有效。如果您不使用，我们会保留它以备您改变主意。
+        </p>
+        ${ctaButton('立即试用ZPLPDF →', appUrl)}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Need Help Getting Started?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, we noticed you haven't created your first label yet. That's okay!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Many users find it helpful to start with our sample ZPL codes. You can copy-paste them directly and see how easy it is.
+        </p>
+        ${ctaButton('VIEW SAMPLE LABELS →', examplesUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Or if you prefer, just reply to this email and tell us what you need. We're here to help!
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">¿Necesitas Ayuda para Empezar?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, notamos que aún no has creado tu primera etiqueta. ¡Está bien!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Muchos usuarios encuentran útil empezar con nuestros códigos ZPL de ejemplo. Puedes copiar y pegar directamente y ver lo fácil que es.
+        </p>
+        ${ctaButton('VER ETIQUETAS DE EJEMPLO →', examplesUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          O si prefieres, simplemente responde este email y cuéntanos qué necesitas. ¡Estamos aquí para ayudarte!
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">需要帮助开始吗？</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，我们注意到您还没有创建第一个标签。没关系！
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          许多用户发现从我们的示例ZPL代码开始很有帮助。您可以直接复制粘贴，看看它有多简单。
+        </p>
+        ${ctaButton('查看示例标签 →', examplesUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          或者如果您愿意，只需回复此邮件告诉我们您需要什么。我们随时为您提供帮助！
+        </p>
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+function getFreeTriedAbandonedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const appUrl = 'https://www.zplpdf.com';
+  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const pdfCount = data.pdfCount || 1;
+  const pdfsAvailable = data.pdfsAvailable || (25 - pdfCount);
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">We Saw You Started...</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, a few days ago you created ${pdfCount} label${pdfCount > 1 ? 's' : ''} on ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Did everything go well?</strong>
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          If there was any issue or you have suggestions, we'd love to hear from you. Just reply to this email.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          By the way, you still have <strong>${pdfsAvailable} free PDFs</strong> available this month.
+        </p>
+        ${ctaButton('CONTINUE CREATING LABELS →', appUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Vimos que Empezaste...</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, hace unos días creaste ${pdfCount} etiqueta${pdfCount > 1 ? 's' : ''} en ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>¿Todo salió bien?</strong>
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Si hubo algún problema o tienes sugerencias, nos encantaría saberlo. Simplemente responde a este email.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Por cierto, aún tienes <strong>${pdfsAvailable} PDFs gratuitos</strong> disponibles este mes.
+        </p>
+        ${ctaButton('CONTINUAR CREANDO ETIQUETAS →', appUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">我们看到您开始了...</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，几天前您在ZPLPDF上创建了${pdfCount}个标签。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>一切顺利吗？</strong>
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          如果有任何问题或建议，我们很想听听。只需回复此邮件即可。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          顺便说一下，您本月还有 <strong>${pdfsAvailable}个免费PDF</strong> 可用。
+        </p>
+        ${ctaButton('继续创建标签 →', appUrl)}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">How Was Your Experience?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, you created ${pdfCount} label${pdfCount > 1 ? 's' : ''} with us recently. We'd love to know how it went!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Was there anything that could have been better? Your feedback helps us improve.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Just reply to this email with your thoughts. We read every response!
+        </p>
+        ${ctaButton('CREATE MORE LABELS →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          You have ${pdfsAvailable} free PDFs remaining this month.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">¿Cómo Fue Tu Experiencia?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, creaste ${pdfCount} etiqueta${pdfCount > 1 ? 's' : ''} con nosotros recientemente. ¡Nos encantaría saber cómo te fue!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ¿Hubo algo que podría haber sido mejor? Tu feedback nos ayuda a mejorar.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Simplemente responde a este email con tus comentarios. ¡Leemos cada respuesta!
+        </p>
+        ${ctaButton('CREAR MÁS ETIQUETAS →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Te quedan ${pdfsAvailable} PDFs gratuitos este mes.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您的体验如何？</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，您最近用我们的服务创建了${pdfCount}个标签。我们很想知道进展如何！
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          有什么可以改进的吗？您的反馈帮助我们进步。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          只需回复此邮件告诉我们您的想法。我们会阅读每一条回复！
+        </p>
+        ${ctaButton('创建更多标签 →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          您本月还剩${pdfsAvailable}个免费PDF。
+        </p>
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+function getFreeDormant30dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const surveyUrl = 'https://forms.gle/zplpdf-feedback';
+  const appUrl = 'https://www.zplpdf.com';
+  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const pdfsAvailable = data.pdfsAvailable || 25;
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Did You Find What You Were Looking For?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, it's been a month since your last visit to ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>We want to improve. Could you tell us what happened?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>I found another solution</li>
+          <li>It was too complicated</li>
+          <li>I don't have ZPL code regularly</li>
+          <li>Other reason</li>
+        </ul>
+        ${ctaButton('ANSWER SURVEY (30 sec) →', surveyUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          If you decide to come back, your account is still active with ${pdfsAvailable} free PDFs.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">¿Encontraste Lo Que Buscabas?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, ha pasado un mes desde tu última visita a ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Queremos mejorar. ¿Podrías contarnos qué pasó?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Encontré otra solución</li>
+          <li>Era muy complicado</li>
+          <li>No tengo código ZPL regularmente</li>
+          <li>Otro motivo</li>
+        </ul>
+        ${ctaButton('RESPONDER ENCUESTA (30 seg) →', surveyUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Si decides volver, tu cuenta sigue activa con ${pdfsAvailable} PDFs gratuitos.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您找到需要的了吗？</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，距离您上次访问ZPLPDF已经一个月了。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>我们想要改进。您能告诉我们发生了什么吗？</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>我找到了其他解决方案</li>
+          <li>太复杂了</li>
+          <li>我不经常有ZPL代码</li>
+          <li>其他原因</li>
+        </ul>
+        ${ctaButton('回答调查（30秒）→', surveyUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          如果您决定回来，您的账户仍然有效，有${pdfsAvailable}个免费PDF可用。
+        </p>
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">We'd Love Your Feedback</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, we noticed you haven't been around in a while.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Your opinion matters to us. If you have a minute, we'd appreciate hearing what we could do better.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Just reply to this email - we read every response and use the feedback to improve.
+        </p>
+        ${ctaButton('VISIT ZPLPDF →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Your account remains active with ${pdfsAvailable} free PDFs.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Nos Encantaría Tu Opinión</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, notamos que no has estado por aquí en un tiempo.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Tu opinión es importante para nosotros. Si tienes un minuto, apreciaríamos saber qué podríamos hacer mejor.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Simplemente responde a este email - leemos cada respuesta y usamos el feedback para mejorar.
+        </p>
+        ${ctaButton('VISITAR ZPLPDF →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Tu cuenta permanece activa con ${pdfsAvailable} PDFs gratuitos.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">我们很想听听您的反馈</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，我们注意到您已经有一段时间没来了。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您的意见对我们很重要。如果您有一分钟时间，我们很想听听我们可以做得更好的地方。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          只需回复此邮件 - 我们会阅读每一条回复并利用反馈来改进。
+        </p>
+        ${ctaButton('访问ZPLPDF →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          您的账户仍然有效，有${pdfsAvailable}个免费PDF可用。
+        </p>
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+function getFreeAbandoned60dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const appUrl = 'https://www.zplpdf.com';
+  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">💔 We Miss You</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, it's been a while since we've seen you.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          A lot has improved at ZPLPDF since your last visit:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>✨ New, faster interface</li>
+          <li>🔧 Better ZPL command support</li>
+          <li>📱 Works better on mobile</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Give us a second chance?</strong>
+        </p>
+        ${ctaButton('TRY ZPLPDF AGAIN →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          If you no longer need the service, we understand. Your account will remain active in case you change your mind.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">💔 Te Extrañamos</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, ha pasado tiempo desde que nos visitaste.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hemos mejorado mucho desde tu última visita:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>✨ Nueva interfaz más rápida</li>
+          <li>🔧 Mejor soporte para comandos ZPL</li>
+          <li>📱 Funciona mejor en móviles</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>¿Una segunda oportunidad?</strong>
+        </p>
+        ${ctaButton('VOLVER A PROBAR ZPLPDF →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Si ya no necesitas el servicio, lo entendemos. Tu cuenta permanecerá activa por si cambias de opinión.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">💔 我们想念您</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，好久没见到您了。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          自您上次访问以来，ZPLPDF有了很多改进：
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>✨ 全新更快的界面</li>
+          <li>🔧 更好的ZPL命令支持</li>
+          <li>📱 移动端体验更佳</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>给我们第二次机会？</strong>
+        </p>
+        ${ctaButton('再次尝试ZPLPDF →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          如果您不再需要这项服务，我们理解。您的账户将保持活跃，以备您改变主意。
+        </p>
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">A Lot Has Changed at ZPLPDF</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, we've been busy making ZPLPDF better since you last visited.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Our users asked, and we delivered:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Faster conversions</li>
+          <li>Better label previews</li>
+          <li>Improved mobile experience</li>
+          <li>More ZPL commands supported</li>
+        </ul>
+        ${ctaButton('SEE WHAT\'S NEW →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Your account is waiting for you.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Mucho Ha Cambiado en ZPLPDF</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, hemos estado ocupados mejorando ZPLPDF desde tu última visita.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Nuestros usuarios pidieron, y lo cumplimos:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Conversiones más rápidas</li>
+          <li>Mejores previsualizaciones de etiquetas</li>
+          <li>Experiencia móvil mejorada</li>
+          <li>Más comandos ZPL soportados</li>
+        </ul>
+        ${ctaButton('VER LAS NOVEDADES →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Tu cuenta te está esperando.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">ZPLPDF有很多变化</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，自您上次访问以来，我们一直在忙着改进ZPLPDF。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          用户提出要求，我们做到了：
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>更快的转换速度</li>
+          <li>更好的标签预览</li>
+          <li>改进的移动端体验</li>
+          <li>支持更多ZPL命令</li>
+        </ul>
+        ${ctaButton('查看新功能 →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          您的账户在等待您。
+        </p>
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
 // Text version of emails (stripped HTML)
 function stripHtml(html: string): string {
   return html
@@ -1623,6 +2286,22 @@ export function getEmailTemplate(
       break;
     case 'pro_power_user':
       content = getProPowerUserContent(variant, language, data);
+      break;
+    // FREE Reactivation emails
+    case 'free_never_used_7d':
+      content = getFreeNeverUsed7dContent(variant, language, data);
+      break;
+    case 'free_never_used_14d':
+      content = getFreeNeverUsed14dContent(variant, language, data);
+      break;
+    case 'free_tried_abandoned':
+      content = getFreeTriedAbandonedContent(variant, language, data);
+      break;
+    case 'free_dormant_30d':
+      content = getFreeDormant30dContent(variant, language, data);
+      break;
+    case 'free_abandoned_60d':
+      content = getFreeAbandoned60dContent(variant, language, data);
       break;
     default:
       throw new Error(`Unknown email type: ${emailType}`);

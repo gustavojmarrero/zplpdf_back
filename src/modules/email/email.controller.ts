@@ -19,7 +19,7 @@ import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { ResendWebhookDto } from './dto/resend-webhook.dto.js';
 import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto, OnboardingFunnelDto } from './dto/email-metrics.dto.js';
-import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser } from './interfaces/email.interface.js';
+import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser, FreeReactivationResult, FreeInactiveUser } from './interfaces/email.interface.js';
 
 @ApiTags('email')
 @Controller()
@@ -502,6 +502,116 @@ export class EmailController {
     return this.firestoreService.getProPowerUsers({
       minPdfsPerMonth: minPdfs ? parseInt(minPdfs, 10) : 50,
       month: month,
+      limit: limit ? parseInt(limit, 10) : 100,
+    });
+  }
+
+  // ============== FREE User Reactivation Endpoints ==============
+
+  @Post('cron/schedule-free-reactivation-emails')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Schedule reactivation emails for inactive FREE users (Cloud Scheduler)',
+    description: 'Identifies FREE users based on inactivity segments and queues reactivation emails. Should run daily. Disabled by default - set FREE_REACTIVATION_EMAILS_ENABLED=true to enable.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'FREE reactivation emails scheduled',
+    schema: {
+      properties: {
+        processed: { type: 'number', example: 50 },
+        emailsScheduled: { type: 'number', example: 15 },
+        byType: {
+          type: 'object',
+          properties: {
+            free_never_used_7d: { type: 'number', example: 5 },
+            free_never_used_14d: { type: 'number', example: 3 },
+            free_tried_abandoned: { type: 'number', example: 2 },
+            free_dormant_30d: { type: 'number', example: 3 },
+            free_abandoned_60d: { type: 'number', example: 2 },
+          },
+        },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  async scheduleFreeReactivationEmails(): Promise<FreeReactivationResult> {
+    return this.emailService.scheduleFreeReactivationEmails();
+  }
+
+  @Get('admin/users/free/inactive')
+  @UseGuards(AdminAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get inactive FREE users',
+    description: 'Returns FREE users who have not used the service, segmented by inactivity type.',
+  })
+  @ApiQuery({
+    name: 'segment',
+    required: false,
+    enum: ['never_used', 'tried_abandoned', 'dormant', 'abandoned'],
+    description: 'Filter by user segment',
+  })
+  @ApiQuery({
+    name: 'minDaysInactive',
+    required: false,
+    type: Number,
+    description: 'Minimum days of inactivity',
+  })
+  @ApiQuery({
+    name: 'maxDaysInactive',
+    required: false,
+    type: Number,
+    description: 'Maximum days of inactivity',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Maximum number of users to return (default: 100)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Inactive FREE users retrieved',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          userId: { type: 'string' },
+          userEmail: { type: 'string' },
+          displayName: { type: 'string', nullable: true },
+          language: { type: 'string', enum: ['en', 'es', 'zh'] },
+          registeredAt: { type: 'string', format: 'date-time' },
+          lastActiveAt: { type: 'string', format: 'date-time', nullable: true },
+          daysSinceRegistration: { type: 'number' },
+          daysInactive: { type: 'number' },
+          pdfCount: { type: 'number' },
+          labelCount: { type: 'number' },
+          segment: { type: 'string', enum: ['never_used', 'tried_abandoned', 'dormant', 'abandoned'] },
+          emailsSent: { type: 'array', items: { type: 'string' } },
+          lastEmailSentAt: { type: 'string', format: 'date-time', nullable: true },
+          lastEmailType: { type: 'string', nullable: true },
+        },
+      },
+    },
+  })
+  async getInactiveFreeUsers(
+    @Query('segment') segment?: 'never_used' | 'tried_abandoned' | 'dormant' | 'abandoned',
+    @Query('minDaysInactive') minDaysInactive?: string,
+    @Query('maxDaysInactive') maxDaysInactive?: string,
+    @Query('limit') limit?: string,
+  ): Promise<FreeInactiveUser[]> {
+    return this.firestoreService.getFreeInactiveUsers({
+      segment,
+      minDaysInactive: minDaysInactive ? parseInt(minDaysInactive, 10) : undefined,
+      maxDaysInactive: maxDaysInactive ? parseInt(maxDaysInactive, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : 100,
     });
   }

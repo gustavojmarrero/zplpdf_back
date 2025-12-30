@@ -8,6 +8,8 @@ import type {
   EmailLanguage,
   ProcessQueueResult,
   ScheduleEmailsResult,
+  FreeReactivationResult,
+  ReactivationEmailType,
 } from './interfaces/email.interface.js';
 import { getEmailTemplate } from './templates/email-templates.js';
 
@@ -852,5 +854,119 @@ export class EmailService {
     }
 
     return { scheduled, skipped, executedAt: new Date() };
+  }
+
+  /**
+   * Schedule reactivation emails for inactive FREE users
+   * Segments:
+   * - free_never_used_7d: 0 PDFs, 7-13 days since registration
+   * - free_never_used_14d: 0 PDFs, 14+ days since registration
+   * - free_tried_abandoned: 1-3 PDFs, 14+ days inactive
+   * - free_dormant_30d: >3 PDFs, 30+ days inactive
+   * - free_abandoned_60d: Any user, 60+ days inactive
+   *
+   * NOTE: Disabled by default. Set FREE_REACTIVATION_EMAILS_ENABLED=true to enable.
+   */
+  async scheduleFreeReactivationEmails(): Promise<FreeReactivationResult> {
+    const isEnabled = process.env.FREE_REACTIVATION_EMAILS_ENABLED === 'true';
+    if (!this.isEnabled || !isEnabled) {
+      this.logger.debug('FREE reactivation emails disabled');
+      return {
+        processed: 0,
+        emailsScheduled: 0,
+        byType: {
+          free_never_used_7d: 0,
+          free_never_used_14d: 0,
+          free_tried_abandoned: 0,
+          free_dormant_30d: 0,
+          free_abandoned_60d: 0,
+        },
+        executedAt: new Date(),
+      };
+    }
+
+    let processed = 0;
+    let emailsScheduled = 0;
+    const byType = {
+      free_never_used_7d: 0,
+      free_never_used_14d: 0,
+      free_tried_abandoned: 0,
+      free_dormant_30d: 0,
+      free_abandoned_60d: 0,
+    };
+
+    try {
+      // Get all FREE inactive users
+      const inactiveUsers = await this.firestoreService.getFreeInactiveUsers({
+        limit: 200,
+      });
+
+      for (const user of inactiveUsers) {
+        processed++;
+
+        // Determine which email to send based on segment and days
+        let emailType: ReactivationEmailType | null = null;
+
+        if (user.segment === 'never_used') {
+          // Never used: 7d or 14d based on registration age
+          if (user.daysSinceRegistration >= 14 && !user.emailsSent.includes('free_never_used_14d')) {
+            emailType = 'free_never_used_14d';
+          } else if (user.daysSinceRegistration >= 7 && !user.emailsSent.includes('free_never_used_7d')) {
+            emailType = 'free_never_used_7d';
+          }
+        } else if (user.segment === 'tried_abandoned') {
+          // Tried but abandoned: 1-3 PDFs, 14+ days inactive
+          if (!user.emailsSent.includes('free_tried_abandoned')) {
+            emailType = 'free_tried_abandoned';
+          }
+        } else if (user.segment === 'dormant') {
+          // Dormant: >3 PDFs, 30+ days inactive
+          if (!user.emailsSent.includes('free_dormant_30d')) {
+            emailType = 'free_dormant_30d';
+          }
+        } else if (user.segment === 'abandoned') {
+          // Abandoned: 60+ days inactive
+          if (!user.emailsSent.includes('free_abandoned_60d')) {
+            emailType = 'free_abandoned_60d';
+          }
+        }
+
+        if (!emailType) continue;
+
+        // Schedule the email
+        await this.firestoreService.createEmailQueue({
+          userId: user.userId,
+          userEmail: user.userEmail,
+          emailType,
+          abVariant: this.selectAbVariant(user.userId),
+          language: user.language as EmailLanguage,
+          scheduledFor: new Date(),
+          metadata: {
+            displayName: user.displayName,
+            daysSinceRegistration: user.daysSinceRegistration,
+            daysInactive: user.daysInactive,
+            pdfCount: user.pdfCount,
+            labelCount: user.labelCount,
+            segment: user.segment,
+          },
+        });
+
+        byType[emailType]++;
+        emailsScheduled++;
+      }
+
+      this.logger.log(
+        `FREE reactivation emails scheduled: ${emailsScheduled} (never_used_7d: ${byType.free_never_used_7d}, never_used_14d: ${byType.free_never_used_14d}, tried_abandoned: ${byType.free_tried_abandoned}, dormant_30d: ${byType.free_dormant_30d}, abandoned_60d: ${byType.free_abandoned_60d})`,
+      );
+    } catch (error) {
+      this.logger.error(`Error scheduling FREE reactivation emails: ${error.message}`);
+    }
+
+    return {
+      processed,
+      emailsScheduled,
+      byType,
+      executedAt: new Date(),
+    };
   }
 }

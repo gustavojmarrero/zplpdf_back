@@ -14,8 +14,11 @@ export type ConversionEmailType = 'limit_80_percent' | 'limit_100_percent' | 'co
 // Retention emails (for PRO users)
 export type RetentionEmailType = 'pro_inactive_7_days' | 'pro_inactive_14_days' | 'pro_inactive_30_days' | 'pro_power_user';
 
+// Reactivation emails (for inactive FREE users)
+export type ReactivationEmailType = 'free_never_used_7d' | 'free_never_used_14d' | 'free_tried_abandoned' | 'free_dormant_30d' | 'free_abandoned_60d';
+
 // All email types
-export type EmailType = OnboardingEmailType | ConversionEmailType | RetentionEmailType;
+export type EmailType = OnboardingEmailType | ConversionEmailType | RetentionEmailType | ReactivationEmailType;
 
 export type EmailStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
 
@@ -202,4 +205,38 @@ export interface ProPowerUser {
   pdfsThisMonth: number;
   labelsThisMonth: number;
   monthsAsPro: number;
+}
+
+// ============== FREE Reactivation Interfaces ==============
+
+export type FreeInactiveSegment = 'never_used' | 'tried_abandoned' | 'dormant' | 'abandoned';
+
+export interface FreeInactiveUser {
+  userId: string;
+  userEmail: string;
+  displayName?: string;
+  language: EmailLanguage;
+  registeredAt: Date;
+  lastActiveAt: Date | null;
+  daysSinceRegistration: number;
+  daysInactive: number;
+  pdfCount: number;
+  labelCount: number;
+  segment: FreeInactiveSegment;
+  emailsSent: string[];
+  lastEmailSentAt: Date | null;
+  lastEmailType: string | null;
+}
+
+export interface FreeReactivationResult {
+  processed: number;
+  emailsScheduled: number;
+  byType: {
+    free_never_used_7d: number;
+    free_never_used_14d: number;
+    free_tried_abandoned: number;
+    free_dormant_30d: number;
+    free_abandoned_60d: number;
+  };
+  executedAt: Date;
 }

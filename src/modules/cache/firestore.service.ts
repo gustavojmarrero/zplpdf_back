@@ -16,7 +16,7 @@ import type {
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
 import { ErrorIdGenerator } from '../../common/utils/error-id-generator.js';
-import type { EmailLanguage } from '../email/interfaces/email.interface.js';
+import type { EmailLanguage, FreeInactiveUser, FreeInactiveSegment } from '../email/interfaces/email.interface.js';
 
 // ============== Daily Stats (Aggregated Metrics) ==============
 
@@ -4821,6 +4821,160 @@ export class FirestoreService {
       return powerUsers;
     } catch (error) {
       this.logger.error(`Error getting PRO power users: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get FREE inactive users for reactivation emails
+   * Segments:
+   * - never_used: 0 PDFs ever (7d or 14d since registration)
+   * - tried_abandoned: 1-3 PDFs, inactive 14+ days
+   * - dormant: >3 PDFs, inactive 30+ days
+   * - abandoned: Any user inactive 60+ days
+   */
+  async getFreeInactiveUsers(params: {
+    segment?: FreeInactiveSegment;
+    minDaysInactive?: number;
+    maxDaysInactive?: number;
+    minDaysSinceRegistration?: number;
+    maxDaysSinceRegistration?: number;
+    limit?: number;
+  }): Promise<FreeInactiveUser[]> {
+    const {
+      segment,
+      minDaysInactive,
+      maxDaysInactive,
+      minDaysSinceRegistration,
+      maxDaysSinceRegistration,
+      limit: maxResults = 100,
+    } = params;
+    const now = new Date();
+
+    try {
+      // Get FREE users only
+      const usersSnapshot = await this.firestore
+        .collection(this.usersCollection)
+        .where('plan', '==', 'free')
+        .get();
+
+      const inactiveUsers: FreeInactiveUser[] = [];
+
+      for (const doc of usersSnapshot.docs) {
+        const userData = doc.data();
+        const userId = doc.id;
+
+        // Get registration date
+        const registeredAt = userData.createdAt?.toDate?.() || userData.createdAt || now;
+        const daysSinceRegistration = Math.floor(
+          (now.getTime() - registeredAt.getTime()) / (24 * 60 * 60 * 1000),
+        );
+
+        // Filter by days since registration if specified
+        if (minDaysSinceRegistration !== undefined && daysSinceRegistration < minDaysSinceRegistration) continue;
+        if (maxDaysSinceRegistration !== undefined && daysSinceRegistration > maxDaysSinceRegistration) continue;
+
+        // Get last activity date
+        const lastActiveAt = userData.lastActiveAt?.toDate?.() || userData.lastActiveAt || null;
+        const relevantDate = lastActiveAt || registeredAt;
+        const daysInactive = Math.floor(
+          (now.getTime() - relevantDate.getTime()) / (24 * 60 * 60 * 1000),
+        );
+
+        // Filter by days inactive if specified
+        if (minDaysInactive !== undefined && daysInactive < minDaysInactive) continue;
+        if (maxDaysInactive !== undefined && daysInactive > maxDaysInactive) continue;
+
+        // Get total usage (all time)
+        const usageSnapshot = await this.firestore
+          .collection(this.usageCollection)
+          .where('userId', '==', userId)
+          .get();
+
+        let totalPdfCount = 0;
+        let totalLabelCount = 0;
+        for (const usageDoc of usageSnapshot.docs) {
+          const usageData = usageDoc.data();
+          totalPdfCount += usageData.pdfCount || 0;
+          totalLabelCount += usageData.labelCount || 0;
+        }
+
+        // Determine user segment
+        let userSegment: FreeInactiveSegment;
+        if (totalPdfCount === 0) {
+          userSegment = 'never_used';
+        } else if (totalPdfCount <= 3 && daysInactive >= 14) {
+          userSegment = 'tried_abandoned';
+        } else if (totalPdfCount > 3 && daysInactive >= 30) {
+          userSegment = 'dormant';
+        } else if (daysInactive >= 60) {
+          userSegment = 'abandoned';
+        } else {
+          continue; // Doesn't fit any reactivation segment
+        }
+
+        // Filter by segment if specified
+        if (segment && userSegment !== segment) continue;
+
+        // Get emails already sent to this user (reactivation emails)
+        const emailsSnapshot = await this.firestore
+          .collection(this.emailQueueCollection)
+          .where('userId', '==', userId)
+          .where('emailType', 'in', [
+            'free_never_used_7d',
+            'free_never_used_14d',
+            'free_tried_abandoned',
+            'free_dormant_30d',
+            'free_abandoned_60d',
+          ])
+          .where('status', 'in', ['pending', 'sent'])
+          .get();
+
+        const emailsSent = emailsSnapshot.docs.map((d) => d.data().emailType);
+
+        // Get last email sent info
+        let lastEmailSentAt: Date | null = null;
+        let lastEmailType: string | null = null;
+        if (emailsSnapshot.docs.length > 0) {
+          const sortedEmails = emailsSnapshot.docs
+            .map((d) => d.data())
+            .sort((a, b) => {
+              const dateA = a.sentAt?.toDate?.() || a.createdAt?.toDate?.() || new Date(0);
+              const dateB = b.sentAt?.toDate?.() || b.createdAt?.toDate?.() || new Date(0);
+              return dateB.getTime() - dateA.getTime();
+            });
+          if (sortedEmails[0]) {
+            lastEmailSentAt = sortedEmails[0].sentAt?.toDate?.() || sortedEmails[0].createdAt?.toDate?.() || null;
+            lastEmailType = sortedEmails[0].emailType || null;
+          }
+        }
+
+        inactiveUsers.push({
+          userId,
+          userEmail: userData.email,
+          displayName: userData.displayName,
+          language: this.detectLanguageFromCountry(userData.country),
+          registeredAt,
+          lastActiveAt,
+          daysSinceRegistration,
+          daysInactive,
+          pdfCount: totalPdfCount,
+          labelCount: totalLabelCount,
+          segment: userSegment,
+          emailsSent,
+          lastEmailSentAt,
+          lastEmailType,
+        });
+
+        if (inactiveUsers.length >= maxResults) break;
+      }
+
+      // Sort by days inactive (most inactive first)
+      inactiveUsers.sort((a, b) => b.daysInactive - a.daysInactive);
+
+      return inactiveUsers;
+    } catch (error) {
+      this.logger.error(`Error getting FREE inactive users: ${error.message}`);
       return [];
     }
   }
