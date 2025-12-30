@@ -2,6 +2,39 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsString, IsOptional, IsObject, IsArray } from 'class-validator';
 
 /**
+ * Data payload for Resend webhook events
+ * IMPORTANT: This class must be defined BEFORE ResendWebhookDto to avoid
+ * "Cannot access before initialization" error with ESM decorators
+ */
+export class ResendWebhookData {
+  @ApiProperty({ example: 'ae123456-1234-1234-1234-123456789012', description: 'Resend email ID' })
+  @IsString()
+  email_id: string;
+
+  @ApiPropertyOptional({ example: 'ZPLPDF <noreply@zplpdf.com>', description: 'From address' })
+  @IsOptional()
+  @IsString()
+  from?: string;
+
+  @ApiPropertyOptional({ example: ['user@example.com'], description: 'To addresses' })
+  @IsOptional()
+  @IsArray()
+  to?: string[];
+
+  @ApiPropertyOptional({ example: 'Welcome to ZPLPDF!', description: 'Email subject' })
+  @IsOptional()
+  @IsString()
+  subject?: string;
+
+  @ApiPropertyOptional({ description: 'Clicked link data (for click events)' })
+  @IsOptional()
+  @IsObject()
+  click?: {
+    link: string;
+  };
+}
+
+/**
  * Resend Webhook Event Types:
  * - email.sent: Email was sent
  * - email.delivered: Email was delivered
@@ -32,35 +65,7 @@ export class ResendWebhookDto {
   @IsString()
   created_at: string;
 
-  @ApiProperty({ description: 'Event data payload' })
+  @ApiProperty({ description: 'Event data payload', type: ResendWebhookData })
   @IsObject()
   data: ResendWebhookData;
-}
-
-export class ResendWebhookData {
-  @ApiProperty({ example: 'ae123456-1234-1234-1234-123456789012', description: 'Resend email ID' })
-  @IsString()
-  email_id: string;
-
-  @ApiPropertyOptional({ example: 'ZPLPDF <noreply@zplpdf.com>', description: 'From address' })
-  @IsOptional()
-  @IsString()
-  from?: string;
-
-  @ApiPropertyOptional({ example: ['user@example.com'], description: 'To addresses' })
-  @IsOptional()
-  @IsArray()
-  to?: string[];
-
-  @ApiPropertyOptional({ example: 'Welcome to ZPLPDF!', description: 'Email subject' })
-  @IsOptional()
-  @IsString()
-  subject?: string;
-
-  @ApiPropertyOptional({ example: 'https://zplpdf.com/docs', description: 'Clicked link URL (for click events)' })
-  @IsOptional()
-  @IsString()
-  click?: {
-    link: string;
-  };
 }
