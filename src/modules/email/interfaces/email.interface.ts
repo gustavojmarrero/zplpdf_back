@@ -240,3 +240,72 @@ export interface FreeReactivationResult {
   };
   executedAt: Date;
 }
+
+// ============== Email Templates Admin ==============
+
+export type TemplateType = 'pro_retention' | 'free_reactivation' | 'onboarding' | 'conversion';
+
+export interface EmailTemplateContent {
+  subject: string;
+  body: string;
+}
+
+export interface EmailTemplate {
+  id: string;
+  templateType: TemplateType;
+  templateKey: string; // 'pro_inactive_7_days', 'free_never_used_7d', etc.
+  name: string;
+  description: string;
+  triggerDays: number;
+  enabled: boolean;
+  content: {
+    en: EmailTemplateContent;
+    es: EmailTemplateContent;
+    zh: EmailTemplateContent;
+  };
+  variables: string[];
+  createdAt: Date;
+  updatedAt: Date;
+  updatedBy: string;
+  version: number;
+}
+
+export interface TemplateVersion {
+  id: string;
+  templateId: string;
+  version: number;
+  content: EmailTemplate['content'];
+  triggerDays: number;
+  enabled: boolean;
+  createdAt: Date;
+  createdBy: string;
+  changeDescription: string;
+}
+
+export interface CreateEmailTemplateData {
+  templateType: TemplateType;
+  templateKey: string;
+  name: string;
+  description: string;
+  triggerDays: number;
+  enabled: boolean;
+  content: EmailTemplate['content'];
+  variables: string[];
+  createdBy: string;
+}
+
+export interface UpdateEmailTemplateData {
+  content?: Partial<EmailTemplate['content']>;
+  triggerDays?: number;
+  enabled?: boolean;
+  name?: string;
+  description?: string;
+  changeDescription: string;
+  updatedBy: string;
+}
+
+export interface TemplatePreview {
+  subject: string;
+  body: string;
+  sampleData: Record<string, string | number>;
+}

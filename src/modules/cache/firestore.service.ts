@@ -16,7 +16,15 @@ import type {
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
 import { ErrorIdGenerator } from '../../common/utils/error-id-generator.js';
-import type { EmailLanguage, FreeInactiveUser, FreeInactiveSegment } from '../email/interfaces/email.interface.js';
+import type {
+  EmailLanguage,
+  FreeInactiveUser,
+  FreeInactiveSegment,
+  EmailTemplate,
+  TemplateVersion,
+  CreateEmailTemplateData,
+  UpdateEmailTemplateData,
+} from '../email/interfaces/email.interface.js';
 
 // ============== Daily Stats (Aggregated Metrics) ==============
 
@@ -2562,6 +2570,9 @@ export class FirestoreService {
   private readonly emailQueueCollection = 'email_queue';
   private readonly emailEventsCollection = 'email_events';
   private readonly abVariantsCollection = 'ab_variants';
+  // Email templates admin
+  private readonly emailTemplatesCollection = 'email_templates';
+  private readonly templateVersionsCollection = 'email_template_versions';
 
   /**
    * Guarda o actualiza estadísticas por hora de Labelary
@@ -4976,6 +4987,298 @@ export class FirestoreService {
     } catch (error) {
       this.logger.error(`Error getting FREE inactive users: ${error.message}`);
       return [];
+    }
+  }
+
+  // ============== Email Templates Admin ==============
+
+  /**
+   * Get all email templates
+   */
+  async getEmailTemplates(): Promise<EmailTemplate[]> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.emailTemplatesCollection)
+        .orderBy('templateType')
+        .orderBy('triggerDays')
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          templateType: data.templateType,
+          templateKey: data.templateKey,
+          name: data.name,
+          description: data.description,
+          triggerDays: data.triggerDays,
+          enabled: data.enabled,
+          content: data.content,
+          variables: data.variables || [],
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+          updatedBy: data.updatedBy,
+          version: data.version || 1,
+        } as EmailTemplate;
+      });
+    } catch (error) {
+      this.logger.error(`Error getting email templates: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get email template by ID
+   */
+  async getEmailTemplateById(templateId: string): Promise<EmailTemplate | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.emailTemplatesCollection)
+        .doc(templateId)
+        .get();
+
+      if (!doc.exists) return null;
+
+      const data = doc.data();
+      return {
+        id: doc.id,
+        templateType: data.templateType,
+        templateKey: data.templateKey,
+        name: data.name,
+        description: data.description,
+        triggerDays: data.triggerDays,
+        enabled: data.enabled,
+        content: data.content,
+        variables: data.variables || [],
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        updatedBy: data.updatedBy,
+        version: data.version || 1,
+      } as EmailTemplate;
+    } catch (error) {
+      this.logger.error(`Error getting email template: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get email template by templateKey
+   */
+  async getEmailTemplateByKey(templateKey: string): Promise<EmailTemplate | null> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.emailTemplatesCollection)
+        .where('templateKey', '==', templateKey)
+        .limit(1)
+        .get();
+
+      if (snapshot.empty) return null;
+
+      const doc = snapshot.docs[0];
+      const data = doc.data();
+      return {
+        id: doc.id,
+        templateType: data.templateType,
+        templateKey: data.templateKey,
+        name: data.name,
+        description: data.description,
+        triggerDays: data.triggerDays,
+        enabled: data.enabled,
+        content: data.content,
+        variables: data.variables || [],
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        updatedBy: data.updatedBy,
+        version: data.version || 1,
+      } as EmailTemplate;
+    } catch (error) {
+      this.logger.error(`Error getting email template by key: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Create a new email template
+   */
+  async createEmailTemplate(data: CreateEmailTemplateData): Promise<string> {
+    try {
+      const now = new Date();
+      const docRef = await this.firestore.collection(this.emailTemplatesCollection).add({
+        templateType: data.templateType,
+        templateKey: data.templateKey,
+        name: data.name,
+        description: data.description,
+        triggerDays: data.triggerDays,
+        enabled: data.enabled,
+        content: data.content,
+        variables: data.variables,
+        createdAt: now,
+        updatedAt: now,
+        updatedBy: data.createdBy,
+        version: 1,
+      });
+
+      // Create initial version in history
+      await this.firestore.collection(this.templateVersionsCollection).add({
+        templateId: docRef.id,
+        version: 1,
+        content: data.content,
+        triggerDays: data.triggerDays,
+        enabled: data.enabled,
+        createdAt: now,
+        createdBy: data.createdBy,
+        changeDescription: 'Initial version',
+      });
+
+      return docRef.id;
+    } catch (error) {
+      this.logger.error(`Error creating email template: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Update email template (creates a new version in history)
+   */
+  async updateEmailTemplate(
+    templateId: string,
+    data: UpdateEmailTemplateData,
+  ): Promise<EmailTemplate | null> {
+    try {
+      const templateRef = this.firestore.collection(this.emailTemplatesCollection).doc(templateId);
+      const templateDoc = await templateRef.get();
+
+      if (!templateDoc.exists) return null;
+
+      const currentData = templateDoc.data();
+      const newVersion = (currentData.version || 1) + 1;
+      const now = new Date();
+
+      // Merge content updates
+      const updatedContent = {
+        en: { ...currentData.content.en, ...data.content?.en },
+        es: { ...currentData.content.es, ...data.content?.es },
+        zh: { ...currentData.content.zh, ...data.content?.zh },
+      };
+
+      const updatePayload: Record<string, any> = {
+        updatedAt: now,
+        updatedBy: data.updatedBy,
+        version: newVersion,
+      };
+
+      if (data.content) updatePayload.content = updatedContent;
+      if (data.triggerDays !== undefined) updatePayload.triggerDays = data.triggerDays;
+      if (data.enabled !== undefined) updatePayload.enabled = data.enabled;
+      if (data.name) updatePayload.name = data.name;
+      if (data.description) updatePayload.description = data.description;
+
+      await templateRef.update(updatePayload);
+
+      // Create version in history
+      await this.firestore.collection(this.templateVersionsCollection).add({
+        templateId,
+        version: newVersion,
+        content: updatedContent,
+        triggerDays: data.triggerDays ?? currentData.triggerDays,
+        enabled: data.enabled ?? currentData.enabled,
+        createdAt: now,
+        createdBy: data.updatedBy,
+        changeDescription: data.changeDescription,
+      });
+
+      return this.getEmailTemplateById(templateId);
+    } catch (error) {
+      this.logger.error(`Error updating email template: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get template version history
+   */
+  async getTemplateVersionHistory(templateId: string): Promise<TemplateVersion[]> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.templateVersionsCollection)
+        .where('templateId', '==', templateId)
+        .orderBy('version', 'desc')
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          templateId: data.templateId,
+          version: data.version,
+          content: data.content,
+          triggerDays: data.triggerDays,
+          enabled: data.enabled,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          createdBy: data.createdBy,
+          changeDescription: data.changeDescription,
+        } as TemplateVersion;
+      });
+    } catch (error) {
+      this.logger.error(`Error getting template version history: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get specific template version
+   */
+  async getTemplateVersion(versionId: string): Promise<TemplateVersion | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.templateVersionsCollection)
+        .doc(versionId)
+        .get();
+
+      if (!doc.exists) return null;
+
+      const data = doc.data();
+      return {
+        id: doc.id,
+        templateId: data.templateId,
+        version: data.version,
+        content: data.content,
+        triggerDays: data.triggerDays,
+        enabled: data.enabled,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        createdBy: data.createdBy,
+        changeDescription: data.changeDescription,
+      } as TemplateVersion;
+    } catch (error) {
+      this.logger.error(`Error getting template version: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Rollback template to a previous version
+   */
+  async rollbackTemplate(
+    templateId: string,
+    versionId: string,
+    adminEmail: string,
+  ): Promise<EmailTemplate | null> {
+    try {
+      const version = await this.getTemplateVersion(versionId);
+      if (!version || version.templateId !== templateId) {
+        throw new Error('Version not found or does not belong to this template');
+      }
+
+      return this.updateEmailTemplate(templateId, {
+        content: version.content,
+        triggerDays: version.triggerDays,
+        enabled: version.enabled,
+        changeDescription: `Rollback to version ${version.version}`,
+        updatedBy: adminEmail,
+      });
+    } catch (error) {
+      this.logger.error(`Error rolling back template: ${error.message}`);
+      throw error;
     }
   }
 }
