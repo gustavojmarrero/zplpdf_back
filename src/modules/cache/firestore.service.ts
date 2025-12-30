@@ -4997,13 +4997,12 @@ export class FirestoreService {
    */
   async getEmailTemplates(): Promise<EmailTemplate[]> {
     try {
+      // Simple query without composite index requirement
       const snapshot = await this.firestore
         .collection(this.emailTemplatesCollection)
-        .orderBy('templateType')
-        .orderBy('triggerDays')
         .get();
 
-      return snapshot.docs.map((doc) => {
+      const templates = snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           id: doc.id,
@@ -5020,6 +5019,14 @@ export class FirestoreService {
           updatedBy: data.updatedBy,
           version: data.version || 1,
         } as EmailTemplate;
+      });
+
+      // Sort in memory: by templateType, then by triggerDays
+      return templates.sort((a, b) => {
+        if (a.templateType !== b.templateType) {
+          return a.templateType.localeCompare(b.templateType);
+        }
+        return a.triggerDays - b.triggerDays;
       });
     } catch (error) {
       this.logger.error(`Error getting email templates: ${error.message}`);
