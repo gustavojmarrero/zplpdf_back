@@ -486,4 +486,203 @@ export class EmailService {
   }> {
     return this.firestoreService.getOnboardingFunnel(period);
   }
+
+  // ============== Conversion/Limit Emails ==============
+
+  /**
+   * Queue a limit-based conversion email
+   * Checks if user has already received this email type in current billing period
+   */
+  async queueLimitEmail(
+    userId: string,
+    emailType: 'limit_80_percent' | 'limit_100_percent' | 'conversion_blocked' | 'high_usage',
+    metadata: {
+      pdfsUsed: number;
+      limit: number;
+      periodEnd: Date;
+      periodStart: Date;
+      discountCode?: string;
+      projectedDaysToLimit?: number;
+      displayName?: string;
+      email?: string;
+      language?: string;
+    },
+  ): Promise<string | null> {
+    if (!this.isEnabled) {
+      this.logger.debug('Email service disabled, skipping limit email');
+      return null;
+    }
+
+    try {
+      // Check if user already received this email type in current period
+      const hasEmail = await this.firestoreService.hasUserReceivedEmailInPeriod(
+        userId,
+        emailType,
+        metadata.periodStart,
+      );
+
+      if (hasEmail) {
+        this.logger.debug(`User ${userId} already received ${emailType} in current period, skipping`);
+        return null;
+      }
+
+      // Get user info if not provided
+      let userEmail = metadata.email;
+      let displayName = metadata.displayName;
+      let language = metadata.language as EmailLanguage || 'en';
+
+      if (!userEmail) {
+        const user = await this.firestoreService.getUserById(userId);
+        if (!user) {
+          this.logger.warn(`User ${userId} not found, cannot send limit email`);
+          return null;
+        }
+        userEmail = user.email;
+        displayName = user.displayName;
+        // Detect language from country if available
+        language = this.detectLanguageFromCountry(user.country);
+      }
+
+      // Select A/B variant
+      const variant = this.selectAbVariant(userId);
+
+      // Queue the email
+      const emailId = await this.firestoreService.createEmailQueue({
+        userId,
+        userEmail,
+        emailType,
+        abVariant: variant,
+        language,
+        scheduledFor: new Date(), // Send immediately
+        metadata: {
+          displayName,
+          pdfsUsed: metadata.pdfsUsed,
+          limit: metadata.limit,
+          periodEnd: metadata.periodEnd,
+          discountCode: metadata.discountCode,
+          projectedDaysToLimit: metadata.projectedDaysToLimit,
+        },
+      });
+
+      this.logger.log(`Limit email ${emailType} queued for user ${userId} (variant ${variant})`);
+      return emailId;
+    } catch (error) {
+      this.logger.error(`Failed to queue limit email ${emailType} for ${userId}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Schedule high usage emails for users who are generating many PDFs daily
+   * Called by cron job daily
+   */
+  async scheduleHighUsageEmails(): Promise<ScheduleEmailsResult> {
+    if (!this.isEnabled) {
+      return { scheduled: 0, skipped: 0, executedAt: new Date() };
+    }
+
+    let scheduled = 0;
+    let skipped = 0;
+
+    try {
+      // Get users with high usage patterns (>3 PDFs/day for 2 consecutive days)
+      const highUsageUsers = await this.firestoreService.getUsersWithHighUsage({
+        minPdfsPerDay: 3,
+        consecutiveDays: 2,
+        limit: 100,
+      });
+
+      for (const user of highUsageUsers) {
+        const variant = this.selectAbVariant(user.userId);
+
+        await this.firestoreService.createEmailQueue({
+          userId: user.userId,
+          userEmail: user.userEmail,
+          emailType: 'high_usage',
+          abVariant: variant,
+          language: user.language as EmailLanguage,
+          scheduledFor: new Date(),
+          metadata: {
+            displayName: user.displayName,
+            pdfsUsed: user.pdfsUsed,
+            limit: user.limit,
+            avgPdfsPerDay: user.avgPdfsPerDay,
+            projectedDaysToLimit: user.projectedDaysToLimit,
+            periodEnd: user.periodEnd,
+          },
+        });
+
+        scheduled++;
+      }
+
+      this.logger.log(`High usage emails scheduled: ${scheduled}, skipped: ${skipped}`);
+    } catch (error) {
+      this.logger.error(`Error scheduling high usage emails: ${error.message}`);
+    }
+
+    return { scheduled, skipped, executedAt: new Date() };
+  }
+
+  /**
+   * Trigger blocked email immediately when user tries to convert but is blocked
+   * Called from frontend via API endpoint
+   */
+  async triggerBlockedEmail(userId: string): Promise<string | null> {
+    if (!this.isEnabled) {
+      return null;
+    }
+
+    try {
+      const user = await this.firestoreService.getUserById(userId);
+      if (!user) {
+        this.logger.warn(`User ${userId} not found, cannot send blocked email`);
+        return null;
+      }
+
+      // Only send if user is actually at/over limit
+      if (user.plan !== 'free') {
+        this.logger.debug(`User ${userId} is not on free plan, skipping blocked email`);
+        return null;
+      }
+
+      // Get usage data for pdfCount and period dates
+      const usage = await this.firestoreService.getOrCreateUsage(userId);
+      const limit = user.planLimits?.maxPdfsPerMonth || 25;
+      const pdfsUsed = usage.pdfCount || 0;
+
+      if (pdfsUsed < limit) {
+        this.logger.debug(`User ${userId} has not reached limit (${pdfsUsed}/${limit}), skipping blocked email`);
+        return null;
+      }
+
+      return this.queueLimitEmail(userId, 'conversion_blocked', {
+        pdfsUsed,
+        limit,
+        periodStart: usage.periodStart,
+        periodEnd: usage.periodEnd,
+        discountCode: 'UPGRADE20',
+        displayName: user.displayName,
+        email: user.email,
+        language: this.detectLanguageFromCountry(user.country),
+      });
+    } catch (error) {
+      this.logger.error(`Failed to trigger blocked email for ${userId}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Detect email language from user country
+   */
+  private detectLanguageFromCountry(country?: string): EmailLanguage {
+    if (!country) return 'en';
+
+    const spanishCountries = ['MX', 'ES', 'AR', 'CO', 'CL', 'PE', 'VE', 'EC', 'GT', 'CU', 'BO', 'DO', 'HN', 'PY', 'SV', 'NI', 'CR', 'PA', 'UY'];
+    const chineseCountries = ['CN', 'TW', 'HK', 'SG'];
+
+    if (spanishCountries.includes(country.toUpperCase())) return 'es';
+    if (chineseCountries.includes(country.toUpperCase())) return 'zh';
+
+    return 'en';
+  }
 }

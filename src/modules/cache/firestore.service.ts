@@ -3790,6 +3790,27 @@ export class FirestoreService {
   }
 
   /**
+   * Check if user has received a specific email type within their current billing period
+   * Used for limit-based emails to avoid sending duplicates in the same period
+   */
+  async hasUserReceivedEmailInPeriod(
+    userId: string,
+    emailType: string,
+    periodStart: Date,
+  ): Promise<boolean> {
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('userId', '==', userId)
+      .where('emailType', '==', emailType)
+      .where('status', 'in', ['pending', 'sent'])
+      .where('createdAt', '>=', periodStart)
+      .limit(1)
+      .get();
+
+    return !snapshot.empty;
+  }
+
+  /**
    * Get email queue item by Resend ID (for webhook matching)
    */
   async getEmailByResendId(resendId: string): Promise<{
@@ -4450,6 +4471,128 @@ export class FirestoreService {
     if (chineseCountries.includes(country)) return 'zh';
 
     return 'en';
+  }
+
+  /**
+   * Get FREE users with high usage patterns (>X PDFs/day for Y consecutive days)
+   * Used to proactively send conversion emails before they hit limits
+   */
+  async getUsersWithHighUsage(params: {
+    minPdfsPerDay: number;
+    consecutiveDays: number;
+    limit?: number;
+  }): Promise<Array<{
+    userId: string;
+    userEmail: string;
+    displayName?: string;
+    language: string;
+    avgPdfsPerDay: number;
+    pdfsUsed: number;
+    limit: number;
+    projectedDaysToLimit: number;
+    periodEnd: Date;
+  }>> {
+    const { minPdfsPerDay, consecutiveDays, limit = 100 } = params;
+    const highUsageUsers: Array<{
+      userId: string;
+      userEmail: string;
+      displayName?: string;
+      language: string;
+      avgPdfsPerDay: number;
+      pdfsUsed: number;
+      limit: number;
+      projectedDaysToLimit: number;
+      periodEnd: Date;
+    }> = [];
+
+    // Get all FREE users
+    const usersSnapshot = await this.firestore
+      .collection(this.usersCollection)
+      .where('plan', '==', 'free')
+      .get();
+
+    for (const userDoc of usersSnapshot.docs) {
+      if (highUsageUsers.length >= limit) break;
+
+      const userData = userDoc.data();
+      const userId = userDoc.id;
+
+      // Check if already received high_usage email in current period
+      const periodStart = userData.periodStart?.toDate?.() || userData.periodStart;
+      if (periodStart) {
+        const hasEmail = await this.hasUserReceivedEmailInPeriod(userId, 'high_usage', periodStart);
+        if (hasEmail) continue;
+      }
+
+      // Get conversions for the last N days
+      const daysAgo = new Date();
+      daysAgo.setDate(daysAgo.getDate() - consecutiveDays);
+
+      const conversionsSnapshot = await this.firestore
+        .collection(this.historyCollection)
+        .where('userId', '==', userId)
+        .where('status', '==', 'completed')
+        .where('createdAt', '>=', daysAgo)
+        .get();
+
+      if (conversionsSnapshot.empty) continue;
+
+      // Group conversions by day
+      const dailyCounts: Record<string, number> = {};
+      conversionsSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const createdAt = data.createdAt?.toDate?.() || data.createdAt;
+        if (!createdAt) return;
+
+        const dateStr = createdAt.toISOString().split('T')[0];
+        dailyCounts[dateStr] = (dailyCounts[dateStr] || 0) + 1;
+      });
+
+      // Check if all days have >= minPdfsPerDay
+      const days = Object.keys(dailyCounts).sort();
+      if (days.length < consecutiveDays) continue;
+
+      // Check consecutive days with high usage
+      let consecutiveHighUsageDays = 0;
+      for (let i = days.length - 1; i >= 0 && consecutiveHighUsageDays < consecutiveDays; i--) {
+        if (dailyCounts[days[i]] >= minPdfsPerDay) {
+          consecutiveHighUsageDays++;
+        } else {
+          break;
+        }
+      }
+
+      if (consecutiveHighUsageDays < consecutiveDays) continue;
+
+      // Calculate average PDFs per day
+      const totalPdfs = Object.values(dailyCounts).reduce((sum, count) => sum + count, 0);
+      const avgPdfsPerDay = totalPdfs / days.length;
+
+      // Get current usage and calculate projection
+      const pdfLimit = DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
+      const pdfsUsed = userData.pdfCount || 0;
+      const remaining = pdfLimit - pdfsUsed;
+      const projectedDaysToLimit = remaining > 0 ? Math.ceil(remaining / avgPdfsPerDay) : 0;
+
+      // Only include if projected to hit limit soon (within 14 days)
+      if (projectedDaysToLimit > 14) continue;
+
+      const periodEnd = userData.periodEnd?.toDate?.() || userData.periodEnd || new Date();
+
+      highUsageUsers.push({
+        userId,
+        userEmail: userData.email,
+        displayName: userData.displayName,
+        language: this.detectLanguageFromCountry(userData.country),
+        avgPdfsPerDay: Math.round(avgPdfsPerDay * 10) / 10,
+        pdfsUsed,
+        limit: pdfLimit,
+        projectedDaysToLimit,
+        periodEnd,
+      });
+    }
+
+    return highUsageUsers;
   }
 
   /**

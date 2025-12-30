@@ -145,6 +145,64 @@ export class EmailController {
     return { success: true, executedAt: new Date() };
   }
 
+  @Post('cron/schedule-high-usage-emails')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Schedule high usage emails (Cloud Scheduler)',
+    description: 'Identifies FREE users with high usage patterns and sends proactive upgrade emails. Should run daily.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'High usage emails scheduled',
+    schema: {
+      properties: {
+        scheduled: { type: 'number', example: 5 },
+        skipped: { type: 'number', example: 0 },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  async scheduleHighUsageEmails(): Promise<ScheduleEmailsResult> {
+    return this.emailService.scheduleHighUsageEmails();
+  }
+
+  // ============== API Endpoints ==============
+
+  @Post('api/email/trigger-blocked')
+  @UseGuards(CronAuthGuard) // Using CronAuthGuard for internal API calls
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Trigger blocked email for a user',
+    description: 'Called when a user attempts to convert but is blocked due to reaching their limit.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for API authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Email triggered successfully',
+    schema: {
+      properties: {
+        success: { type: 'boolean', example: true },
+        emailId: { type: 'string', example: 'abc123', nullable: true },
+      },
+    },
+  })
+  async triggerBlockedEmail(
+    @Body() body: { userId: string },
+  ): Promise<{ success: boolean; emailId: string | null }> {
+    const emailId = await this.emailService.triggerBlockedEmail(body.userId);
+    return { success: true, emailId };
+  }
+
   // ============== Webhook Endpoint ==============
 
   @Post('webhooks/resend')

@@ -355,6 +355,84 @@ export class UsersService {
           await this.firestoreService.incrementUsageWithPeriod(userId, periodInfo.periodId, 1, labelCount);
         }
       }
+
+      // Check and trigger limit emails (fire-and-forget)
+      this.checkAndTriggerLimitEmails(userId, userPlan || 'free').catch((err) =>
+        this.logger.error(`Failed to check limit emails: ${err.message}`),
+      );
+    }
+  }
+
+  /**
+   * Check if user has reached limit thresholds and trigger appropriate emails
+   * Called after each successful conversion
+   *
+   * NOTE: This is currently DISABLED. Emails will be enabled once the frontend
+   * configuration flow is ready. To enable, set LIMIT_EMAILS_ENABLED=true in env.
+   */
+  private async checkAndTriggerLimitEmails(userId: string, userPlan: 'free' | 'pro' | 'enterprise'): Promise<void> {
+    // Feature flag - disabled until frontend configuration is ready
+    const isLimitEmailsEnabled = process.env.LIMIT_EMAILS_ENABLED === 'true';
+    if (!isLimitEmailsEnabled) {
+      return;
+    }
+
+    // Only trigger for free users
+    if (userPlan !== 'free') {
+      return;
+    }
+
+    try {
+      const user = await this.firestoreService.getUserById(userId);
+      if (!user) return;
+
+      // Get usage data for pdfCount and period dates
+      const usage = await this.firestoreService.getOrCreateUsage(userId);
+      const pdfCount = usage.pdfCount || 0;
+      const limit = user.planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
+      const percentage = (pdfCount / limit) * 100;
+
+      const periodStart = usage.periodStart;
+      const periodEnd = usage.periodEnd;
+
+      // Detect language from user country
+      const language = this.detectLanguageFromCountry(user.country);
+
+      // Check if user just hit 100% (exactly at limit)
+      if (pdfCount === limit) {
+        await this.emailService.queueLimitEmail(userId, 'limit_100_percent', {
+          pdfsUsed: pdfCount,
+          limit,
+          periodStart,
+          periodEnd,
+          discountCode: 'UPGRADE20',
+          displayName: user.displayName,
+          email: user.email,
+          language,
+        });
+        this.logger.log(`Queued limit_100_percent email for user ${userId}`);
+      }
+      // Check if user just crossed 80% threshold
+      else if (percentage >= 80 && percentage < 100) {
+        // Only trigger if previous count was below 80%
+        const previousCount = pdfCount - 1;
+        const previousPercentage = (previousCount / limit) * 100;
+
+        if (previousPercentage < 80) {
+          await this.emailService.queueLimitEmail(userId, 'limit_80_percent', {
+            pdfsUsed: pdfCount,
+            limit,
+            periodStart,
+            periodEnd,
+            displayName: user.displayName,
+            email: user.email,
+            language,
+          });
+          this.logger.log(`Queued limit_80_percent email for user ${userId}`);
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error checking limit emails for ${userId}: ${error.message}`);
     }
   }
 

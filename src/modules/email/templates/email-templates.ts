@@ -4,6 +4,13 @@ interface TemplateData {
   displayName: string;
   email: string;
   pdfCount?: number;
+  // Limit email fields
+  pdfsUsed?: number;
+  limit?: number;
+  periodEnd?: Date;
+  discountCode?: string;
+  projectedDaysToLimit?: number;
+  avgPdfsPerDay?: number;
 }
 
 // Subject lines for each email type and variant
@@ -66,6 +73,55 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'Still struggling with ZPL?',
       es: '¿Aún tienes problemas con ZPL?',
       zh: '还在为ZPL烦恼吗？',
+    },
+  },
+  // Conversion emails
+  limit_80_percent: {
+    A: {
+      en: '⚠️ You\'ve used 80% of your monthly PDFs',
+      es: '⚠️ Has usado el 80% de tus PDFs mensuales',
+      zh: '⚠️ 您已使用本月PDF配额的80%',
+    },
+    B: {
+      en: '📊 Your monthly quota is almost full',
+      es: '📊 Tu cuota mensual está casi llena',
+      zh: '📊 您的月度配额即将用完',
+    },
+  },
+  limit_100_percent: {
+    A: {
+      en: '🚨 You\'ve reached your monthly limit - Get 20% OFF',
+      es: '🚨 Has alcanzado tu límite mensual - Obtén 20% OFF',
+      zh: '🚨 您已达到月度限制 - 享受8折优惠',
+    },
+    B: {
+      en: 'Your quota is exhausted - Upgrade now!',
+      es: 'Tu cuota está agotada - ¡Actualiza ahora!',
+      zh: '您的配额已用完 - 立即升级！',
+    },
+  },
+  conversion_blocked: {
+    A: {
+      en: 'Unlock your access now - 20% OFF',
+      es: 'Desbloquea tu acceso ahora - 20% OFF',
+      zh: '立即解锁您的访问权限 - 8折优惠',
+    },
+    B: {
+      en: 'Continue working with ZPLPDF Pro',
+      es: 'Continúa trabajando con ZPLPDF Pro',
+      zh: '继续使用ZPLPDF Pro',
+    },
+  },
+  high_usage: {
+    A: {
+      en: '🚀 Your business is growing fast!',
+      es: '🚀 ¡Tu negocio está creciendo rápido!',
+      zh: '🚀 您的业务正在快速增长！',
+    },
+    B: {
+      en: 'Projection: You\'ll run out of quota soon',
+      es: 'Proyección: Agotarás tu cuota pronto',
+      zh: '预测：您的配额即将用完',
     },
   },
 };
@@ -586,6 +642,483 @@ function getMissYouContent(variant: AbVariant, lang: EmailLanguage, data: Templa
   return content[variant][lang];
 }
 
+// ============== Conversion Email Templates ==============
+
+// Progress bar component for limit emails
+function progressBar(used: number, limit: number): string {
+  const percentage = Math.min((used / limit) * 100, 100);
+  const usedWidth = Math.round(percentage);
+  const remainingWidth = 100 - usedWidth;
+  const isUrgent = percentage >= 100;
+  const barColor = isUrgent ? '#dc2626' : percentage >= 80 ? '#f59e0b' : '#2563eb';
+
+  return `
+    <table role="presentation" style="width: 100%; margin: 16px 0; border-collapse: collapse;">
+      <tr>
+        <td style="padding: 0;">
+          <div style="background-color: #e5e7eb; border-radius: 9999px; overflow: hidden; height: 24px;">
+            <div style="background-color: ${barColor}; width: ${usedWidth}%; height: 100%; border-radius: 9999px;"></div>
+          </div>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding: 8px 0 0; text-align: center;">
+          <span style="color: ${barColor}; font-weight: 600; font-size: 18px;">${used}</span>
+          <span style="color: #6b7280; font-size: 14px;"> / ${limit} PDFs</span>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+// Limit 80% email templates
+function getLimit80Content(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const pricingUrl = 'https://zplpdf.com/pricing';
+  const used = data.pdfsUsed || 0;
+  const limit = data.limit || 25;
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Hi ${data.displayName}!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          You've used <strong>80%</strong> of your monthly PDF quota. Here's your current usage:
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          To keep converting without interruption, consider upgrading to ZPLPDF Pro:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li><strong>500 PDFs/month</strong> instead of 25</li>
+          <li><strong>500 labels/PDF</strong> instead of 100</li>
+          <li>Batch processing & image export</li>
+        </ul>
+        ${ctaButton('View Plans', pricingUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">¡Hola ${data.displayName}!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Has usado el <strong>80%</strong> de tu cuota mensual de PDFs. Aquí está tu uso actual:
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Para seguir convirtiendo sin interrupciones, considera actualizar a ZPLPDF Pro:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li><strong>500 PDFs/mes</strong> en lugar de 25</li>
+          <li><strong>500 etiquetas/PDF</strong> en lugar de 100</li>
+          <li>Procesamiento por lotes y exportación de imágenes</li>
+        </ul>
+        ${ctaButton('Ver Planes', pricingUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您好 ${data.displayName}！</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您已使用本月PDF配额的<strong>80%</strong>。以下是您的当前使用情况：
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          要继续不间断地转换，请考虑升级到ZPLPDF Pro：
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li><strong>每月500个PDF</strong>而不是25个</li>
+          <li><strong>每个PDF 500个标签</strong>而不是100个</li>
+          <li>批量处理和图像导出</li>
+        </ul>
+        ${ctaButton('查看计划', pricingUrl)}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Your quota is almost full</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${data.displayName}, you're doing great with ZPLPDF! You've already used ${used} of your ${limit} monthly PDFs.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Upgrade now to Pro and get 20x more PDFs per month, plus batch processing and image export.
+        </p>
+        ${ctaButton('Upgrade to Pro', pricingUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Tu cuota está casi llena</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${data.displayName}, ¡lo estás haciendo genial con ZPLPDF! Ya has usado ${used} de tus ${limit} PDFs mensuales.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Actualiza ahora a Pro y obtén 20 veces más PDFs por mes, además de procesamiento por lotes y exportación de imágenes.
+        </p>
+        ${ctaButton('Actualizar a Pro', pricingUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您的配额即将用完</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${data.displayName}，您在ZPLPDF上做得很好！您已经使用了${limit}个月度PDF中的${used}个。
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          立即升级到Pro，每月获得20倍更多的PDF，以及批量处理和图像导出功能。
+        </p>
+        ${ctaButton('升级到Pro', pricingUrl)}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+// Limit 100% email templates
+function getLimit100Content(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const checkoutUrl = `https://zplpdf.com/pricing?code=${data.discountCode || 'UPGRADE20'}`;
+  const used = data.pdfsUsed || 0;
+  const limit = data.limit || 25;
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">🚨 Monthly Limit Reached</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${data.displayName}, you've reached your monthly limit of ${limit} PDFs.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Good news!</strong> Use code <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> to get <strong>20% OFF</strong> your first month of Pro.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          With Pro, you'll get:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>500 PDFs/month (20x more)</li>
+          <li>500 labels per PDF (5x more)</li>
+          <li>Batch processing</li>
+          <li>Image export (PNG/JPEG)</li>
+        </ul>
+        ${ctaButton('Get 20% OFF Now', checkoutUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">🚨 Límite Mensual Alcanzado</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${data.displayName}, has alcanzado tu límite mensual de ${limit} PDFs.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>¡Buenas noticias!</strong> Usa el código <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> para obtener <strong>20% OFF</strong> en tu primer mes de Pro.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Con Pro, obtendrás:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>500 PDFs/mes (20 veces más)</li>
+          <li>500 etiquetas por PDF (5 veces más)</li>
+          <li>Procesamiento por lotes</li>
+          <li>Exportación de imágenes (PNG/JPEG)</li>
+        </ul>
+        ${ctaButton('Obtén 20% OFF Ahora', checkoutUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">🚨 已达月度限制</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${data.displayName}，您已达到每月${limit}个PDF的限制。
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>好消息！</strong>使用代码 <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> 获得Pro首月<strong>8折优惠</strong>。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          使用Pro，您将获得：
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>每月500个PDF（20倍）</li>
+          <li>每个PDF 500个标签（5倍）</li>
+          <li>批量处理</li>
+          <li>图像导出（PNG/JPEG）</li>
+        </ul>
+        ${ctaButton('立即享受8折', checkoutUrl)}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">Your quota is exhausted</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${data.displayName}, you've used all ${limit} PDFs for this month.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Don't wait until next month! Upgrade now and continue working immediately.
+        </p>
+        ${ctaButton('Upgrade Now', checkoutUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">Tu cuota está agotada</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${data.displayName}, has usado todos los ${limit} PDFs de este mes.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ¡No esperes hasta el próximo mes! Actualiza ahora y continúa trabajando inmediatamente.
+        </p>
+        ${ctaButton('Actualizar Ahora', checkoutUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">您的配额已用完</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${data.displayName}，您已使用完本月的全部${limit}个PDF。
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          不要等到下个月！立即升级，继续工作。
+        </p>
+        ${ctaButton('立即升级', checkoutUrl)}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+// Conversion blocked email templates
+function getBlockedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const checkoutUrl = `https://zplpdf.com/pricing?code=${data.discountCode || 'UPGRADE20'}`;
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">Unlock Your Access Now</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${data.displayName}, we noticed you just tried to convert a ZPL file but you've reached your monthly limit.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Upgrade now and continue working immediately.</strong> Use code <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> for 20% OFF your first month.
+        </p>
+        ${ctaButton('Unlock Access - 20% OFF', checkoutUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Your new limits will apply immediately after upgrading.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">Desbloquea Tu Acceso Ahora</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${data.displayName}, notamos que acabas de intentar convertir un archivo ZPL pero has alcanzado tu límite mensual.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Actualiza ahora y continúa trabajando inmediatamente.</strong> Usa el código <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> para 20% OFF en tu primer mes.
+        </p>
+        ${ctaButton('Desbloquear - 20% OFF', checkoutUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Tus nuevos límites se aplicarán inmediatamente después de actualizar.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">立即解锁您的访问权限</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${data.displayName}，我们注意到您刚刚尝试转换ZPL文件，但您已达到月度限制。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>立即升级，继续工作。</strong>使用代码 <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> 享受首月8折优惠。
+        </p>
+        ${ctaButton('解锁 - 8折优惠', checkoutUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          升级后，新限制将立即生效。
+        </p>
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Continue with ZPLPDF Pro</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${data.displayName}, you've been busy! You've used all your free conversions for this month.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          With ZPLPDF Pro, you'll never be blocked again. Get 500 PDFs/month, batch processing, and more.
+        </p>
+        ${ctaButton('Continue with Pro', checkoutUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Continúa con ZPLPDF Pro</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${data.displayName}, ¡has estado ocupado! Has usado todas tus conversiones gratuitas de este mes.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Con ZPLPDF Pro, nunca serás bloqueado de nuevo. Obtén 500 PDFs/mes, procesamiento por lotes y más.
+        </p>
+        ${ctaButton('Continuar con Pro', checkoutUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">继续使用ZPLPDF Pro</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${data.displayName}，您一直很忙！您已经用完了本月所有的免费转换次数。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          使用ZPLPDF Pro，您将永远不会被阻止。每月获得500个PDF，批量处理等功能。
+        </p>
+        ${ctaButton('继续使用Pro', checkoutUrl)}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+// High usage email templates
+function getHighUsageContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const pricingUrl = 'https://zplpdf.com/pricing';
+  const avgPerDay = data.avgPdfsPerDay || 3;
+  const daysToLimit = data.projectedDaysToLimit || 5;
+  const used = data.pdfsUsed || 0;
+  const limit = data.limit || 25;
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🚀 Your business is growing!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${data.displayName}, we noticed you've been converting about <strong>${avgPerDay} PDFs per day</strong> recently. That's great!
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          At this rate, you'll reach your monthly limit in about <strong>${daysToLimit} days</strong>.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Upgrade to Pro now to avoid interruptions:
+        </p>
+        <table role="presentation" style="width: 100%; margin: 16px 0; border-collapse: collapse; border: 1px solid #e5e7eb; border-radius: 8px;">
+          <tr style="background-color: #f9fafb;">
+            <th style="padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb;"></th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Free</th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #2563eb; font-weight: 700;">Pro</th>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">PDFs/month</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">25</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">Labels/PDF</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">100</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px;">Batch & Image Export</td>
+            <td style="padding: 12px; text-align: center;">❌</td>
+            <td style="padding: 12px; text-align: center;">✅</td>
+          </tr>
+        </table>
+        ${ctaButton('Upgrade to Pro', pricingUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🚀 ¡Tu negocio está creciendo!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${data.displayName}, notamos que has estado convirtiendo aproximadamente <strong>${avgPerDay} PDFs por día</strong> recientemente. ¡Eso es genial!
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          A este ritmo, alcanzarás tu límite mensual en aproximadamente <strong>${daysToLimit} días</strong>.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Actualiza a Pro ahora para evitar interrupciones:
+        </p>
+        <table role="presentation" style="width: 100%; margin: 16px 0; border-collapse: collapse; border: 1px solid #e5e7eb; border-radius: 8px;">
+          <tr style="background-color: #f9fafb;">
+            <th style="padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb;"></th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Gratis</th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #2563eb; font-weight: 700;">Pro</th>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">PDFs/mes</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">25</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">Etiquetas/PDF</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">100</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px;">Lotes y Export Imágenes</td>
+            <td style="padding: 12px; text-align: center;">❌</td>
+            <td style="padding: 12px; text-align: center;">✅</td>
+          </tr>
+        </table>
+        ${ctaButton('Actualizar a Pro', pricingUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🚀 您的业务正在增长！</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${data.displayName}，我们注意到您最近每天大约转换 <strong>${avgPerDay} 个PDF</strong>。太棒了！
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          按照这个速度，您将在大约 <strong>${daysToLimit} 天</strong>内达到月度限制。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          立即升级到Pro以避免中断：
+        </p>
+        <table role="presentation" style="width: 100%; margin: 16px 0; border-collapse: collapse; border: 1px solid #e5e7eb; border-radius: 8px;">
+          <tr style="background-color: #f9fafb;">
+            <th style="padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb;"></th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #6b7280;">免费</th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #2563eb; font-weight: 700;">Pro</th>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">PDF/月</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">25</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">标签/PDF</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">100</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px;">批量和图像导出</td>
+            <td style="padding: 12px; text-align: center;">❌</td>
+            <td style="padding: 12px; text-align: center;">✅</td>
+          </tr>
+        </table>
+        ${ctaButton('升级到Pro', pricingUrl)}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Projection: Limit in ${daysToLimit} days</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${data.displayName}, based on your usage pattern (${avgPerDay} PDFs/day), you'll hit your monthly limit in about ${daysToLimit} days.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Upgrade now to ensure uninterrupted service for your business.
+        </p>
+        ${ctaButton('Upgrade to Pro', pricingUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Proyección: Límite en ${daysToLimit} días</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${data.displayName}, según tu patrón de uso (${avgPerDay} PDFs/día), alcanzarás tu límite mensual en aproximadamente ${daysToLimit} días.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Actualiza ahora para asegurar un servicio ininterrumpido para tu negocio.
+        </p>
+        ${ctaButton('Actualizar a Pro', pricingUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">预测：${daysToLimit}天后达到限制</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${data.displayName}，根据您的使用模式（每天${avgPerDay}个PDF），您将在大约${daysToLimit}天后达到月度限制。
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          立即升级，确保您的业务不间断服务。
+        </p>
+        ${ctaButton('升级到Pro', pricingUrl)}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
 // Text version of emails (stripped HTML)
 function stripHtml(html: string): string {
   return html
@@ -610,6 +1143,7 @@ export function getEmailTemplate(
   let content: string;
 
   switch (emailType) {
+    // Onboarding emails
     case 'welcome':
       content = getWelcomeContent(variant, language, data);
       break;
@@ -624,6 +1158,19 @@ export function getEmailTemplate(
       break;
     case 'miss_you':
       content = getMissYouContent(variant, language, data);
+      break;
+    // Conversion emails
+    case 'limit_80_percent':
+      content = getLimit80Content(variant, language, data);
+      break;
+    case 'limit_100_percent':
+      content = getLimit100Content(variant, language, data);
+      break;
+    case 'conversion_blocked':
+      content = getBlockedContent(variant, language, data);
+      break;
+    case 'high_usage':
+      content = getHighUsageContent(variant, language, data);
       break;
     default:
       throw new Error(`Unknown email type: ${emailType}`);

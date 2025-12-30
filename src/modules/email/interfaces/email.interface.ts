@@ -5,7 +5,14 @@
 
 // ============== Email Types ==============
 
-export type EmailType = 'welcome' | 'tutorial' | 'help' | 'success_story' | 'miss_you';
+// Onboarding emails
+export type OnboardingEmailType = 'welcome' | 'tutorial' | 'help' | 'success_story' | 'miss_you';
+
+// Conversion emails (limit-based)
+export type ConversionEmailType = 'limit_80_percent' | 'limit_100_percent' | 'conversion_blocked' | 'high_usage';
+
+// All email types
+export type EmailType = OnboardingEmailType | ConversionEmailType;
 
 export type EmailStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
 
@@ -147,4 +154,25 @@ export interface UserEmailEligibility {
   pdfCount: number;
   daysSinceCreation: number;
   hasReceivedEmail: (emailType: EmailType) => boolean;
+}
+
+// ============== Limit Email Metadata ==============
+
+export interface LimitEmailMetadata {
+  pdfsUsed: number;
+  limit: number;
+  periodEnd: Date;
+  discountCode?: string;
+  projectedDaysToLimit?: number;
+}
+
+export interface HighUsageUser {
+  userId: string;
+  userEmail: string;
+  displayName?: string;
+  language: EmailLanguage;
+  avgPdfsPerDay: number;
+  pdfsUsed: number;
+  limit: number;
+  projectedDaysToLimit: number;
 }
