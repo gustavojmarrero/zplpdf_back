@@ -11,6 +11,12 @@ interface TemplateData {
   discountCode?: string;
   projectedDaysToLimit?: number;
   avgPdfsPerDay?: number;
+  // PRO Retention fields
+  daysInactive?: number;
+  lastActivityAt?: Date;
+  pdfsThisMonth?: number;
+  labelsThisMonth?: number;
+  monthsAsPro?: number;
 }
 
 // Subject lines for each email type and variant
@@ -122,6 +128,55 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'Projection: You\'ll run out of quota soon',
       es: 'Proyección: Agotarás tu cuota pronto',
       zh: '预测：您的配额即将用完',
+    },
+  },
+  // PRO Retention emails
+  pro_inactive_7_days: {
+    A: {
+      en: '👋 {name}, your PRO account misses you',
+      es: '👋 {name}, tu cuenta PRO te extraña',
+      zh: '👋 {name}，您的PRO账户想念您',
+    },
+    B: {
+      en: 'Your PRO benefits are waiting for you',
+      es: 'Tus beneficios PRO te están esperando',
+      zh: '您的PRO权益正在等您',
+    },
+  },
+  pro_inactive_14_days: {
+    A: {
+      en: '{name}, can we help you? 🤝',
+      es: '{name}, ¿podemos ayudarte? 🤝',
+      zh: '{name}，我们能帮到您吗？🤝',
+    },
+    B: {
+      en: "We'd love to hear from you",
+      es: 'Nos encantaría saber de ti',
+      zh: '我们很想听听您的意见',
+    },
+  },
+  pro_inactive_30_days: {
+    A: {
+      en: '{name}, we want to hear from you',
+      es: '{name}, queremos saber de ti',
+      zh: '{name}，我们想了解您的情况',
+    },
+    B: {
+      en: 'Your feedback matters to us',
+      es: 'Tu opinión es importante para nosotros',
+      zh: '您的反馈对我们很重要',
+    },
+  },
+  pro_power_user: {
+    A: {
+      en: '🌟 {name}, you are amazing!',
+      es: '🌟 {name}, ¡eres increíble!',
+      zh: '🌟 {name}，您太棒了！',
+    },
+    B: {
+      en: 'Thank you for being a power user',
+      es: 'Gracias por ser un power user',
+      zh: '感谢您成为超级用户',
     },
   },
 };
@@ -1119,6 +1174,390 @@ function getHighUsageContent(variant: AbVariant, lang: EmailLanguage, data: Temp
   return content[variant][lang];
 }
 
+// ============== PRO Retention Email Templates ==============
+
+// PRO Inactive 7 days email templates
+function getProInactive7DaysContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const appUrl = 'https://zplpdf.com';
+  const name = data.displayName || 'there';
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">👋 We Miss You!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, it's been a week since your last conversion on ZPLPDF. Your PRO account is ready and waiting!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          As a PRO user, you have access to:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>500 PDFs per month</li>
+          <li>500 labels per PDF</li>
+          <li>Batch processing</li>
+          <li>Image export (PNG/JPEG)</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Don't let your benefits go unused!
+        </p>
+        ${ctaButton('Start Converting', appUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">👋 ¡Te Extrañamos!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, ha pasado una semana desde tu última conversión en ZPLPDF. ¡Tu cuenta PRO está lista y esperándote!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Como usuario PRO, tienes acceso a:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>500 PDFs por mes</li>
+          <li>500 etiquetas por PDF</li>
+          <li>Procesamiento por lotes</li>
+          <li>Exportación de imágenes (PNG/JPEG)</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ¡No dejes que tus beneficios queden sin usar!
+        </p>
+        ${ctaButton('Comenzar a Convertir', appUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">👋 我们想念您！</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，距离您上次在ZPLPDF转换已经一周了。您的PRO账户已准备就绪，等待您的使用！
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          作为PRO用户，您可以享受：
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>每月500个PDF</li>
+          <li>每个PDF 500个标签</li>
+          <li>批量处理</li>
+          <li>图像导出（PNG/JPEG）</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          不要让您的权益闲置！
+        </p>
+        ${ctaButton('开始转换', appUrl)}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Your PRO Benefits Await</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, your ZPLPDF PRO account has been quiet for a week. Is everything okay?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          If you're having any issues or need help, we're here for you. Just reply to this email.
+        </p>
+        ${ctaButton('Go to ZPLPDF', appUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Tus Beneficios PRO Te Esperan</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, tu cuenta ZPLPDF PRO ha estado inactiva por una semana. ¿Está todo bien?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Si tienes algún problema o necesitas ayuda, estamos aquí para ti. Simplemente responde a este correo.
+        </p>
+        ${ctaButton('Ir a ZPLPDF', appUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您的PRO权益在等您</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，您的ZPLPDF PRO账户已经一周没有活动了。一切都还好吗？
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          如果您有任何问题或需要帮助，我们随时为您服务。只需回复此邮件即可。
+        </p>
+        ${ctaButton('前往ZPLPDF', appUrl)}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+// PRO Inactive 14 days email templates
+function getProInactive14DaysContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const supportEmail = 'support@zplpdf.com';
+  const name = data.displayName || 'there';
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🤝 Can We Help?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, we noticed you haven't used ZPLPDF in the past 2 weeks. We'd love to know how we can help.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Are you experiencing any of these?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Technical issues with conversions?</li>
+          <li>Need help with a specific ZPL format?</li>
+          <li>Looking for a feature we don't have?</li>
+          <li>Business needs changed?</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Reply to this email and let us know. We're here to help!
+        </p>
+        ${ctaButton('Contact Support', 'mailto:' + supportEmail)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🤝 ¿Podemos Ayudarte?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, notamos que no has usado ZPLPDF en las últimas 2 semanas. Nos encantaría saber cómo podemos ayudarte.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>¿Estás experimentando alguno de estos problemas?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>¿Problemas técnicos con las conversiones?</li>
+          <li>¿Necesitas ayuda con un formato ZPL específico?</li>
+          <li>¿Buscas una función que no tenemos?</li>
+          <li>¿Cambiaron tus necesidades de negocio?</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Responde a este correo y cuéntanos. ¡Estamos aquí para ayudarte!
+        </p>
+        ${ctaButton('Contactar Soporte', 'mailto:' + supportEmail)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🤝 我们能帮到您吗？</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，我们注意到您在过去2周内没有使用ZPLPDF。我们很想知道如何能帮助您。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>您是否遇到以下问题？</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>转换时遇到技术问题？</li>
+          <li>需要帮助处理特定的ZPL格式？</li>
+          <li>在寻找我们没有的功能？</li>
+          <li>业务需求发生了变化？</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          回复此邮件告诉我们。我们随时为您服务！
+        </p>
+        ${ctaButton('联系支持', 'mailto:' + supportEmail)}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">We'd Love Your Feedback</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, your opinion matters to us. As a PRO user, your feedback helps us improve ZPLPDF for everyone.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Would you mind taking a minute to tell us about your experience? Just reply to this email with any thoughts.
+        </p>
+        ${ctaButton('Share Feedback', 'mailto:' + supportEmail + '?subject=ZPLPDF Feedback')}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Nos Encantaría Tu Opinión</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, tu opinión es importante para nosotros. Como usuario PRO, tus comentarios nos ayudan a mejorar ZPLPDF para todos.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ¿Te importaría tomarte un minuto para contarnos sobre tu experiencia? Solo responde a este correo con cualquier comentario.
+        </p>
+        ${ctaButton('Compartir Opinión', 'mailto:' + supportEmail + '?subject=ZPLPDF Feedback')}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">期待您的反馈</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，您的意见对我们很重要。作为PRO用户，您的反馈帮助我们为所有人改进ZPLPDF。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您介意花一分钟告诉我们您的体验吗？只需回复此邮件分享您的想法。
+        </p>
+        ${ctaButton('分享反馈', 'mailto:' + supportEmail + '?subject=ZPLPDF Feedback')}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+// PRO Inactive 30 days email templates
+function getProInactive30DaysContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const supportEmail = 'support@zplpdf.com';
+  const name = data.displayName || 'there';
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">We Want to Hear From You</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, it's been a month since your last activity on ZPLPDF. We genuinely want to know how things are going.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Your feedback is invaluable to us. If there's something we could do better or a reason ZPLPDF isn't meeting your needs, please let us know.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Simply reply to this email - we read and respond to every message.
+        </p>
+        ${ctaButton('Send Us a Message', 'mailto:' + supportEmail + '?subject=Feedback from PRO User')}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Queremos Saber de Ti</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, ha pasado un mes desde tu última actividad en ZPLPDF. Genuinamente queremos saber cómo van las cosas.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Tu retroalimentación es invaluable para nosotros. Si hay algo que podríamos hacer mejor o una razón por la que ZPLPDF no está cumpliendo tus necesidades, por favor cuéntanos.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Simplemente responde a este correo - leemos y respondemos cada mensaje.
+        </p>
+        ${ctaButton('Envíanos un Mensaje', 'mailto:' + supportEmail + '?subject=Feedback de Usuario PRO')}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">我们想了解您的情况</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，距离您上次在ZPLPDF的活动已经一个月了。我们真诚地想知道您的情况如何。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您的反馈对我们来说非常宝贵。如果有什么我们可以做得更好的地方，或者ZPLPDF没有满足您需求的原因，请告诉我们。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          只需回复此邮件 - 我们会阅读并回复每一条消息。
+        </p>
+        ${ctaButton('给我们留言', 'mailto:' + supportEmail + '?subject=PRO用户反馈')}
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Your Feedback Matters</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, we noticed you haven't been using ZPLPDF lately. We'd appreciate hearing from you.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Whether it's a suggestion, a concern, or just to say hi - we're listening.
+        </p>
+        ${ctaButton('Share Your Thoughts', 'mailto:' + supportEmail)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Tu Opinión es Importante</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, notamos que no has estado usando ZPLPDF últimamente. Apreciaríamos saber de ti.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Ya sea una sugerencia, una inquietud, o solo para saludar - estamos escuchando.
+        </p>
+        ${ctaButton('Comparte tus Pensamientos', 'mailto:' + supportEmail)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您的反馈很重要</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，我们注意到您最近没有使用ZPLPDF。我们希望能收到您的消息。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          无论是建议、问题还是打个招呼 - 我们都在倾听。
+        </p>
+        ${ctaButton('分享您的想法', 'mailto:' + supportEmail)}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+// PRO Power User email templates
+function getProPowerUserContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const testimonialUrl = 'mailto:testimonials@zplpdf.com?subject=I want to share my ZPLPDF story';
+  const name = data.displayName || 'there';
+  const pdfsThisMonth = data.pdfsThisMonth || 50;
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🌟 You Are Amazing!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, wow! You've converted <strong>${pdfsThisMonth} PDFs</strong> this month. You're one of our power users!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          We're thrilled that ZPLPDF is helping your business. Would you be willing to share your experience with others?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          A short testimonial from you would mean the world to us and help other businesses discover ZPLPDF.
+        </p>
+        ${ctaButton('Share Your Story', testimonialUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Thank you for being an amazing customer! 🙏
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🌟 ¡Eres Increíble!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, ¡wow! Has convertido <strong>${pdfsThisMonth} PDFs</strong> este mes. ¡Eres uno de nuestros power users!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Estamos encantados de que ZPLPDF esté ayudando a tu negocio. ¿Estarías dispuesto a compartir tu experiencia con otros?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Un breve testimonio tuyo significaría mucho para nosotros y ayudaría a otros negocios a descubrir ZPLPDF.
+        </p>
+        ${ctaButton('Comparte Tu Historia', testimonialUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          ¡Gracias por ser un cliente increíble! 🙏
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🌟 您太棒了！</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，哇！您本月已转换了 <strong>${pdfsThisMonth} 个PDF</strong>。您是我们的超级用户之一！
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          我们很高兴ZPLPDF能够帮助您的业务。您愿意与他人分享您的经验吗？
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您的简短推荐对我们意义重大，并能帮助其他企业发现ZPLPDF。
+        </p>
+        ${ctaButton('分享您的故事', testimonialUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          感谢您成为我们出色的客户！🙏
+        </p>
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Thank You, Power User!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, with ${pdfsThisMonth} PDFs converted this month, you're clearly getting value from ZPLPDF. That makes us happy!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          We'd love to feature your business on our website. Interested in being a ZPLPDF success story?
+        </p>
+        ${ctaButton('Tell Us About Your Business', testimonialUrl)}
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">¡Gracias, Power User!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, con ${pdfsThisMonth} PDFs convertidos este mes, claramente estás obteniendo valor de ZPLPDF. ¡Eso nos hace felices!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Nos encantaría presentar tu negocio en nuestro sitio web. ¿Te interesa ser una historia de éxito de ZPLPDF?
+        </p>
+        ${ctaButton('Cuéntanos Sobre Tu Negocio', testimonialUrl)}
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">感谢您，超级用户！</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您好 ${name}，本月转换了${pdfsThisMonth}个PDF，您显然从ZPLPDF中获得了价值。这让我们很高兴！
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          我们很想在网站上展示您的业务。有兴趣成为ZPLPDF的成功案例吗？
+        </p>
+        ${ctaButton('告诉我们您的业务', testimonialUrl)}
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
 // Text version of emails (stripped HTML)
 function stripHtml(html: string): string {
   return html
@@ -1171,6 +1610,19 @@ export function getEmailTemplate(
       break;
     case 'high_usage':
       content = getHighUsageContent(variant, language, data);
+      break;
+    // PRO Retention emails
+    case 'pro_inactive_7_days':
+      content = getProInactive7DaysContent(variant, language, data);
+      break;
+    case 'pro_inactive_14_days':
+      content = getProInactive14DaysContent(variant, language, data);
+      break;
+    case 'pro_inactive_30_days':
+      content = getProInactive30DaysContent(variant, language, data);
+      break;
+    case 'pro_power_user':
+      content = getProPowerUserContent(variant, language, data);
       break;
     default:
       throw new Error(`Unknown email type: ${emailType}`);

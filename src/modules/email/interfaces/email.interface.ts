@@ -8,11 +8,14 @@
 // Onboarding emails
 export type OnboardingEmailType = 'welcome' | 'tutorial' | 'help' | 'success_story' | 'miss_you';
 
-// Conversion emails (limit-based)
+// Conversion emails (limit-based for FREE users)
 export type ConversionEmailType = 'limit_80_percent' | 'limit_100_percent' | 'conversion_blocked' | 'high_usage';
 
+// Retention emails (for PRO users)
+export type RetentionEmailType = 'pro_inactive_7_days' | 'pro_inactive_14_days' | 'pro_inactive_30_days' | 'pro_power_user';
+
 // All email types
-export type EmailType = OnboardingEmailType | ConversionEmailType;
+export type EmailType = OnboardingEmailType | ConversionEmailType | RetentionEmailType;
 
 export type EmailStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
 
@@ -175,4 +178,28 @@ export interface HighUsageUser {
   pdfsUsed: number;
   limit: number;
   projectedDaysToLimit: number;
+}
+
+// ============== PRO Retention Interfaces ==============
+
+export interface ProInactiveUser {
+  userId: string;
+  userEmail: string;
+  displayName?: string;
+  language: EmailLanguage;
+  daysInactive: number;
+  lastActivityAt: Date | null;
+  pdfsThisMonth: number;
+  labelsThisMonth: number;
+  emailsSent: string[];
+}
+
+export interface ProPowerUser {
+  userId: string;
+  userEmail: string;
+  displayName?: string;
+  language: EmailLanguage;
+  pdfsThisMonth: number;
+  labelsThisMonth: number;
+  monthsAsPro: number;
 }

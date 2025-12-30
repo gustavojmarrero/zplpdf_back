@@ -14,11 +14,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { ApiTags, ApiOperation, ApiResponse, ApiHeader, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { EmailService } from './email.service.js';
+import { FirestoreService } from '../cache/firestore.service.js';
 import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { ResendWebhookDto } from './dto/resend-webhook.dto.js';
 import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto, OnboardingFunnelDto } from './dto/email-metrics.dto.js';
-import type { ProcessQueueResult, ScheduleEmailsResult } from './interfaces/email.interface.js';
+import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser } from './interfaces/email.interface.js';
 
 @ApiTags('email')
 @Controller()
@@ -28,6 +29,7 @@ export class EmailController {
 
   constructor(
     private readonly emailService: EmailService,
+    private readonly firestoreService: FirestoreService,
     private readonly configService: ConfigService,
   ) {
     this.webhookSecret = this.configService.get<string>('RESEND_WEBHOOK_SECRET') || '';
@@ -170,6 +172,60 @@ export class EmailController {
   })
   async scheduleHighUsageEmails(): Promise<ScheduleEmailsResult> {
     return this.emailService.scheduleHighUsageEmails();
+  }
+
+  @Post('cron/schedule-retention-emails')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Schedule retention emails for inactive PRO users (Cloud Scheduler)',
+    description: 'Identifies PRO users inactive for 7/14/30 days and queues retention emails. Should run daily. Disabled by default - set RETENTION_EMAILS_ENABLED=true to enable.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Retention emails scheduled',
+    schema: {
+      properties: {
+        scheduled: { type: 'number', example: 5 },
+        skipped: { type: 'number', example: 2 },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  async scheduleRetentionEmails(): Promise<ScheduleEmailsResult> {
+    return this.emailService.scheduleRetentionEmails();
+  }
+
+  @Post('cron/schedule-power-user-emails')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Schedule power user recognition emails (Cloud Scheduler)',
+    description: 'Identifies PRO users with >50 PDFs in the previous month and queues recognition emails. Should run monthly (1st of each month). Disabled by default - set RETENTION_EMAILS_ENABLED=true to enable.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Power user emails scheduled',
+    schema: {
+      properties: {
+        scheduled: { type: 'number', example: 3 },
+        skipped: { type: 'number', example: 0 },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  async schedulePowerUserEmails(): Promise<ScheduleEmailsResult> {
+    return this.emailService.schedulePowerUserEmails();
   }
 
   // ============== API Endpoints ==============
@@ -334,5 +390,119 @@ export class EmailController {
     @Query('period') period?: 'day' | 'week' | 'month',
   ): Promise<OnboardingFunnelDto> {
     return this.emailService.getFunnel(period || 'month');
+  }
+
+  // ============== PRO User Admin Endpoints ==============
+
+  @Get('api/admin/users/pro/inactive')
+  @UseGuards(AdminAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get inactive PRO users',
+    description: 'Returns PRO users who have not used the service for a specified number of days.',
+  })
+  @ApiQuery({
+    name: 'minDays',
+    required: false,
+    type: Number,
+    description: 'Minimum days of inactivity (default: 7)',
+  })
+  @ApiQuery({
+    name: 'maxDays',
+    required: false,
+    type: Number,
+    description: 'Maximum days of inactivity (optional)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Maximum number of users to return (default: 100)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Inactive PRO users retrieved',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          userId: { type: 'string' },
+          userEmail: { type: 'string' },
+          displayName: { type: 'string', nullable: true },
+          daysInactive: { type: 'number' },
+          lastActivityAt: { type: 'string', format: 'date-time', nullable: true },
+          pdfsThisMonth: { type: 'number' },
+          labelsThisMonth: { type: 'number' },
+          emailsSent: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  })
+  async getInactiveProUsers(
+    @Query('minDays') minDays?: string,
+    @Query('maxDays') maxDays?: string,
+    @Query('limit') limit?: string,
+  ): Promise<ProInactiveUser[]> {
+    return this.firestoreService.getProInactiveUsers({
+      minDaysInactive: minDays ? parseInt(minDays, 10) : 7,
+      maxDaysInactive: maxDays ? parseInt(maxDays, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : 100,
+    });
+  }
+
+  @Get('api/admin/users/pro/power-users')
+  @UseGuards(AdminAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get PRO power users',
+    description: 'Returns PRO users with high usage (>50 PDFs per month by default).',
+  })
+  @ApiQuery({
+    name: 'minPdfs',
+    required: false,
+    type: Number,
+    description: 'Minimum PDFs per month to qualify as power user (default: 50)',
+  })
+  @ApiQuery({
+    name: 'month',
+    required: false,
+    type: String,
+    description: 'Month to check in YYYY-MM format (default: previous month)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Maximum number of users to return (default: 100)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'PRO power users retrieved',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          userId: { type: 'string' },
+          userEmail: { type: 'string' },
+          displayName: { type: 'string', nullable: true },
+          pdfsThisMonth: { type: 'number' },
+          labelsThisMonth: { type: 'number' },
+          monthsAsPro: { type: 'number' },
+        },
+      },
+    },
+  })
+  async getPowerUsers(
+    @Query('minPdfs') minPdfs?: string,
+    @Query('month') month?: string,
+    @Query('limit') limit?: string,
+  ): Promise<ProPowerUser[]> {
+    return this.firestoreService.getProPowerUsers({
+      minPdfsPerMonth: minPdfs ? parseInt(minPdfs, 10) : 50,
+      month: month,
+      limit: limit ? parseInt(limit, 10) : 100,
+    });
   }
 }

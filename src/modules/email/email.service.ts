@@ -685,4 +685,172 @@ export class EmailService {
 
     return 'en';
   }
+
+  // ============== PRO Retention Methods ==============
+
+  /**
+   * Schedule retention emails for inactive PRO users
+   * Called by cron job daily
+   *
+   * NOTE: Currently DISABLED. Set RETENTION_EMAILS_ENABLED=true to enable.
+   */
+  async scheduleRetentionEmails(): Promise<ScheduleEmailsResult> {
+    const isEnabled = process.env.RETENTION_EMAILS_ENABLED === 'true';
+    if (!this.isEnabled || !isEnabled) {
+      this.logger.debug('Retention emails disabled');
+      return { scheduled: 0, skipped: 0, executedAt: new Date() };
+    }
+
+    let scheduled = 0;
+    let skipped = 0;
+
+    try {
+      // Get PRO users inactive 7-13 days (not yet contacted)
+      const inactive7Days = await this.firestoreService.getProInactiveUsers({
+        minDaysInactive: 7,
+        maxDaysInactive: 14,
+        limit: 50,
+      });
+
+      for (const user of inactive7Days) {
+        if (user.emailsSent.includes('pro_inactive_7_days')) {
+          skipped++;
+          continue;
+        }
+
+        await this.firestoreService.createEmailQueue({
+          userId: user.userId,
+          userEmail: user.userEmail,
+          emailType: 'pro_inactive_7_days',
+          abVariant: this.selectAbVariant(user.userId),
+          language: user.language as EmailLanguage,
+          scheduledFor: new Date(),
+          metadata: {
+            displayName: user.displayName,
+            daysInactive: user.daysInactive,
+            lastActivityAt: user.lastActivityAt,
+            pdfsThisMonth: user.pdfsThisMonth,
+            labelsThisMonth: user.labelsThisMonth,
+          },
+        });
+        scheduled++;
+      }
+
+      // Get PRO users inactive 14-29 days
+      const inactive14Days = await this.firestoreService.getProInactiveUsers({
+        minDaysInactive: 14,
+        maxDaysInactive: 30,
+        limit: 50,
+      });
+
+      for (const user of inactive14Days) {
+        if (user.emailsSent.includes('pro_inactive_14_days')) {
+          skipped++;
+          continue;
+        }
+
+        await this.firestoreService.createEmailQueue({
+          userId: user.userId,
+          userEmail: user.userEmail,
+          emailType: 'pro_inactive_14_days',
+          abVariant: this.selectAbVariant(user.userId),
+          language: user.language as EmailLanguage,
+          scheduledFor: new Date(),
+          metadata: {
+            displayName: user.displayName,
+            daysInactive: user.daysInactive,
+            lastActivityAt: user.lastActivityAt,
+            pdfsThisMonth: user.pdfsThisMonth,
+            labelsThisMonth: user.labelsThisMonth,
+          },
+        });
+        scheduled++;
+      }
+
+      // Get PRO users inactive 30+ days
+      const inactive30Days = await this.firestoreService.getProInactiveUsers({
+        minDaysInactive: 30,
+        limit: 50,
+      });
+
+      for (const user of inactive30Days) {
+        if (user.emailsSent.includes('pro_inactive_30_days')) {
+          skipped++;
+          continue;
+        }
+
+        await this.firestoreService.createEmailQueue({
+          userId: user.userId,
+          userEmail: user.userEmail,
+          emailType: 'pro_inactive_30_days',
+          abVariant: this.selectAbVariant(user.userId),
+          language: user.language as EmailLanguage,
+          scheduledFor: new Date(),
+          metadata: {
+            displayName: user.displayName,
+            daysInactive: user.daysInactive,
+            lastActivityAt: user.lastActivityAt,
+            pdfsThisMonth: user.pdfsThisMonth,
+            labelsThisMonth: user.labelsThisMonth,
+          },
+        });
+        scheduled++;
+      }
+
+      this.logger.log(`Retention emails scheduled: ${scheduled}, skipped: ${skipped}`);
+    } catch (error) {
+      this.logger.error(`Error scheduling retention emails: ${error.message}`);
+    }
+
+    return { scheduled, skipped, executedAt: new Date() };
+  }
+
+  /**
+   * Schedule power user recognition emails
+   * Called by cron job monthly (first day of month)
+   *
+   * NOTE: Currently DISABLED. Set RETENTION_EMAILS_ENABLED=true to enable.
+   */
+  async schedulePowerUserEmails(): Promise<ScheduleEmailsResult> {
+    const isEnabled = process.env.RETENTION_EMAILS_ENABLED === 'true';
+    if (!this.isEnabled || !isEnabled) {
+      this.logger.debug('Power user emails disabled');
+      return { scheduled: 0, skipped: 0, executedAt: new Date() };
+    }
+
+    let scheduled = 0;
+    const skipped = 0;
+
+    try {
+      // Get power users from previous month
+      const powerUsers = await this.firestoreService.getProPowerUsers({
+        minPdfsPerMonth: 50,
+        limit: 50,
+      });
+
+      for (const user of powerUsers) {
+        await this.firestoreService.createEmailQueue({
+          userId: user.userId,
+          userEmail: user.userEmail,
+          emailType: 'pro_power_user',
+          abVariant: this.selectAbVariant(user.userId),
+          language: user.language as EmailLanguage,
+          scheduledFor: new Date(),
+          metadata: {
+            displayName: user.displayName,
+            pdfsThisMonth: user.pdfsThisMonth,
+            labelsThisMonth: user.labelsThisMonth,
+            monthsAsPro: user.monthsAsPro,
+          },
+        });
+        scheduled++;
+      }
+
+      this.logger.log(`Power user emails scheduled: ${scheduled}`);
+    } catch (error) {
+      this.logger.error(`Error scheduling power user emails: ${error.message}`);
+    }
+
+    return { scheduled, skipped, executedAt: new Date() };
+  }
 }

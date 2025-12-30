@@ -16,6 +16,7 @@ import type {
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
 import { ErrorIdGenerator } from '../../common/utils/error-id-generator.js';
+import type { EmailLanguage } from '../email/interfaces/email.interface.js';
 
 // ============== Daily Stats (Aggregated Metrics) ==============
 
@@ -4461,7 +4462,7 @@ export class FirestoreService {
   /**
    * Detect email language from country code
    */
-  private detectLanguageFromCountry(country?: string): string {
+  private detectLanguageFromCountry(country?: string): EmailLanguage {
     if (!country) return 'en';
 
     const spanishCountries = ['MX', 'ES', 'AR', 'CO', 'PE', 'CL', 'VE', 'EC', 'GT', 'CU', 'BO', 'DO', 'HN', 'SV', 'NI', 'CR', 'PA', 'UY', 'PR'];
@@ -4621,5 +4622,206 @@ export class FirestoreService {
       createdAt: data.createdAt?.toDate?.() || data.createdAt,
       updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
     };
+  }
+
+  // ============== PRO Retention Methods ==============
+
+  /**
+   * Get PRO users who have been inactive for a specified number of days
+   * Used for retention email campaigns
+   */
+  async getProInactiveUsers(params: {
+    minDaysInactive: number;
+    maxDaysInactive?: number;
+    limit?: number;
+  }): Promise<Array<{
+    userId: string;
+    userEmail: string;
+    displayName?: string;
+    language: EmailLanguage;
+    daysInactive: number;
+    lastActivityAt: Date | null;
+    pdfsThisMonth: number;
+    labelsThisMonth: number;
+    emailsSent: string[];
+  }>> {
+    const { minDaysInactive, maxDaysInactive, limit: maxResults = 100 } = params;
+    const now = new Date();
+    const minDate = new Date(now.getTime() - minDaysInactive * 24 * 60 * 60 * 1000);
+    const maxDate = maxDaysInactive
+      ? new Date(now.getTime() - maxDaysInactive * 24 * 60 * 60 * 1000)
+      : null;
+
+    try {
+      // Get PRO users
+      const usersSnapshot = await this.firestore
+        .collection(this.usersCollection)
+        .where('plan', '==', 'pro')
+        .get();
+
+      const inactiveUsers: Array<{
+        userId: string;
+        userEmail: string;
+        displayName?: string;
+        language: EmailLanguage;
+        daysInactive: number;
+        lastActivityAt: Date | null;
+        pdfsThisMonth: number;
+        labelsThisMonth: number;
+        emailsSent: string[];
+      }> = [];
+
+      for (const doc of usersSnapshot.docs) {
+        const userData = doc.data();
+        const userId = doc.id;
+
+        // Check lastActivityAt
+        const lastActivityAt = userData.lastActivityAt?.toDate?.() || userData.lastActivityAt || null;
+
+        // If no activity at all, consider created date
+        const relevantDate = lastActivityAt || (userData.createdAt?.toDate?.() || userData.createdAt);
+
+        if (!relevantDate) continue;
+
+        // Check if within the inactive window
+        if (relevantDate > minDate) continue; // Not inactive enough
+        if (maxDate && relevantDate < maxDate) continue; // Too inactive (already contacted)
+
+        const daysInactive = Math.floor((now.getTime() - relevantDate.getTime()) / (24 * 60 * 60 * 1000));
+
+        // Get current month usage
+        const usageId = this.generateUsageId(userId);
+        const usageDoc = await this.firestore.collection(this.usageCollection).doc(usageId).get();
+        const usageData = usageDoc.exists ? usageDoc.data() : { pdfCount: 0, labelCount: 0 };
+
+        // Get emails already sent to this user
+        const emailsSnapshot = await this.firestore
+          .collection(this.emailQueueCollection)
+          .where('userId', '==', userId)
+          .where('emailType', 'in', ['pro_inactive_7_days', 'pro_inactive_14_days', 'pro_inactive_30_days'])
+          .where('status', 'in', ['pending', 'sent'])
+          .get();
+
+        const emailsSent = emailsSnapshot.docs.map(d => d.data().emailType);
+
+        inactiveUsers.push({
+          userId,
+          userEmail: userData.email,
+          displayName: userData.displayName,
+          language: this.detectLanguageFromCountry(userData.country),
+          daysInactive,
+          lastActivityAt,
+          pdfsThisMonth: usageData.pdfCount || 0,
+          labelsThisMonth: usageData.labelCount || 0,
+          emailsSent,
+        });
+
+        if (inactiveUsers.length >= maxResults) break;
+      }
+
+      // Sort by days inactive (most inactive first)
+      inactiveUsers.sort((a, b) => b.daysInactive - a.daysInactive);
+
+      return inactiveUsers;
+    } catch (error) {
+      this.logger.error(`Error getting PRO inactive users: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get PRO power users (users with high PDF count in a given month)
+   * Used for testimonial requests and recognition
+   */
+  async getProPowerUsers(params: {
+    minPdfsPerMonth?: number;
+    month?: string; // Format: YYYY-MM (defaults to previous month)
+    limit?: number;
+  }): Promise<Array<{
+    userId: string;
+    userEmail: string;
+    displayName?: string;
+    language: EmailLanguage;
+    pdfsThisMonth: number;
+    labelsThisMonth: number;
+    monthsAsPro: number;
+  }>> {
+    const { minPdfsPerMonth = 50, month, limit: maxResults = 100 } = params;
+
+    // Default to previous month
+    const targetDate = month
+      ? new Date(`${month}-01`)
+      : new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
+    const targetMonth = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
+
+    try {
+      // Get PRO users
+      const usersSnapshot = await this.firestore
+        .collection(this.usersCollection)
+        .where('plan', '==', 'pro')
+        .get();
+
+      const powerUsers: Array<{
+        userId: string;
+        userEmail: string;
+        displayName?: string;
+        language: EmailLanguage;
+        pdfsThisMonth: number;
+        labelsThisMonth: number;
+        monthsAsPro: number;
+      }> = [];
+
+      for (const doc of usersSnapshot.docs) {
+        const userData = doc.data();
+        const userId = doc.id;
+
+        // Get usage for target month
+        const usageId = `${userId}_${targetMonth}`;
+        const usageDoc = await this.firestore.collection(this.usageCollection).doc(usageId).get();
+
+        if (!usageDoc.exists) continue;
+
+        const usageData = usageDoc.data();
+        const pdfCount = usageData.pdfCount || 0;
+
+        if (pdfCount < minPdfsPerMonth) continue;
+
+        // Calculate months as PRO
+        const createdAt = userData.createdAt?.toDate?.() || userData.createdAt || new Date();
+        const monthsAsPro = Math.floor((new Date().getTime() - createdAt.getTime()) / (30 * 24 * 60 * 60 * 1000));
+
+        // Check if already received power user email this month
+        const emailsSnapshot = await this.firestore
+          .collection(this.emailQueueCollection)
+          .where('userId', '==', userId)
+          .where('emailType', '==', 'pro_power_user')
+          .where('status', 'in', ['pending', 'sent'])
+          .where('createdAt', '>=', targetDate)
+          .limit(1)
+          .get();
+
+        if (!emailsSnapshot.empty) continue; // Already received this month
+
+        powerUsers.push({
+          userId,
+          userEmail: userData.email,
+          displayName: userData.displayName,
+          language: this.detectLanguageFromCountry(userData.country),
+          pdfsThisMonth: pdfCount,
+          labelsThisMonth: usageData.labelCount || 0,
+          monthsAsPro: Math.max(1, monthsAsPro),
+        });
+
+        if (powerUsers.length >= maxResults) break;
+      }
+
+      // Sort by PDF count (highest first)
+      powerUsers.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
+
+      return powerUsers;
+    } catch (error) {
+      this.logger.error(`Error getting PRO power users: ${error.message}`);
+      return [];
+    }
   }
 }
