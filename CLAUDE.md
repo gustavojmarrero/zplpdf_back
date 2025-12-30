@@ -110,6 +110,12 @@ Uses Firebase Auth ID tokens. Guards:
 - `AdminAuthGuard` - Checks user email against `ADMIN_EMAILS` env var
 - `CronAuthGuard` - Validates `X-Cron-Secret` header for scheduled jobs
 
+### Google Cloud Project
+
+- **Project ID:** `intranet-guatever`
+- **Cloud Run Service:** `zplpdf-service`
+- **Region:** `us-central1`
+
 ### Environment Variables
 
 Key variables (see `.env.example`):

@@ -577,6 +577,8 @@ export class EmailService {
   /**
    * Schedule high usage emails for users who are generating many PDFs daily
    * Called by cron job daily
+   *
+   * Respects the 'enabled' field of the template in email_templates collection
    */
   async scheduleHighUsageEmails(): Promise<ScheduleEmailsResult> {
     if (!this.isEnabled) {
@@ -587,6 +589,13 @@ export class EmailService {
     let skipped = 0;
 
     try {
+      // Check if template is enabled
+      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('high_usage');
+      if (!isTemplateEnabled) {
+        this.logger.debug('Template high_usage is disabled, skipping');
+        return { scheduled: 0, skipped: 0, executedAt: new Date() };
+      }
+
       // Get users with high usage patterns (>3 PDFs/day for 2 consecutive days)
       const highUsageUsers = await this.firestoreService.getUsersWithHighUsage({
         minPdfsPerDay: 3,
@@ -694,12 +703,11 @@ export class EmailService {
    * Schedule retention emails for inactive PRO users
    * Called by cron job daily
    *
-   * NOTE: Currently DISABLED. Set RETENTION_EMAILS_ENABLED=true to enable.
+   * Respects the 'enabled' field of each template in email_templates collection
    */
   async scheduleRetentionEmails(): Promise<ScheduleEmailsResult> {
-    const isEnabled = process.env.RETENTION_EMAILS_ENABLED === 'true';
-    if (!this.isEnabled || !isEnabled) {
-      this.logger.debug('Retention emails disabled');
+    if (!this.isEnabled) {
+      this.logger.debug('Email service disabled');
       return { scheduled: 0, skipped: 0, executedAt: new Date() };
     }
 
@@ -707,96 +715,115 @@ export class EmailService {
     let skipped = 0;
 
     try {
-      // Get PRO users inactive 7-13 days (not yet contacted)
-      const inactive7Days = await this.firestoreService.getProInactiveUsers({
-        minDaysInactive: 7,
-        maxDaysInactive: 14,
-        limit: 50,
-      });
+      // Check which templates are enabled
+      const [is7DaysEnabled, is14DaysEnabled, is30DaysEnabled] = await Promise.all([
+        this.firestoreService.isTemplateEnabled('pro_inactive_7_days'),
+        this.firestoreService.isTemplateEnabled('pro_inactive_14_days'),
+        this.firestoreService.isTemplateEnabled('pro_inactive_30_days'),
+      ]);
 
-      for (const user of inactive7Days) {
-        if (user.emailsSent.includes('pro_inactive_7_days')) {
-          skipped++;
-          continue;
-        }
-
-        await this.firestoreService.createEmailQueue({
-          userId: user.userId,
-          userEmail: user.userEmail,
-          emailType: 'pro_inactive_7_days',
-          abVariant: this.selectAbVariant(user.userId),
-          language: user.language as EmailLanguage,
-          scheduledFor: new Date(),
-          metadata: {
-            displayName: user.displayName,
-            daysInactive: user.daysInactive,
-            lastActivityAt: user.lastActivityAt,
-            pdfsThisMonth: user.pdfsThisMonth,
-            labelsThisMonth: user.labelsThisMonth,
-          },
+      // Get PRO users inactive 7-13 days (if template enabled)
+      if (is7DaysEnabled) {
+        const inactive7Days = await this.firestoreService.getProInactiveUsers({
+          minDaysInactive: 7,
+          maxDaysInactive: 14,
+          limit: 50,
         });
-        scheduled++;
+
+        for (const user of inactive7Days) {
+          if (user.emailsSent.includes('pro_inactive_7_days')) {
+            skipped++;
+            continue;
+          }
+
+          await this.firestoreService.createEmailQueue({
+            userId: user.userId,
+            userEmail: user.userEmail,
+            emailType: 'pro_inactive_7_days',
+            abVariant: this.selectAbVariant(user.userId),
+            language: user.language as EmailLanguage,
+            scheduledFor: new Date(),
+            metadata: {
+              displayName: user.displayName,
+              daysInactive: user.daysInactive,
+              lastActivityAt: user.lastActivityAt,
+              pdfsThisMonth: user.pdfsThisMonth,
+              labelsThisMonth: user.labelsThisMonth,
+            },
+          });
+          scheduled++;
+        }
+      } else {
+        this.logger.debug('Template pro_inactive_7_days is disabled, skipping');
       }
 
-      // Get PRO users inactive 14-29 days
-      const inactive14Days = await this.firestoreService.getProInactiveUsers({
-        minDaysInactive: 14,
-        maxDaysInactive: 30,
-        limit: 50,
-      });
-
-      for (const user of inactive14Days) {
-        if (user.emailsSent.includes('pro_inactive_14_days')) {
-          skipped++;
-          continue;
-        }
-
-        await this.firestoreService.createEmailQueue({
-          userId: user.userId,
-          userEmail: user.userEmail,
-          emailType: 'pro_inactive_14_days',
-          abVariant: this.selectAbVariant(user.userId),
-          language: user.language as EmailLanguage,
-          scheduledFor: new Date(),
-          metadata: {
-            displayName: user.displayName,
-            daysInactive: user.daysInactive,
-            lastActivityAt: user.lastActivityAt,
-            pdfsThisMonth: user.pdfsThisMonth,
-            labelsThisMonth: user.labelsThisMonth,
-          },
+      // Get PRO users inactive 14-29 days (if template enabled)
+      if (is14DaysEnabled) {
+        const inactive14Days = await this.firestoreService.getProInactiveUsers({
+          minDaysInactive: 14,
+          maxDaysInactive: 30,
+          limit: 50,
         });
-        scheduled++;
+
+        for (const user of inactive14Days) {
+          if (user.emailsSent.includes('pro_inactive_14_days')) {
+            skipped++;
+            continue;
+          }
+
+          await this.firestoreService.createEmailQueue({
+            userId: user.userId,
+            userEmail: user.userEmail,
+            emailType: 'pro_inactive_14_days',
+            abVariant: this.selectAbVariant(user.userId),
+            language: user.language as EmailLanguage,
+            scheduledFor: new Date(),
+            metadata: {
+              displayName: user.displayName,
+              daysInactive: user.daysInactive,
+              lastActivityAt: user.lastActivityAt,
+              pdfsThisMonth: user.pdfsThisMonth,
+              labelsThisMonth: user.labelsThisMonth,
+            },
+          });
+          scheduled++;
+        }
+      } else {
+        this.logger.debug('Template pro_inactive_14_days is disabled, skipping');
       }
 
-      // Get PRO users inactive 30+ days
-      const inactive30Days = await this.firestoreService.getProInactiveUsers({
-        minDaysInactive: 30,
-        limit: 50,
-      });
-
-      for (const user of inactive30Days) {
-        if (user.emailsSent.includes('pro_inactive_30_days')) {
-          skipped++;
-          continue;
-        }
-
-        await this.firestoreService.createEmailQueue({
-          userId: user.userId,
-          userEmail: user.userEmail,
-          emailType: 'pro_inactive_30_days',
-          abVariant: this.selectAbVariant(user.userId),
-          language: user.language as EmailLanguage,
-          scheduledFor: new Date(),
-          metadata: {
-            displayName: user.displayName,
-            daysInactive: user.daysInactive,
-            lastActivityAt: user.lastActivityAt,
-            pdfsThisMonth: user.pdfsThisMonth,
-            labelsThisMonth: user.labelsThisMonth,
-          },
+      // Get PRO users inactive 30+ days (if template enabled)
+      if (is30DaysEnabled) {
+        const inactive30Days = await this.firestoreService.getProInactiveUsers({
+          minDaysInactive: 30,
+          limit: 50,
         });
-        scheduled++;
+
+        for (const user of inactive30Days) {
+          if (user.emailsSent.includes('pro_inactive_30_days')) {
+            skipped++;
+            continue;
+          }
+
+          await this.firestoreService.createEmailQueue({
+            userId: user.userId,
+            userEmail: user.userEmail,
+            emailType: 'pro_inactive_30_days',
+            abVariant: this.selectAbVariant(user.userId),
+            language: user.language as EmailLanguage,
+            scheduledFor: new Date(),
+            metadata: {
+              displayName: user.displayName,
+              daysInactive: user.daysInactive,
+              lastActivityAt: user.lastActivityAt,
+              pdfsThisMonth: user.pdfsThisMonth,
+              labelsThisMonth: user.labelsThisMonth,
+            },
+          });
+          scheduled++;
+        }
+      } else {
+        this.logger.debug('Template pro_inactive_30_days is disabled, skipping');
       }
 
       this.logger.log(`Retention emails scheduled: ${scheduled}, skipped: ${skipped}`);
@@ -811,12 +838,11 @@ export class EmailService {
    * Schedule power user recognition emails
    * Called by cron job monthly (first day of month)
    *
-   * NOTE: Currently DISABLED. Set RETENTION_EMAILS_ENABLED=true to enable.
+   * Respects the 'enabled' field of the template in email_templates collection
    */
   async schedulePowerUserEmails(): Promise<ScheduleEmailsResult> {
-    const isEnabled = process.env.RETENTION_EMAILS_ENABLED === 'true';
-    if (!this.isEnabled || !isEnabled) {
-      this.logger.debug('Power user emails disabled');
+    if (!this.isEnabled) {
+      this.logger.debug('Email service disabled');
       return { scheduled: 0, skipped: 0, executedAt: new Date() };
     }
 
@@ -824,6 +850,13 @@ export class EmailService {
     const skipped = 0;
 
     try {
+      // Check if template is enabled
+      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('pro_power_user');
+      if (!isTemplateEnabled) {
+        this.logger.debug('Template pro_power_user is disabled, skipping');
+        return { scheduled: 0, skipped: 0, executedAt: new Date() };
+      }
+
       // Get power users from previous month
       const powerUsers = await this.firestoreService.getProPowerUsers({
         minPdfsPerMonth: 50,
@@ -865,12 +898,11 @@ export class EmailService {
    * - free_dormant_30d: >3 PDFs, 30+ days inactive
    * - free_abandoned_60d: Any user, 60+ days inactive
    *
-   * NOTE: Disabled by default. Set FREE_REACTIVATION_EMAILS_ENABLED=true to enable.
+   * Respects the 'enabled' field of each template in email_templates collection
    */
   async scheduleFreeReactivationEmails(): Promise<FreeReactivationResult> {
-    const isEnabled = process.env.FREE_REACTIVATION_EMAILS_ENABLED === 'true';
-    if (!this.isEnabled || !isEnabled) {
-      this.logger.debug('FREE reactivation emails disabled');
+    if (!this.isEnabled) {
+      this.logger.debug('Email service disabled');
       return {
         processed: 0,
         emailsScheduled: 0,
@@ -896,6 +928,34 @@ export class EmailService {
     };
 
     try {
+      // Check which templates are enabled
+      const [is7dEnabled, is14dEnabled, isTriedEnabled, isDormantEnabled, isAbandonedEnabled] = await Promise.all([
+        this.firestoreService.isTemplateEnabled('free_never_used_7d'),
+        this.firestoreService.isTemplateEnabled('free_never_used_14d'),
+        this.firestoreService.isTemplateEnabled('free_tried_abandoned'),
+        this.firestoreService.isTemplateEnabled('free_dormant_30d'),
+        this.firestoreService.isTemplateEnabled('free_abandoned_60d'),
+      ]);
+
+      const enabledTemplates = {
+        free_never_used_7d: is7dEnabled,
+        free_never_used_14d: is14dEnabled,
+        free_tried_abandoned: isTriedEnabled,
+        free_dormant_30d: isDormantEnabled,
+        free_abandoned_60d: isAbandonedEnabled,
+      };
+
+      // If all templates are disabled, skip processing
+      if (!Object.values(enabledTemplates).some(Boolean)) {
+        this.logger.debug('All FREE reactivation templates are disabled, skipping');
+        return {
+          processed: 0,
+          emailsScheduled: 0,
+          byType,
+          executedAt: new Date(),
+        };
+      }
+
       // Get all FREE inactive users
       const inactiveUsers = await this.firestoreService.getFreeInactiveUsers({
         limit: 200,
@@ -909,24 +969,24 @@ export class EmailService {
 
         if (user.segment === 'never_used') {
           // Never used: 7d or 14d based on registration age
-          if (user.daysSinceRegistration >= 14 && !user.emailsSent.includes('free_never_used_14d')) {
+          if (user.daysSinceRegistration >= 14 && !user.emailsSent.includes('free_never_used_14d') && enabledTemplates.free_never_used_14d) {
             emailType = 'free_never_used_14d';
-          } else if (user.daysSinceRegistration >= 7 && !user.emailsSent.includes('free_never_used_7d')) {
+          } else if (user.daysSinceRegistration >= 7 && !user.emailsSent.includes('free_never_used_7d') && enabledTemplates.free_never_used_7d) {
             emailType = 'free_never_used_7d';
           }
         } else if (user.segment === 'tried_abandoned') {
           // Tried but abandoned: 1-3 PDFs, 14+ days inactive
-          if (!user.emailsSent.includes('free_tried_abandoned')) {
+          if (!user.emailsSent.includes('free_tried_abandoned') && enabledTemplates.free_tried_abandoned) {
             emailType = 'free_tried_abandoned';
           }
         } else if (user.segment === 'dormant') {
           // Dormant: >3 PDFs, 30+ days inactive
-          if (!user.emailsSent.includes('free_dormant_30d')) {
+          if (!user.emailsSent.includes('free_dormant_30d') && enabledTemplates.free_dormant_30d) {
             emailType = 'free_dormant_30d';
           }
         } else if (user.segment === 'abandoned') {
           // Abandoned: 60+ days inactive
-          if (!user.emailsSent.includes('free_abandoned_60d')) {
+          if (!user.emailsSent.includes('free_abandoned_60d') && enabledTemplates.free_abandoned_60d) {
             emailType = 'free_abandoned_60d';
           }
         }

@@ -5105,6 +5105,20 @@ export class FirestoreService {
   }
 
   /**
+   * Check if an email template is enabled by its templateKey
+   * Returns true if template exists and is enabled, false otherwise
+   */
+  async isTemplateEnabled(templateKey: string): Promise<boolean> {
+    try {
+      const template = await this.getEmailTemplateByKey(templateKey);
+      return template?.enabled ?? false;
+    } catch (error) {
+      this.logger.error(`Error checking template enabled status: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
    * Create a new email template
    */
   async createEmailTemplate(data: CreateEmailTemplateData): Promise<string> {
