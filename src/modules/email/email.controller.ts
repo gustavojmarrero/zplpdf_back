@@ -230,7 +230,7 @@ export class EmailController {
 
   // ============== API Endpoints ==============
 
-  @Post('api/email/trigger-blocked')
+  @Post('email/trigger-blocked')
   @UseGuards(CronAuthGuard) // Using CronAuthGuard for internal API calls
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -313,7 +313,7 @@ export class EmailController {
 
   // ============== Admin Metrics Endpoints ==============
 
-  @Get('api/admin/email-metrics')
+  @Get('admin/email-metrics')
   @UseGuards(AdminAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
@@ -329,7 +329,7 @@ export class EmailController {
     return this.emailService.getMetrics();
   }
 
-  @Get('api/admin/email-metrics/ab-test')
+  @Get('admin/email-metrics/ab-test')
   @UseGuards(AdminAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
@@ -352,7 +352,7 @@ export class EmailController {
     return this.emailService.getAbTestResults(emailType);
   }
 
-  @Get('api/admin/email-metrics/by-type')
+  @Get('admin/email-metrics/by-type')
   @UseGuards(AdminAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
@@ -368,7 +368,7 @@ export class EmailController {
     return this.emailService.getMetricsByType();
   }
 
-  @Get('api/admin/email-metrics/funnel')
+  @Get('admin/email-metrics/funnel')
   @UseGuards(AdminAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
@@ -394,7 +394,7 @@ export class EmailController {
 
   // ============== PRO User Admin Endpoints ==============
 
-  @Get('api/admin/users/pro/inactive')
+  @Get('admin/users/pro/inactive')
   @UseGuards(AdminAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
@@ -451,7 +451,7 @@ export class EmailController {
     });
   }
 
-  @Get('api/admin/users/pro/power-users')
+  @Get('admin/users/pro/power-users')
   @UseGuards(AdminAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
