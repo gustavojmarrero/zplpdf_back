@@ -76,9 +76,10 @@ export class UpdateEmailTemplateDto {
   @IsString()
   description?: string;
 
-  @ApiProperty({ example: 'Updated subject line for better engagement', description: 'Description of the change' })
+  @ApiPropertyOptional({ example: 'Updated subject line for better engagement', description: 'Description of the change' })
+  @IsOptional()
   @IsString()
-  changeDescription: string;
+  changeDescription?: string;
 }
 
 // ============== Rollback DTO ==============

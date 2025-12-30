@@ -124,8 +124,11 @@ export class EmailTemplatesController {
     @Body() updateDto: UpdateEmailTemplateDto,
     @AdminUser() admin: { email: string },
   ): Promise<EmailTemplate> {
+    const changeDescription = updateDto.changeDescription || 'Updated via admin panel';
+
     const template = await this.firestoreService.updateEmailTemplate(id, {
       ...updateDto,
+      changeDescription,
       updatedBy: admin.email,
     });
 
@@ -133,7 +136,7 @@ export class EmailTemplatesController {
       throw new NotFoundException(`Template with ID ${id} not found`);
     }
 
-    this.logger.log(`Template ${id} updated by ${admin.email}: ${updateDto.changeDescription}`);
+    this.logger.log(`Template ${id} updated by ${admin.email}: ${changeDescription}`);
     return template;
   }
 
