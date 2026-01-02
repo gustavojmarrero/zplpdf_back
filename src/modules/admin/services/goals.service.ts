@@ -141,13 +141,22 @@ export class GoalsService {
       alerts[`belowPace_${key}`] = currentValue < expectedValue * this.ALERT_THRESHOLD;
     }
 
-    // Determinar estado general
-    const alertCount = Object.values(alerts).filter(Boolean).length;
-    const totalMetrics = Object.keys(goal.targets).length;
+    // Determinar estado general (excluir métricas sin datos disponibles)
+    // Una métrica "sin datos" tiene current=0 y target>0
+    const metricsWithData = Object.keys(goal.targets).filter((key) => {
+      const currentValue = current[key] || 0;
+      const targetValue = goal.targets[key] || 0;
+      // Incluir si tiene datos (current > 0) o si la meta es 0
+      return currentValue > 0 || targetValue === 0;
+    });
+
+    const relevantAlertCount = metricsWithData.filter((key) => alerts[`belowPace_${key}`]).length;
+    const totalRelevantMetrics = metricsWithData.length;
+
     let status: 'on_track' | 'at_risk' | 'behind';
-    if (alertCount === 0) {
+    if (relevantAlertCount === 0) {
       status = 'on_track';
-    } else if (alertCount <= Math.ceil(totalMetrics / 3)) {
+    } else if (totalRelevantMetrics > 0 && relevantAlertCount <= Math.ceil(totalRelevantMetrics / 3)) {
       status = 'at_risk';
     } else {
       status = 'behind';
