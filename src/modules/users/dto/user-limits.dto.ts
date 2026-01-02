@@ -30,7 +30,7 @@ export class CurrentUsageDto {
 }
 
 export class UserLimitsDto {
-  @ApiProperty({ description: 'Current plan', enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ description: 'Current plan', enum: ['free', 'pro', 'promax', 'enterprise'] })
   plan: PlanType;
 
   @ApiProperty({ description: 'Plan limits', type: PlanLimitsDto })

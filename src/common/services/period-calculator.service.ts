@@ -9,7 +9,7 @@ export interface PeriodInfo {
 
 export interface UserForPeriod {
   id: string;
-  plan: 'free' | 'pro' | 'enterprise';
+  plan: 'free' | 'pro' | 'promax' | 'enterprise';
   createdAt: Date;
   stripeSubscriptionId?: string;
 }

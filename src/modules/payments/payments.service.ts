@@ -6,6 +6,9 @@ import { CheckoutResponseDto, PortalResponseDto } from './dto/create-checkout.dt
 import { GA4Service } from '../analytics/ga4.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import type { StripeTransaction, SubscriptionEvent } from '../../common/interfaces/finance.interface.js';
+import type { PlanType } from '../../common/interfaces/user.interface.js';
+
+type PaidPlanType = 'pro' | 'promax' | 'enterprise';
 
 @Injectable()
 export class PaymentsService {
@@ -13,6 +16,8 @@ export class PaymentsService {
   private stripe: Stripe;
   private proPriceId: string;
   private proPriceIdMxn: string;
+  private promaxPriceId: string;
+  private promaxPriceIdMxn: string;
   private readonly MAX_RETRIES = 3;
 
   /**
@@ -67,14 +72,48 @@ export class PaymentsService {
 
     this.proPriceId = this.configService.get<string>('STRIPE_PRO_PRICE_ID');
     this.proPriceIdMxn = this.configService.get<string>('STRIPE_PRO_PRICE_ID_MXN');
+    this.promaxPriceId = this.configService.get<string>('STRIPE_PROMAX_PRICE_ID');
+    this.promaxPriceIdMxn = this.configService.get<string>('STRIPE_PROMAX_PRICE_ID_MXN');
 
-    // Validate price ID is configured
+    // Validate price IDs are configured
     if (!this.proPriceId) {
       this.logger.warn('STRIPE_PRO_PRICE_ID not configured');
     }
     if (!this.proPriceIdMxn) {
       this.logger.warn('STRIPE_PRO_PRICE_ID_MXN not configured');
     }
+    if (!this.promaxPriceId) {
+      this.logger.warn('STRIPE_PROMAX_PRICE_ID not configured');
+    }
+    if (!this.promaxPriceIdMxn) {
+      this.logger.warn('STRIPE_PROMAX_PRICE_ID_MXN not configured');
+    }
+  }
+
+  /**
+   * Get plan type from Stripe price ID
+   */
+  private getPlanFromPriceId(priceId: string): PaidPlanType {
+    if (priceId === this.proPriceId || priceId === this.proPriceIdMxn) {
+      return 'pro';
+    }
+    if (priceId === this.promaxPriceId || priceId === this.promaxPriceIdMxn) {
+      return 'promax';
+    }
+    // Default to pro for unknown prices (backwards compatibility)
+    this.logger.warn(`Unknown price ID: ${priceId}, defaulting to pro`);
+    return 'pro';
+  }
+
+  /**
+   * Get price ID for a plan and country
+   */
+  private getPriceIdForPlan(plan: 'pro' | 'promax', country?: string): string {
+    const isMexico = country === 'MX';
+    if (plan === 'promax') {
+      return isMexico ? this.promaxPriceIdMxn : this.promaxPriceId;
+    }
+    return isMexico ? this.proPriceIdMxn : this.proPriceId;
   }
 
   async createCheckoutSession(
@@ -83,16 +122,17 @@ export class PaymentsService {
     successUrl: string,
     cancelUrl: string,
     country?: string,
+    plan: 'pro' | 'promax' = 'pro',
   ): Promise<CheckoutResponseDto> {
     if (!this.stripe) {
       throw new BadRequestException('Payment system not configured');
     }
 
-    // Select price based on country
-    const priceId = country === 'MX' ? this.proPriceIdMxn : this.proPriceId;
+    // Select price based on plan and country
+    const priceId = this.getPriceIdForPlan(plan, country);
 
     if (!priceId) {
-      throw new BadRequestException('Pro price not configured');
+      throw new BadRequestException(`${plan} price not configured`);
     }
 
     // Get or create Stripe customer
@@ -176,6 +216,75 @@ export class PaymentsService {
     };
   }
 
+  /**
+   * Upgrade subscription from one paid plan to another (e.g., PRO → PRO MAX)
+   * Stripe handles proration automatically
+   */
+  async upgradeSubscription(
+    userId: string,
+    targetPlan: 'promax',
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this.stripe) {
+      throw new BadRequestException('Payment system not configured');
+    }
+
+    const user = await this.firestoreService.getUserById(userId);
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    if (!user.stripeSubscriptionId) {
+      throw new BadRequestException('No active subscription to upgrade. Please subscribe first.');
+    }
+
+    if (user.plan !== 'pro') {
+      throw new BadRequestException(`Cannot upgrade from ${user.plan} plan. Only PRO users can upgrade to PRO MAX.`);
+    }
+
+    // Get current subscription to find the item ID
+    const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+
+    if (subscription.status !== 'active') {
+      throw new BadRequestException('Subscription is not active');
+    }
+
+    const subscriptionItemId = subscription.items.data[0]?.id;
+    if (!subscriptionItemId) {
+      throw new BadRequestException('Could not find subscription item');
+    }
+
+    // Get the new price ID based on user's country
+    const newPriceId = this.getPriceIdForPlan(targetPlan, user.country);
+
+    if (!newPriceId) {
+      throw new BadRequestException('PRO MAX price not configured');
+    }
+
+    // Update subscription with proration
+    await this.stripe.subscriptions.update(user.stripeSubscriptionId, {
+      items: [
+        {
+          id: subscriptionItemId,
+          price: newPriceId,
+        },
+      ],
+      proration_behavior: 'always_invoice', // Charge/credit immediately
+    });
+
+    // Update user plan in Firestore
+    await this.firestoreService.updateUser(userId, {
+      plan: 'promax',
+    });
+
+    this.logger.log(`User ${userId} upgraded from PRO to PRO MAX`);
+
+    return {
+      success: true,
+      message: 'Successfully upgraded to PRO MAX. Proration has been applied.',
+    };
+  }
+
   async handleCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {
     const userId = session.metadata?.firebaseUid;
 
@@ -189,6 +298,18 @@ export class PaymentsService {
     const billingCountry = session.customer_details?.address?.country || undefined;
     const currency = (session.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
     const amount = session.amount_total || 0;
+
+    // Get plan from subscription price
+    let plan: PaidPlanType = 'pro';
+    try {
+      const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
+      const priceId = subscription.items.data[0]?.price?.id;
+      if (priceId) {
+        plan = this.getPlanFromPriceId(priceId);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to get subscription details: ${error.message}`);
+    }
 
     // Calculate MXN amount for transactions
     let amountMxn = amount / 100;
@@ -208,9 +329,9 @@ export class PaymentsService {
       }
     }
 
-    // Update user to Pro plan with retry
+    // Update user plan with retry
     const updateData: Record<string, unknown> = {
-      plan: 'pro',
+      plan,
       stripeSubscriptionId: subscriptionId,
     };
 
@@ -227,7 +348,7 @@ export class PaymentsService {
       `handleCheckoutCompleted(${userId})`,
     );
 
-    this.logger.log(`User ${userId} upgraded to Pro plan`);
+    this.logger.log(`User ${userId} upgraded to ${plan} plan`);
 
     // Determine transaction type based on previous plan
     const previousPlan = user?.plan || 'free';
@@ -246,7 +367,7 @@ export class PaymentsService {
       amountMxn,
       exchangeRate,
       type: transactionType,
-      plan: 'pro',
+      plan,
       stripeCustomerId: session.customer as string,
       stripeSubscriptionId: subscriptionId,
       status: 'succeeded',
@@ -263,7 +384,7 @@ export class PaymentsService {
       userId,
       userEmail: user?.email || session.customer_details?.email || '',
       eventType: 'started',
-      plan: 'pro',
+      plan,
       previousPlan: user?.plan || 'free',
       currency,
       mrr: amount / 100,
@@ -277,11 +398,16 @@ export class PaymentsService {
     this.logger.log(`Saved subscription event: started for user ${userId}`);
 
     // Track purchase in GA4 (server-side)
+    const planNames: Record<PaidPlanType, string> = {
+      pro: 'Plan Pro',
+      promax: 'Plan Pro Max',
+      enterprise: 'Plan Enterprise',
+    };
     await this.ga4Service.trackPurchase({
       userId,
       transactionId: session.id,
-      planId: 'plan_pro',
-      planName: 'Plan Pro',
+      planId: `plan_${plan}`,
+      planName: planNames[plan],
       price: session.amount_total ? session.amount_total / 100 : 0,
       currency: session.currency?.toUpperCase() || 'USD',
     });
@@ -310,16 +436,20 @@ export class PaymentsService {
       return;
     }
 
+    // Get plan from subscription price
+    const priceId = subscription.items.data[0]?.price?.id;
+    const plan = priceId ? this.getPlanFromPriceId(priceId) : 'pro';
+
     // Check subscription status with retry
     if (subscription.status === 'active') {
       await this.withRetry(
         () => this.firestoreService.updateUser(user.id, {
-          plan: 'pro',
+          plan,
           stripeSubscriptionId: subscription.id,
         }),
         `handleSubscriptionUpdated(${user.id})`,
       );
-      this.logger.log(`Subscription updated for user ${user.id}: active`);
+      this.logger.log(`Subscription updated for user ${user.id}: active (${plan})`);
     } else if (['canceled', 'unpaid', 'past_due'].includes(subscription.status)) {
       await this.withRetry(
         () => this.firestoreService.updateUser(user.id, {
@@ -341,6 +471,9 @@ export class PaymentsService {
       return;
     }
 
+    // Get the plan that was canceled (from user's current plan before downgrade)
+    const canceledPlan = (user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
+
     // Downgrade to free plan with retry
     await this.withRetry(
       () => this.firestoreService.updateUser(user.id, {
@@ -350,7 +483,7 @@ export class PaymentsService {
       `handleSubscriptionDeleted(${user.id})`,
     );
 
-    this.logger.log(`User ${user.id} downgraded to Free plan`);
+    this.logger.log(`User ${user.id} downgraded to Free plan (was ${canceledPlan})`);
 
     // Save subscription event for churn tracking
     const subscriptionEvent: SubscriptionEvent = {
@@ -358,8 +491,8 @@ export class PaymentsService {
       userId: user.id,
       userEmail: user.email,
       eventType: 'canceled',
-      plan: 'pro',
-      previousPlan: 'pro',
+      plan: canceledPlan,
+      previousPlan: canceledPlan,
       currency: 'usd', // Default, actual currency not available in deleted event
       mrr: 0,
       mrrMxn: 0,
@@ -419,6 +552,21 @@ export class PaymentsService {
       return;
     }
 
+    // Get plan from invoice subscription
+    let plan: PaidPlanType = (user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
+    const subscriptionId = (invoice as { subscription?: string | null }).subscription as string;
+    if (subscriptionId) {
+      try {
+        const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
+        const priceId = subscription.items.data[0]?.price?.id;
+        if (priceId) {
+          plan = this.getPlanFromPriceId(priceId);
+        }
+      } catch (error) {
+        this.logger.warn(`Failed to get subscription details for invoice: ${error.message}`);
+      }
+    }
+
     const currency = (invoice.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
     const amount = invoice.amount_paid || 0;
 
@@ -456,7 +604,7 @@ export class PaymentsService {
       amountMxn,
       exchangeRate,
       type: transactionType,
-      plan: 'pro',
+      plan,
       stripeCustomerId: customerId,
       stripeSubscriptionId: user.stripeSubscriptionId || undefined,
       stripeInvoiceId: invoice.id || undefined,
@@ -475,8 +623,8 @@ export class PaymentsService {
         userId: user.id,
         userEmail: user.email,
         eventType: 'renewed',
-        plan: 'pro',
-        previousPlan: 'pro',
+        plan,
+        previousPlan: plan,
         currency,
         mrr: amount / 100,
         mrrMxn: amountMxn,
@@ -486,7 +634,7 @@ export class PaymentsService {
       };
 
       await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
-      this.logger.log(`Saved subscription event: renewed for user ${user.id}`);
+      this.logger.log(`Saved subscription event: renewed for user ${user.id} (${plan})`);
     }
   }
 }

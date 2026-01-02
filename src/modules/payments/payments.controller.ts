@@ -20,6 +20,8 @@ import {
   CreateCheckoutDto,
   CheckoutResponseDto,
   PortalResponseDto,
+  UpgradeSubscriptionDto,
+  UpgradeResponseDto,
 } from './dto/create-checkout.dto.js';
 
 @ApiTags('payments')
@@ -31,7 +33,7 @@ export class PaymentsController {
 
   @Post('create-checkout')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Create Stripe Checkout session for Pro subscription' })
+  @ApiOperation({ summary: 'Create Stripe Checkout session for subscription' })
   @ApiResponse({
     status: 200,
     description: 'Checkout session created',
@@ -50,6 +52,7 @@ export class PaymentsController {
       successUrl,
       cancelUrl,
       dto.country,
+      dto.plan || 'pro',
     );
   }
 
@@ -68,5 +71,24 @@ export class PaymentsController {
     const returnUrl = body.returnUrl || 'https://zplpdf.com/account';
 
     return this.paymentsService.createPortalSession(user.uid, returnUrl);
+  }
+
+  @Post('upgrade')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Upgrade subscription from PRO to PRO MAX' })
+  @ApiResponse({
+    status: 200,
+    description: 'Subscription upgraded successfully',
+    type: UpgradeResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid upgrade request (no subscription, wrong plan, etc.)',
+  })
+  async upgradeSubscription(
+    @CurrentUser() user: FirebaseUser,
+    @Body() dto: UpgradeSubscriptionDto,
+  ): Promise<UpgradeResponseDto> {
+    return this.paymentsService.upgradeSubscription(user.uid, dto.targetPlan);
   }
 }

@@ -1,7 +1,17 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsOptional } from 'class-validator';
+import { IsString, IsOptional, IsIn } from 'class-validator';
 
 export class CreateCheckoutDto {
+  @ApiProperty({
+    description: 'Plan to subscribe to',
+    required: false,
+    enum: ['pro', 'promax'],
+    default: 'pro',
+  })
+  @IsIn(['pro', 'promax'])
+  @IsOptional()
+  plan?: 'pro' | 'promax';
+
   @ApiProperty({
     description: 'URL to redirect after successful checkout',
     required: false,
@@ -39,4 +49,21 @@ export class CheckoutResponseDto {
 export class PortalResponseDto {
   @ApiProperty({ description: 'Stripe Customer Portal URL' })
   portalUrl: string;
+}
+
+export class UpgradeSubscriptionDto {
+  @ApiProperty({
+    description: 'Target plan to upgrade to',
+    enum: ['promax'],
+  })
+  @IsIn(['promax'])
+  targetPlan: 'promax';
+}
+
+export class UpgradeResponseDto {
+  @ApiProperty({ description: 'Whether the upgrade was successful' })
+  success: boolean;
+
+  @ApiProperty({ description: 'Message describing the result' })
+  message: string;
 }

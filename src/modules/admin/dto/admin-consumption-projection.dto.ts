@@ -2,10 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsEnum } from 'class-validator';
 
 export class GetConsumptionProjectionQueryDto {
-  @ApiPropertyOptional({ enum: ['free', 'pro', 'enterprise'], description: 'Filter by plan' })
+  @ApiPropertyOptional({ enum: ['free', 'pro', 'promax', 'enterprise'], description: 'Filter by plan' })
   @IsOptional()
-  @IsEnum(['free', 'pro', 'enterprise'])
-  plan?: 'free' | 'pro' | 'enterprise';
+  @IsEnum(['free', 'pro', 'promax', 'enterprise'])
+  plan?: 'free' | 'pro' | 'promax' | 'enterprise';
 
   @ApiPropertyOptional({ enum: ['critical', 'risk', 'normal'], description: 'Filter by status' })
   @IsOptional()
@@ -23,8 +23,8 @@ class ConsumptionProjectionUserDto {
   @ApiProperty({ description: 'User display name' })
   name: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'], description: 'User plan' })
-  plan: 'free' | 'pro' | 'enterprise';
+  @ApiProperty({ enum: ['free', 'pro', 'promax', 'enterprise'], description: 'User plan' })
+  plan: 'free' | 'pro' | 'promax' | 'enterprise';
 
   @ApiProperty({ description: 'Billing period start date' })
   billingPeriodStart: string;

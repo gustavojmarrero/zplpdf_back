@@ -28,7 +28,7 @@ export class GetUsersQueryDto {
   @Max(100)
   limit?: number = 50;
 
-  @ApiPropertyOptional({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiPropertyOptional({ enum: ['free', 'pro', 'promax', 'enterprise'] })
   @IsOptional()
   @IsString()
   plan?: string;
@@ -77,7 +77,7 @@ class AdminUserDto {
   @ApiProperty({ required: false })
   displayName?: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ enum: ['free', 'pro', 'promax', 'enterprise'] })
   plan: string;
 
   @ApiProperty({ type: UserUsageDto })
@@ -177,7 +177,7 @@ class UserDetailDataDto {
   @ApiPropertyOptional()
   displayName?: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ enum: ['free', 'pro', 'promax', 'enterprise'] })
   plan: string;
 
   @ApiProperty({ type: UserUsageDetailDto })
@@ -208,14 +208,14 @@ export class AdminUserDetailResponseDto {
 
 export class UpdateUserPlanDto {
   @ApiProperty({
-    enum: ['free', 'pro', 'enterprise'],
+    enum: ['free', 'pro', 'promax', 'enterprise'],
     description: 'New plan to assign',
   })
-  @IsEnum(['free', 'pro', 'enterprise'], {
-    message: 'Plan must be: free, pro, or enterprise',
+  @IsEnum(['free', 'pro', 'promax', 'enterprise'], {
+    message: 'Plan must be: free, pro, promax, or enterprise',
   })
   @IsNotEmpty()
-  newPlan: 'free' | 'pro' | 'enterprise';
+  newPlan: 'free' | 'pro' | 'promax' | 'enterprise';
 
   @ApiProperty({
     description: 'Reason for the plan change',
@@ -231,10 +231,10 @@ class UpdatePlanResultDto {
   @ApiProperty()
   userId: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ enum: ['free', 'pro', 'promax', 'enterprise'] })
   previousPlan: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ enum: ['free', 'pro', 'promax', 'enterprise'] })
   newPlan: string;
 
   @ApiProperty()
