@@ -8,10 +8,12 @@ ZPLPDF is a NestJS backend API for converting ZPL (Zebra Programming Language) f
 
 ## Common Commands
 
+**IMPORTANTE:** El servidor SIEMPRE debe correr en el puerto 8080 (compatibilidad con Cloud Run).
+
 ```bash
 # Development
-npm run start:dev          # Start dev server with hot reload (port 3000, use PORT=8080 for Cloud Run compat)
-npm run start:debug        # Start with debugger attached
+PORT=8080 npm run start:dev   # Start dev server on port 8080 (REQUIRED)
+npm run start:debug           # Start with debugger attached
 
 # Build & Deploy
 npm run build              # Compile TypeScript

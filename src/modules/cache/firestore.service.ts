@@ -1480,49 +1480,34 @@ export class FirestoreService {
     }
   }
 
-  async getUsersByPlan(): Promise<{ free: number; pro: number; enterprise: number }> {
+  async getUsersByPlan(): Promise<{ free: number; pro: number; promax: number; enterprise: number }> {
     try {
       // Count users by plan and subtract admins from each plan
-      const [freeCount, proCount, enterpriseCount, freeAdminCount, proAdminCount, enterpriseAdminCount] = await Promise.all([
-        this.firestore
-          .collection(this.usersCollection)
-          .where('plan', '==', 'free')
-          .count()
-          .get(),
-        this.firestore
-          .collection(this.usersCollection)
-          .where('plan', '==', 'pro')
-          .count()
-          .get(),
-        this.firestore
-          .collection(this.usersCollection)
-          .where('plan', '==', 'enterprise')
-          .count()
-          .get(),
+      const [
+        freeCount,
+        proCount,
+        promaxCount,
+        enterpriseCount,
+        freeAdminCount,
+        proAdminCount,
+        promaxAdminCount,
+        enterpriseAdminCount,
+      ] = await Promise.all([
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'free').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'pro').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'promax').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'enterprise').count().get(),
         // Count admins by plan to subtract
-        this.firestore
-          .collection(this.usersCollection)
-          .where('plan', '==', 'free')
-          .where('role', '==', 'admin')
-          .count()
-          .get(),
-        this.firestore
-          .collection(this.usersCollection)
-          .where('plan', '==', 'pro')
-          .where('role', '==', 'admin')
-          .count()
-          .get(),
-        this.firestore
-          .collection(this.usersCollection)
-          .where('plan', '==', 'enterprise')
-          .where('role', '==', 'admin')
-          .count()
-          .get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'free').where('role', '==', 'admin').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'pro').where('role', '==', 'admin').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'promax').where('role', '==', 'admin').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'enterprise').where('role', '==', 'admin').count().get(),
       ]);
 
       return {
         free: freeCount.data().count - freeAdminCount.data().count,
         pro: proCount.data().count - proAdminCount.data().count,
+        promax: promaxCount.data().count - promaxAdminCount.data().count,
         enterprise: enterpriseCount.data().count - enterpriseAdminCount.data().count,
       };
     } catch (error) {

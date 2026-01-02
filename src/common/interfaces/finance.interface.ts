@@ -36,7 +36,7 @@ export interface StripeTransaction {
   amountMxn: number; // Convertido a MXN para comparaciones
   exchangeRate: number; // Tipo de cambio usado
   type: TransactionType;
-  plan: 'pro' | 'enterprise';
+  plan: 'pro' | 'promax' | 'enterprise';
   stripeCustomerId: string;
   stripeSubscriptionId?: string;
   stripeInvoiceId?: string;
@@ -97,8 +97,8 @@ export interface GoalMetricConfig {
 // Métricas por defecto
 export const DEFAULT_GOAL_METRICS: GoalMetricConfig[] = [
   { key: 'revenue', label: 'Ingresos', type: 'currency', icon: 'dollar', color: 'green', currency: 'USD', order: 1 },
-  { key: 'newUsers', label: 'Nuevos Usuarios', type: 'number', icon: 'users', color: 'blue', order: 2 },
-  { key: 'proConversions', label: 'Conversiones Pro', type: 'number', icon: 'crown', color: 'purple', order: 3 },
+  { key: 'newUsers', label: 'Usuarios Registrados', type: 'number', icon: 'users', color: 'blue', order: 2 },
+  { key: 'proConversions', label: 'Suscripciones Pro', type: 'number', icon: 'crown', color: 'purple', order: 3 },
   { key: 'traffic', label: 'Tráfico', type: 'number', icon: 'trending', color: 'cyan', order: 4 },
   { key: 'conversionRate', label: 'Tasa de Conversión', type: 'percentage', icon: 'conversion', color: 'orange', order: 5 },
   { key: 'adsSpend', label: 'Inversión en Ads', type: 'currency', icon: 'ads', color: 'pink', currency: 'USD', order: 6 },
@@ -146,8 +146,8 @@ export interface SubscriptionEvent {
   userId: string;
   userEmail: string;
   eventType: SubscriptionEventType;
-  plan: 'pro' | 'enterprise';
-  previousPlan?: 'free' | 'pro' | 'enterprise';
+  plan: 'pro' | 'promax' | 'enterprise';
+  previousPlan?: 'free' | 'pro' | 'promax' | 'enterprise';
   currency: 'usd' | 'mxn';
   mrr: number; // MRR en la moneda original
   mrrMxn: number; // MRR convertido a MXN
@@ -203,6 +203,7 @@ export interface LTVData {
   avgSubscriptionMonths: number;
   byPlan: {
     pro: { ltv: number; avgMonths: number };
+    promax: { ltv: number; avgMonths: number };
     enterprise: { ltv: number; avgMonths: number };
   };
 }

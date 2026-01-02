@@ -291,47 +291,61 @@ export class GoalsService {
     const actual: GoalTargets = {};
 
     // Obtener métricas base en paralelo
-    const [revenueData, newUsers, proConversions] = await Promise.all([
-      this.firestoreService.getRevenueByPeriod(startDate, endDate),
-      this.firestoreService.getNewUsersInPeriod(startDate, endDate),
-      this.firestoreService.getProConversionsInPeriod(startDate, endDate),
+    // NOTA: newUsers y proConversions son TOTALES acumulados, no del período
+    const [revenueData, totalUsers, usersByPlan, expenseSummary] = await Promise.all([
+      this.firestoreService.getRevenueByPeriod(startDate, endDate), // Revenue del mes
+      this.firestoreService.getUsersCount(), // Total usuarios actuales
+      this.firestoreService.getUsersByPlan(), // { free, pro, enterprise }
+      this.firestoreService.getExpenseSummary(startDate, endDate), // Gastos del mes
     ]);
 
-    // Convertir ingresos USD a MXN para revenue
-    let revenueMxn = revenueData.totalMxn;
-    if (revenueData.totalUsd > 0) {
+    // Calcular revenue en USD (convertir MXN a USD si es necesario)
+    let revenueUsd = revenueData.totalUsd;
+    if (revenueData.totalMxn > 0) {
       try {
-        const conversion = await this.exchangeRateService.convertUsdToMxn(
-          revenueData.totalUsd,
-          this.firestoreService,
-        );
-        revenueMxn += conversion.amountMxn;
+        // Obtener tipo de cambio y convertir MXN a USD
+        const rate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+        revenueUsd += revenueData.totalMxn / rate;
       } catch {
-        revenueMxn += revenueData.totalUsd * 20;
+        revenueUsd += revenueData.totalMxn / 20; // Fallback rate
       }
     }
+
+    // Total de suscriptores de pago (pro + promax + enterprise)
+    const totalProSubscribers = usersByPlan.pro + usersByPlan.promax + usersByPlan.enterprise;
 
     // Mapear métricas disponibles
     for (const key of metricKeys) {
       switch (key) {
         case 'revenue':
-          actual[key] = revenueMxn;
+          // Revenue en USD (redondear a 2 decimales)
+          actual[key] = Math.round(revenueUsd * 100) / 100;
           break;
         case 'newUsers':
-          actual[key] = newUsers;
+          // Total de usuarios registrados (meta acumulada, no del período)
+          actual[key] = totalUsers;
           break;
         case 'proConversions':
-          actual[key] = proConversions;
+          // Total de suscriptores Pro actuales (meta acumulada, no del período)
+          actual[key] = totalProSubscribers;
           break;
         case 'conversionRate':
-          // Tasa de conversión = (proConversions / newUsers) * 100
-          actual[key] = newUsers > 0 ? Math.round((proConversions / newUsers) * 10000) / 100 : 0;
+          // Tasa de conversión = (suscriptores pro / total usuarios) * 100
+          actual[key] = totalUsers > 0 ? Math.round((totalProSubscribers / totalUsers) * 10000) / 100 : 0;
+          break;
+        case 'profit':
+          // Utilidad en USD = Ingresos USD - Gastos convertidos a USD
+          const expensesUsd = expenseSummary.totalMxn / 20; // Aproximación, los gastos están en MXN
+          actual[key] = Math.round((revenueUsd - expensesUsd) * 100) / 100;
+          break;
+        case 'adsSpend':
+          // Gastos en advertising del mes (convertir de MXN a USD)
+          const adsInMxn = expenseSummary.byCategory?.advertising || 0;
+          actual[key] = Math.round((adsInMxn / 20) * 100) / 100;
           break;
         case 'traffic':
-        case 'adsSpend':
         case 'cac':
-          // Estas métricas requieren datos externos o manuales
-          // Por ahora devolvemos 0, se pueden agregar más fuentes de datos
+          // Estas métricas requieren datos externos
           actual[key] = 0;
           break;
         default:
