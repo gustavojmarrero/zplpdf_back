@@ -129,6 +129,16 @@ export class EmailService {
   }
 
   /**
+   * Replace template variables with actual values
+   * Supports {variableName} syntax
+   */
+  private replaceVariables(text: string, data: Record<string, any>): string {
+    return text.replace(/\{(\w+)\}/g, (match, key) => {
+      return data[key] !== undefined ? String(data[key]) : match;
+    });
+  }
+
+  /**
    * Send a single email from the queue
    */
   private async sendEmail(queueItem: {
@@ -141,24 +151,53 @@ export class EmailService {
     metadata?: Record<string, any>;
   }): Promise<void> {
     try {
-      // Get email template
-      const template = getEmailTemplate(
-        queueItem.emailType as EmailType,
-        queueItem.abVariant as AbVariant,
-        queueItem.language as EmailLanguage,
-        {
+      let subject: string;
+      let html: string;
+      let text: string | undefined;
+
+      // Try to get template from Firestore first
+      const firestoreTemplate = await this.firestoreService.getEmailTemplateByKey(queueItem.emailType);
+
+      if (firestoreTemplate?.content) {
+        // Use content from Firestore (editable via frontend)
+        const lang = queueItem.language as EmailLanguage;
+        const content = firestoreTemplate.content[lang] || firestoreTemplate.content.en;
+
+        // Prepare template data with all available variables
+        const templateData = {
           displayName: queueItem.metadata?.displayName || 'there',
+          userName: queueItem.metadata?.displayName || 'there',
           email: queueItem.userEmail,
-        },
-      );
+          ...queueItem.metadata,
+        };
+
+        subject = this.replaceVariables(content.subject, templateData);
+        html = this.replaceVariables(content.body, templateData);
+        // Generate plain text from HTML (simple strip tags)
+        text = html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      } else {
+        // Fallback to hardcoded template (legacy support)
+        const template = getEmailTemplate(
+          queueItem.emailType as EmailType,
+          queueItem.abVariant as AbVariant,
+          queueItem.language as EmailLanguage,
+          {
+            displayName: queueItem.metadata?.displayName || 'there',
+            email: queueItem.userEmail,
+          },
+        );
+        subject = template.subject;
+        html = template.html;
+        text = template.text;
+      }
 
       // Send via Resend
       const result = await this.resend.emails.send({
         from: this.fromEmail,
         to: queueItem.userEmail,
-        subject: template.subject,
-        html: template.html,
-        text: template.text,
+        subject,
+        html,
+        text,
         tags: [
           { name: 'email_type', value: queueItem.emailType },
           { name: 'ab_variant', value: queueItem.abVariant },
@@ -516,6 +555,13 @@ export class EmailService {
     }
 
     try {
+      // Check if template is enabled in Firestore (controlled via frontend toggle)
+      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled(emailType);
+      if (!isTemplateEnabled) {
+        this.logger.debug(`Template ${emailType} is disabled, skipping`);
+        return null;
+      }
+
       // Check if user already received this email type in current period
       const hasEmail = await this.firestoreService.hasUserReceivedEmailInPeriod(
         userId,

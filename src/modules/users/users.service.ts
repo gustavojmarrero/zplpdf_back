@@ -367,16 +367,9 @@ export class UsersService {
    * Check if user has reached limit thresholds and trigger appropriate emails
    * Called after each successful conversion
    *
-   * NOTE: This is currently DISABLED. Emails will be enabled once the frontend
-   * configuration flow is ready. To enable, set LIMIT_EMAILS_ENABLED=true in env.
+   * The template must be enabled in Firestore (controlled via frontend toggle).
    */
   private async checkAndTriggerLimitEmails(userId: string, userPlan: 'free' | 'pro' | 'enterprise'): Promise<void> {
-    // Feature flag - disabled until frontend configuration is ready
-    const isLimitEmailsEnabled = process.env.LIMIT_EMAILS_ENABLED === 'true';
-    if (!isLimitEmailsEnabled) {
-      return;
-    }
-
     // Only trigger for free users
     if (userPlan !== 'free') {
       return;
