@@ -30,11 +30,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'Welcome to ZPLPDF!',
       es: '¡Bienvenido a ZPLPDF!',
       zh: '欢迎使用ZPLPDF！',
+      pt: 'Bem-vindo ao ZPLPDF!',
     },
     B: {
       en: 'Your ZPL journey starts now',
       es: 'Tu viaje ZPL comienza ahora',
       zh: '您的ZPL之旅现在开始',
+      pt: 'Sua jornada ZPL começa agora',
     },
   },
   tutorial: {
@@ -42,11 +44,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'Quick Tutorial: Convert your first ZPL',
       es: 'Tutorial rápido: Convierte tu primer ZPL',
       zh: '快速教程：转换您的第一个ZPL',
+      pt: 'Tutorial rápido: Converta seu primeiro ZPL',
     },
     B: {
       en: 'See ZPL to PDF in action',
       es: 'Ve ZPL a PDF en acción',
       zh: '查看ZPL转PDF的实际操作',
+      pt: 'Veja ZPL para PDF em ação',
     },
   },
   help: {
@@ -54,11 +58,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'Need help with ZPLPDF?',
       es: '¿Necesitas ayuda con ZPLPDF?',
       zh: '需要ZPLPDF的帮助吗？',
+      pt: 'Precisa de ajuda com o ZPLPDF?',
     },
     B: {
       en: "We noticed you haven't converted yet",
       es: 'Notamos que aún no has convertido',
       zh: '我们注意到您还没有转换',
+      pt: 'Notamos que você ainda não converteu',
     },
   },
   success_story: {
@@ -66,11 +72,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'How businesses use ZPLPDF',
       es: 'Cómo las empresas usan ZPLPDF',
       zh: '企业如何使用ZPLPDF',
+      pt: 'Como as empresas usam o ZPLPDF',
     },
     B: {
       en: "You're doing great!",
       es: '¡Lo estás haciendo genial!',
       zh: '你做得很棒！',
+      pt: 'Você está indo muito bem!',
     },
   },
   miss_you: {
@@ -78,11 +86,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'We miss you at ZPLPDF',
       es: 'Te extrañamos en ZPLPDF',
       zh: '我们在ZPLPDF想念你',
+      pt: 'Sentimos sua falta no ZPLPDF',
     },
     B: {
       en: 'Still struggling with ZPL?',
       es: '¿Aún tienes problemas con ZPL?',
       zh: '还在为ZPL烦恼吗？',
+      pt: 'Ainda com dificuldades com ZPL?',
     },
   },
   // Conversion emails
@@ -91,11 +101,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '⚠️ You\'ve used 80% of your monthly PDFs',
       es: '⚠️ Has usado el 80% de tus PDFs mensuales',
       zh: '⚠️ 您已使用本月PDF配额的80%',
+      pt: '⚠️ Você usou 80% dos seus PDFs mensais',
     },
     B: {
       en: '📊 Your monthly quota is almost full',
       es: '📊 Tu cuota mensual está casi llena',
       zh: '📊 您的月度配额即将用完',
+      pt: '📊 Sua cota mensal está quase cheia',
     },
   },
   limit_100_percent: {
@@ -103,11 +115,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '🚨 You\'ve reached your monthly limit - Get 20% OFF',
       es: '🚨 Has alcanzado tu límite mensual - Obtén 20% OFF',
       zh: '🚨 您已达到月度限制 - 享受8折优惠',
+      pt: '🚨 Você atingiu seu limite mensal - Ganhe 20% OFF',
     },
     B: {
       en: 'Your quota is exhausted - Upgrade now!',
       es: 'Tu cuota está agotada - ¡Actualiza ahora!',
       zh: '您的配额已用完 - 立即升级！',
+      pt: 'Sua cota esgotou - Atualize agora!',
     },
   },
   conversion_blocked: {
@@ -115,11 +129,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: 'Unlock your access now - 20% OFF',
       es: 'Desbloquea tu acceso ahora - 20% OFF',
       zh: '立即解锁您的访问权限 - 8折优惠',
+      pt: 'Desbloqueie seu acesso agora - 20% OFF',
     },
     B: {
       en: 'Continue working with ZPLPDF Pro',
       es: 'Continúa trabajando con ZPLPDF Pro',
       zh: '继续使用ZPLPDF Pro',
+      pt: 'Continue trabalhando com ZPLPDF Pro',
     },
   },
   high_usage: {
@@ -127,11 +143,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '🚀 Your business is growing fast!',
       es: '🚀 ¡Tu negocio está creciendo rápido!',
       zh: '🚀 您的业务正在快速增长！',
+      pt: '🚀 Seu negócio está crescendo rápido!',
     },
     B: {
       en: 'Projection: You\'ll run out of quota soon',
       es: 'Proyección: Agotarás tu cuota pronto',
       zh: '预测：您的配额即将用完',
+      pt: 'Projeção: Você esgotará sua cota em breve',
     },
   },
   // PRO Retention emails
@@ -140,11 +158,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '👋 {name}, your PRO account misses you',
       es: '👋 {name}, tu cuenta PRO te extraña',
       zh: '👋 {name}，您的PRO账户想念您',
+      pt: '👋 {name}, sua conta PRO sente sua falta',
     },
     B: {
       en: 'Your PRO benefits are waiting for you',
       es: 'Tus beneficios PRO te están esperando',
       zh: '您的PRO权益正在等您',
+      pt: 'Seus benefícios PRO estão esperando por você',
     },
   },
   pro_inactive_14_days: {
@@ -152,11 +172,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '{name}, can we help you? 🤝',
       es: '{name}, ¿podemos ayudarte? 🤝',
       zh: '{name}，我们能帮到您吗？🤝',
+      pt: '{name}, podemos ajudá-lo? 🤝',
     },
     B: {
       en: "We'd love to hear from you",
       es: 'Nos encantaría saber de ti',
       zh: '我们很想听听您的意见',
+      pt: 'Adoraríamos ouvir você',
     },
   },
   pro_inactive_30_days: {
@@ -164,11 +186,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '{name}, we want to hear from you',
       es: '{name}, queremos saber de ti',
       zh: '{name}，我们想了解您的情况',
+      pt: '{name}, queremos ouvir você',
     },
     B: {
       en: 'Your feedback matters to us',
       es: 'Tu opinión es importante para nosotros',
       zh: '您的反馈对我们很重要',
+      pt: 'Sua opinião é importante para nós',
     },
   },
   pro_power_user: {
@@ -176,11 +200,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '🌟 {name}, you are amazing!',
       es: '🌟 {name}, ¡eres increíble!',
       zh: '🌟 {name}，您太棒了！',
+      pt: '🌟 {name}, você é incrível!',
     },
     B: {
       en: 'Thank you for being a power user',
       es: 'Gracias por ser un power user',
       zh: '感谢您成为超级用户',
+      pt: 'Obrigado por ser um power user',
     },
   },
   // FREE Reactivation emails
@@ -189,11 +215,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '{name}, your ZPLPDF account is waiting',
       es: '{name}, tu cuenta ZPLPDF te espera',
       zh: '{name}，您的ZPLPDF账户在等您',
+      pt: '{name}, sua conta ZPLPDF está esperando',
     },
     B: {
       en: '🏷️ Create your first label in 30 seconds',
       es: '🏷️ Crea tu primera etiqueta en 30 segundos',
       zh: '🏷️ 30秒内创建您的第一个标签',
+      pt: '🏷️ Crie sua primeira etiqueta em 30 segundos',
     },
   },
   free_never_used_14d: {
@@ -201,11 +229,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '⏰ {name}, last call',
       es: '⏰ {name}, última llamada',
       zh: '⏰ {name}，最后提醒',
+      pt: '⏰ {name}, última chamada',
     },
     B: {
       en: 'Need help getting started?',
       es: '¿Necesitas ayuda para empezar?',
       zh: '需要帮助开始吗？',
+      pt: 'Precisa de ajuda para começar?',
     },
   },
   free_tried_abandoned: {
@@ -213,11 +243,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '{name}, we saw you started creating labels...',
       es: '{name}, vimos que empezaste a crear etiquetas...',
       zh: '{name}，我们看到您开始创建标签了...',
+      pt: '{name}, vimos que você começou a criar etiquetas...',
     },
     B: {
       en: 'How was your experience?',
       es: '¿Cómo fue tu experiencia?',
       zh: '您的体验如何？',
+      pt: 'Como foi sua experiência?',
     },
   },
   free_dormant_30d: {
@@ -225,11 +257,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '{name}, did you find what you were looking for?',
       es: '{name}, ¿encontraste lo que buscabas?',
       zh: '{name}，您找到需要的了吗？',
+      pt: '{name}, você encontrou o que procurava?',
     },
     B: {
       en: 'We\'d love your feedback',
       es: 'Nos encantaría saber tu opinión',
       zh: '我们很想听听您的反馈',
+      pt: 'Adoraríamos seu feedback',
     },
   },
   free_abandoned_60d: {
@@ -237,11 +271,13 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       en: '💔 {name}, we miss you',
       es: '💔 {name}, te extrañamos',
       zh: '💔 {name}，我们想念您',
+      pt: '💔 {name}, sentimos sua falta',
     },
     B: {
       en: 'A lot has changed at ZPLPDF',
       es: 'Mucho ha cambiado en ZPLPDF',
       zh: 'ZPLPDF有很多变化',
+      pt: 'Muita coisa mudou no ZPLPDF',
     },
   },
 };
@@ -252,6 +288,7 @@ function baseTemplate(content: string, language: EmailLanguage): string {
     en: 'You received this email because you signed up for ZPLPDF. If you no longer wish to receive these emails, you can unsubscribe at any time.',
     es: 'Recibiste este correo porque te registraste en ZPLPDF. Si ya no deseas recibir estos correos, puedes darte de baja en cualquier momento.',
     zh: '您收到此邮件是因为您注册了ZPLPDF。如果您不希望收到这些邮件，可以随时取消订阅。',
+    pt: 'Você recebeu este e-mail porque se cadastrou no ZPLPDF. Se não deseja mais receber estes e-mails, pode cancelar a inscrição a qualquer momento.',
   };
 
   return `
@@ -358,6 +395,20 @@ function getWelcomeContent(variant: AbVariant, lang: EmailLanguage, data: Templa
         </p>
         ${ctaButton('开始转换', appUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Olá ${data.displayName}!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Bem-vindo ao ZPLPDF! Estamos muito felizes em tê-lo conosco.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          O ZPLPDF é a forma mais fácil de converter seus arquivos ZPL para PDF. Seja trabalhando com etiquetas de envio,
+          códigos de barras ou qualquer conteúdo ZPL, nós temos você coberto.
+        </p>
+        <p style="margin: 0 0 24px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Pronto para começar? Clique no botão abaixo para converter seu primeiro arquivo ZPL:
+        </p>
+        ${ctaButton('Começar a Converter', appUrl)}
+      `,
     },
     B: {
       en: `
@@ -391,6 +442,17 @@ function getWelcomeContent(variant: AbVariant, lang: EmailLanguage, data: Templa
           您现在可以使用网络上最快的ZPL转PDF转换器。无需安装，无需复杂设置 - 只需粘贴您的ZPL代码，几秒钟内即可获得PDF。
         </p>
         ${ctaButton('立即尝试', appUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Sua jornada ZPL começa!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Olá ${data.displayName}, obrigado por se juntar ao ZPLPDF!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Agora você tem acesso ao conversor de ZPL para PDF mais rápido da web. Sem instalações, sem configurações
+          complicadas – apenas cole seu código ZPL e obtenha seu PDF em segundos.
+        </p>
+        ${ctaButton('Experimente Agora', appUrl)}
       `,
     },
   };
@@ -449,6 +511,21 @@ function getTutorialContent(variant: AbVariant, lang: EmailLanguage, data: Templ
         </p>
         ${ctaButton('转换您的第一个ZPL', appUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Tutorial Rápido</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Olá ${data.displayName}, notamos que você ainda não experimentou converter um arquivo ZPL. Aqui está um guia rápido para começar:
+        </p>
+        <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Cole seu código ZPL no editor</li>
+          <li>Selecione o tamanho da etiqueta (4x6, 4x4, etc.)</li>
+          <li>Clique em "Converter" e baixe seu PDF</li>
+        </ol>
+        <p style="margin: 0 0 24px; color: #374151; font-size: 16px; line-height: 1.6;">
+          É simples assim! Experimente agora:
+        </p>
+        ${ctaButton('Converta Seu Primeiro ZPL', appUrl)}
+      `,
     },
     B: {
       en: `
@@ -482,6 +559,17 @@ function getTutorialContent(variant: AbVariant, lang: EmailLanguage, data: Templ
           只需粘贴您的ZPL代码，见证奇迹发生。我们的转换器可以轻松处理运输标签、条形码和复杂布局。
         </p>
         ${ctaButton('见证奇迹', appUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Veja o ZPLPDF em Ação</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Olá ${data.displayName}! Quer ver como é fácil converter ZPL para PDF?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Basta colar seu código ZPL e ver a mágica acontecer. Nosso conversor lida com etiquetas de envio,
+          códigos de barras e layouts complexos com facilidade.
+        </p>
+        ${ctaButton('Veja a Mágica', appUrl)}
       `,
     },
   };
@@ -550,6 +638,24 @@ function getHelpContent(variant: AbVariant, lang: EmailLanguage, data: TemplateD
           或者直接回复这封邮件 - 我们很乐意帮助！
         </p>
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Precisa de Ajuda?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, notamos que voce ainda nao converteu nenhum arquivo ZPL. Podemos ajudar com algo?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Perguntas comuns com as quais podemos ajudar:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Como formatar o codigo ZPL corretamente</li>
+          <li>Escolher o tamanho de etiqueta correto</li>
+          <li>Lidar com multiplas etiquetas em um arquivo</li>
+        </ul>
+        ${ctaButton('Ver Documentacao', docsUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Ou simplesmente responda este email - ficaremos felizes em ajudar!
+        </p>
+      `,
     },
     B: {
       en: `
@@ -583,6 +689,17 @@ function getHelpContent(variant: AbVariant, lang: EmailLanguage, data: TemplateD
           入门很简单。只需粘贴您的ZPL代码并点击转换。如果您遇到任何问题，我们的文档有大多数常见问题的答案。
         </p>
         ${ctaButton('开始使用', appUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Tendo Problemas?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, notamos que voce se cadastrou mas ainda nao converteu nenhum arquivo. Nao se preocupe - estamos aqui para ajudar!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Comecar e facil. Basta colar seu codigo ZPL e clicar em converter. Se tiver algum problema,
+          nossa documentacao tem respostas para as perguntas mais comuns.
+        </p>
+        ${ctaButton('Comecar', appUrl)}
       `,
     },
   };
@@ -644,6 +761,22 @@ function getSuccessStoryContent(variant: AbVariant, lang: EmailLanguage, data: T
         </ul>
         ${ctaButton('升级到Pro', pricingUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Como Empresas Usam o ZPLPDF</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, otimo trabalho com suas conversoes! Voce ja converteu ${data.pdfCount || 'varios'} PDFs.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Voce sabia que empresas usam o ZPLPDF Pro para:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Converter ate 500 PDFs por mes</li>
+          <li>Processar ate 500 etiquetas por PDF</li>
+          <li>Converter multiplos arquivos de uma vez</li>
+          <li>Exportar para formatos PNG e JPEG</li>
+        </ul>
+        ${ctaButton('Atualizar para PRO', pricingUrl)}
+      `,
     },
     B: {
       en: `
@@ -677,6 +810,17 @@ function getSuccessStoryContent(variant: AbVariant, lang: EmailLanguage, data: T
           准备好更上一层楼了吗？使用ZPLPDF Pro，您可以获得更高的限制、批量处理和图像导出功能。
         </p>
         ${ctaButton('升级Pro', pricingUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Voce Esta Mandando Bem!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, estamos impressionados! Voce ja converteu ${data.pdfCount || 'varios'} PDFs com o ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Pronto para levar ao proximo nivel? Com o ZPLPDF Pro, voce obtem limites maiores, processamento em lote
+          e recursos de exportacao de imagens.
+        </p>
+        ${ctaButton('Ir para Pro', pricingUrl)}
       `,
     },
   };
@@ -722,6 +866,17 @@ function getMissYouContent(variant: AbVariant, lang: EmailLanguage, data: Templa
         </p>
         ${ctaButton('回来转换吧', appUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Sentimos Sua Falta!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, ja faz uma semana desde que voce se cadastrou no ZPLPDF, mas ainda nao vimos voce por aqui.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Estamos aqui sempre que voce precisar converter arquivos ZPL. Basta colar seu codigo e obter seu PDF instantaneamente -
+          nenhuma configuracao complicada necessaria.
+        </p>
+        ${ctaButton('Volte e Converta', appUrl)}
+      `,
     },
     B: {
       en: `
@@ -755,6 +910,16 @@ function getMissYouContent(variant: AbVariant, lang: EmailLanguage, data: Templa
           无论您在ZPL文件方面遇到什么挑战，我们都在这里帮助您。再试一次 - 您可能会惊讶于它有多简单。
         </p>
         ${ctaButton('再试一次', appUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Ainda com Dificuldades com ZPL?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, sabemos que ZPL pode ser complicado. E exatamente por isso que criamos o ZPLPDF - para facilitar sua vida.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Qualquer desafio que voce enfrente com arquivos ZPL, estamos aqui para ajudar. De outra chance - voce pode se surpreender com o quao facil pode ser.
+        </p>
+        ${ctaButton('Tente Novamente', appUrl)}
       `,
     },
   };
@@ -847,6 +1012,22 @@ function getLimit80Content(variant: AbVariant, lang: EmailLanguage, data: Templa
         </ul>
         ${ctaButton('查看计划', pricingUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Oi ${data.displayName}!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Voce usou <strong>80%</strong> da sua cota mensal de PDFs. Aqui esta seu uso atual:
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Para continuar convertendo sem interrupcao, considere atualizar para o ZPLPDF Pro:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li><strong>500 PDFs/mes</strong> em vez de 25</li>
+          <li><strong>500 etiquetas/PDF</strong> em vez de 100</li>
+          <li>Processamento em lote e exportacao de imagens</li>
+        </ul>
+        ${ctaButton('Ver Planos', pricingUrl)}
+      `,
     },
     B: {
       en: `
@@ -881,6 +1062,17 @@ function getLimit80Content(variant: AbVariant, lang: EmailLanguage, data: Templa
           立即升级到Pro，每月获得20倍更多的PDF，以及批量处理和图像导出功能。
         </p>
         ${ctaButton('升级到Pro', pricingUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Sua cota esta quase cheia</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, voce esta mandando bem com o ZPLPDF! Voce ja usou ${used} dos seus ${limit} PDFs mensais.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Atualize agora para Pro e ganhe 20x mais PDFs por mes, alem de processamento em lote e exportacao de imagens.
+        </p>
+        ${ctaButton('Atualizar para PRO', pricingUrl)}
       `,
     },
   };
@@ -956,6 +1148,26 @@ function getLimit100Content(variant: AbVariant, lang: EmailLanguage, data: Templ
         </ul>
         ${ctaButton('立即享受8折', checkoutUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">🚨 Limite Mensal Atingido</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, voce atingiu seu limite mensal de ${limit} PDFs.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Boas noticias!</strong> Use o codigo <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> para obter <strong>20% OFF</strong> no seu primeiro mes de Pro.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Com o Pro, voce tera:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>500 PDFs/mes (20x mais)</li>
+          <li>500 etiquetas por PDF (5x mais)</li>
+          <li>Processamento em lote</li>
+          <li>Exportacao de imagens (PNG/JPEG)</li>
+        </ul>
+        ${ctaButton('Ganhe 20% OFF Agora', checkoutUrl)}
+      `,
     },
     B: {
       en: `
@@ -990,6 +1202,17 @@ function getLimit100Content(variant: AbVariant, lang: EmailLanguage, data: Templ
           不要等到下个月！立即升级，继续工作。
         </p>
         ${ctaButton('立即升级', checkoutUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">Sua cota esta esgotada</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, voce usou todos os ${limit} PDFs deste mes.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Nao espere ate o proximo mes! Atualize agora e continue trabalhando imediatamente.
+        </p>
+        ${ctaButton('Atualizar Agora', checkoutUrl)}
       `,
     },
   };
@@ -1042,6 +1265,19 @@ function getBlockedContent(variant: AbVariant, lang: EmailLanguage, data: Templa
           升级后，新限制将立即生效。
         </p>
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #dc2626; font-size: 24px;">Desbloqueie Seu Acesso Agora</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, notamos que voce acabou de tentar converter um arquivo ZPL mas atingiu seu limite mensal.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Atualize agora e continue trabalhando imediatamente.</strong> Use o codigo <span style="background-color: #fef3c7; padding: 4px 8px; border-radius: 4px; font-weight: 700; color: #92400e;">${data.discountCode || 'UPGRADE20'}</span> para 20% OFF no seu primeiro mes.
+        </p>
+        ${ctaButton('Desbloquear - 20% OFF', checkoutUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Seus novos limites serao aplicados imediatamente apos a atualizacao.
+        </p>
+      `,
     },
     B: {
       en: `
@@ -1073,6 +1309,16 @@ function getBlockedContent(variant: AbVariant, lang: EmailLanguage, data: Templa
           使用ZPLPDF Pro，您将永远不会被阻止。每月获得500个PDF，批量处理等功能。
         </p>
         ${ctaButton('继续使用Pro', checkoutUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Continue com ZPLPDF Pro</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, voce tem estado ocupado! Voce usou todas as suas conversoes gratuitas deste mes.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Com o ZPLPDF Pro, voce nunca sera bloqueado novamente. Obtenha 500 PDFs/mes, processamento em lote e mais.
+        </p>
+        ${ctaButton('Continuar com Pro', checkoutUrl)}
       `,
     },
   };
@@ -1198,6 +1444,42 @@ function getHighUsageContent(variant: AbVariant, lang: EmailLanguage, data: Temp
         </table>
         ${ctaButton('升级到Pro', pricingUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🚀 Seu negocio esta crescendo!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, notamos que voce tem convertido cerca de <strong>${avgPerDay} PDFs por dia</strong> recentemente. Isso e otimo!
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Nesse ritmo, voce atingira seu limite mensal em cerca de <strong>${daysToLimit} dias</strong>.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Atualize para Pro agora para evitar interrupcoes:
+        </p>
+        <table role="presentation" style="width: 100%; margin: 16px 0; border-collapse: collapse; border: 1px solid #e5e7eb; border-radius: 8px;">
+          <tr style="background-color: #f9fafb;">
+            <th style="padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb;"></th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Gratis</th>
+            <th style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; color: #2563eb; font-weight: 700;">Pro</th>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">PDFs/mes</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">25</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">Etiquetas/PDF</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb;">100</td>
+            <td style="padding: 12px; text-align: center; border-bottom: 1px solid #e5e7eb; font-weight: 600;">500</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px;">Lote e Export Imagens</td>
+            <td style="padding: 12px; text-align: center;">❌</td>
+            <td style="padding: 12px; text-align: center;">✅</td>
+          </tr>
+        </table>
+        ${ctaButton('Atualizar para PRO', pricingUrl)}
+      `,
     },
     B: {
       en: `
@@ -1232,6 +1514,17 @@ function getHighUsageContent(variant: AbVariant, lang: EmailLanguage, data: Temp
           立即升级，确保您的业务不间断服务。
         </p>
         ${ctaButton('升级到Pro', pricingUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Projecao: Limite em ${daysToLimit} dias</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${data.displayName}, com base no seu padrao de uso (${avgPerDay} PDFs/dia), voce atingira seu limite mensal em cerca de ${daysToLimit} dias.
+        </p>
+        ${progressBar(used, limit)}
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Atualize agora para garantir servico ininterrupto para seu negocio.
+        </p>
+        ${ctaButton('Atualizar para PRO', pricingUrl)}
       `,
     },
   };
@@ -1305,6 +1598,25 @@ function getProInactive7DaysContent(variant: AbVariant, lang: EmailLanguage, dat
         </p>
         ${ctaButton('开始转换', appUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">👋 Sentimos Sua Falta!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, ja faz uma semana desde sua ultima conversao no ZPLPDF. Sua conta PRO esta pronta e esperando!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Como usuario PRO, voce tem acesso a:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>500 PDFs por mes</li>
+          <li>500 etiquetas por PDF</li>
+          <li>Processamento em lote</li>
+          <li>Exportacao de imagens (PNG/JPEG)</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Nao deixe seus beneficios sem usar!
+        </p>
+        ${ctaButton('Comecar a Converter', appUrl)}
+      `,
     },
     B: {
       en: `
@@ -1336,6 +1648,16 @@ function getProInactive7DaysContent(variant: AbVariant, lang: EmailLanguage, dat
           如果您有任何问题或需要帮助，我们随时为您服务。只需回复此邮件即可。
         </p>
         ${ctaButton('前往ZPLPDF', appUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Seus Beneficios PRO Te Esperam</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, sua conta ZPLPDF PRO esta quieta ha uma semana. Esta tudo bem?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Se voce tiver algum problema ou precisar de ajuda, estamos aqui para voce. Basta responder a este email.
+        </p>
+        ${ctaButton('Ir para ZPLPDF', appUrl)}
       `,
     },
   };
@@ -1407,6 +1729,25 @@ function getProInactive14DaysContent(variant: AbVariant, lang: EmailLanguage, da
         </p>
         ${ctaButton('联系支持', 'mailto:' + supportEmail)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🤝 Podemos Ajudar?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, notamos que voce nao usou o ZPLPDF nas ultimas 2 semanas. Gostavamos de saber como podemos ajudar.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Voce esta enfrentando algum desses problemas?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Problemas tecnicos com conversoes?</li>
+          <li>Precisa de ajuda com um formato ZPL especifico?</li>
+          <li>Procurando uma funcionalidade que nao temos?</li>
+          <li>Suas necessidades de negocio mudaram?</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Responda a este email e conte-nos. Estamos aqui para ajudar!
+        </p>
+        ${ctaButton('Contatar Suporte', 'mailto:' + supportEmail)}
+      `,
     },
     B: {
       en: `
@@ -1438,6 +1779,16 @@ function getProInactive14DaysContent(variant: AbVariant, lang: EmailLanguage, da
           您介意花一分钟告诉我们您的体验吗？只需回复此邮件分享您的想法。
         </p>
         ${ctaButton('分享反馈', 'mailto:' + supportEmail + '?subject=ZPLPDF Feedback')}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Adorariamos Sua Opiniao</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, sua opiniao e importante para nos. Como usuario PRO, seu feedback nos ajuda a melhorar o ZPLPDF para todos.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Voce se importaria de tirar um minuto para nos contar sobre sua experiencia? Basta responder a este email com qualquer comentario.
+        </p>
+        ${ctaButton('Compartilhar Feedback', 'mailto:' + supportEmail + '?subject=ZPLPDF Feedback')}
       `,
     },
   };
@@ -1491,6 +1842,19 @@ function getProInactive30DaysContent(variant: AbVariant, lang: EmailLanguage, da
         </p>
         ${ctaButton('给我们留言', 'mailto:' + supportEmail + '?subject=PRO用户反馈')}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Queremos Ouvir Voce</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, ja faz um mes desde sua ultima atividade no ZPLPDF. Queremos genuinamente saber como as coisas estao indo.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Seu feedback e inestimavel para nos. Se houver algo que possamos fazer melhor ou uma razao pela qual o ZPLPDF nao esta atendendo suas necessidades, por favor nos avise.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Basta responder a este email - lemos e respondemos cada mensagem.
+        </p>
+        ${ctaButton('Envie-nos uma Mensagem', 'mailto:' + supportEmail + '?subject=Feedback de Usuario PRO')}
+      `,
     },
     B: {
       en: `
@@ -1522,6 +1886,16 @@ function getProInactive30DaysContent(variant: AbVariant, lang: EmailLanguage, da
           无论是建议、问题还是打个招呼 - 我们都在倾听。
         </p>
         ${ctaButton('分享您的想法', 'mailto:' + supportEmail)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Seu Feedback Importa</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, notamos que voce nao tem usado o ZPLPDF ultimamente. Gostariamos de ouvir voce.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Seja uma sugestao, uma preocupacao ou apenas para dizer oi - estamos ouvindo.
+        </p>
+        ${ctaButton('Compartilhe Seus Pensamentos', 'mailto:' + supportEmail)}
       `,
     },
   };
@@ -1585,6 +1959,22 @@ function getProPowerUserContent(variant: AbVariant, lang: EmailLanguage, data: T
           感谢您成为我们出色的客户！🙏
         </p>
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🌟 Voce E Incrivel!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, uau! Voce converteu <strong>${pdfsThisMonth} PDFs</strong> este mes. Voce e um dos nossos power users!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Estamos muito felizes que o ZPLPDF esta ajudando seu negocio. Voce estaria disposto a compartilhar sua experiencia com outros?
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Um breve depoimento seu significaria muito para nos e ajudaria outras empresas a descobrir o ZPLPDF.
+        </p>
+        ${ctaButton('Compartilhe Sua Historia', testimonialUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Obrigado por ser um cliente incrivel! 🙏
+        </p>
+      `,
     },
     B: {
       en: `
@@ -1616,6 +2006,16 @@ function getProPowerUserContent(variant: AbVariant, lang: EmailLanguage, data: T
           我们很想在网站上展示您的业务。有兴趣成为ZPLPDF的成功案例吗？
         </p>
         ${ctaButton('告诉我们您的业务', testimonialUrl)}
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Obrigado, Power User!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, com ${pdfsThisMonth} PDFs convertidos este mes, voce claramente esta obtendo valor do ZPLPDF. Isso nos deixa felizes!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Adorariamos apresentar seu negocio em nosso site. Interessado em ser uma historia de sucesso do ZPLPDF?
+        </p>
+        ${ctaButton('Conte-nos Sobre Seu Negocio', testimonialUrl)}
       `,
     },
   };
@@ -1683,6 +2083,23 @@ function getFreeNeverUsed7dContent(variant: AbVariant, lang: EmailLanguage, data
           您的免费计划每月包含25个PDF。使用它们吧！
         </p>
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Sua Conta Esta Pronta!</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, voce se cadastrou no ZPLPDF ha uma semana mas ainda nao criou sua primeira etiqueta.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          🎯 <strong>Voce sabia que pode criar etiquetas profissionais em 30 segundos?</strong>
+        </p>
+        ${ctaButton('CRIAR MINHA PRIMEIRA ETIQUETA →', appUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Nao tem codigo ZPL? Sem problema. Temos exemplos prontos para experimentar:
+        </p>
+        ${ctaButton('VER EXEMPLOS DE ETIQUETAS →', examplesUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Seu plano gratuito inclui 25 PDFs por mes. Use-os!
+        </p>
+      `,
     },
     B: {
       en: `
@@ -1737,6 +2154,24 @@ function getFreeNeverUsed7dContent(variant: AbVariant, lang: EmailLanguage, data
         ${ctaButton('立即试用 →', appUrl)}
         <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
           需要示例？<a href="${examplesUrl}" style="color: #2563eb;">查看我们的示例标签</a>
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">🏷️ 30 Segundos para Sua Primeira Etiqueta</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, criar etiquetas com ZPLPDF e super facil:
+        </p>
+        <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Cole seu codigo ZPL</li>
+          <li>Clique em Converter</li>
+          <li>Baixe seu PDF</li>
+        </ol>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          E so isso! Sem software para instalar, sem configuracao complicada.
+        </p>
+        ${ctaButton('EXPERIMENTE AGORA →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Precisa de exemplos? <a href="${examplesUrl}" style="color: #2563eb;">Veja nossas etiquetas de exemplo</a>
         </p>
       `,
     },
@@ -1807,6 +2242,24 @@ function getFreeNeverUsed14dContent(variant: AbVariant, lang: EmailLanguage, dat
         </p>
         ${ctaButton('立即试用ZPLPDF →', appUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⏰ Ultima Chamada</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, ja fazem 2 semanas desde que voce se cadastrou e ainda nao experimentou o ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Algo esta te impedindo?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Nao tem codigo ZPL? → <a href="${examplesUrl}" style="color: #2563eb;">Ver exemplos</a></li>
+          <li>Tem duvidas? → <a href="${faqUrl}" style="color: #2563eb;">Ver FAQ</a></li>
+          <li>Precisa de ajuda? → Responda este email</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Sua conta gratuita ainda esta ativa. Se voce nao usa-la, vamos mante-la caso mude de ideia.
+        </p>
+        ${ctaButton('EXPERIMENTAR ZPLPDF AGORA →', appUrl)}
+      `,
     },
     B: {
       en: `
@@ -1846,6 +2299,19 @@ function getFreeNeverUsed14dContent(variant: AbVariant, lang: EmailLanguage, dat
         ${ctaButton('查看示例标签 →', examplesUrl)}
         <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
           或者如果您愿意，只需回复此邮件告诉我们您需要什么。我们随时为您提供帮助！
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Precisa de Ajuda para Comecar?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, notamos que voce ainda nao criou sua primeira etiqueta. Tudo bem!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Muitos usuarios acham util comecar com nossos codigos ZPL de exemplo. Voce pode copiar e colar diretamente e ver como e facil.
+        </p>
+        ${ctaButton('VER ETIQUETAS DE EXEMPLO →', examplesUrl)}
+        <p style="margin: 24px 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Ou se preferir, basta responder a este email e nos dizer o que voce precisa. Estamos aqui para ajudar!
         </p>
       `,
     },
@@ -1910,6 +2376,22 @@ function getFreeTriedAbandonedContent(variant: AbVariant, lang: EmailLanguage, d
         </p>
         ${ctaButton('继续创建标签 →', appUrl)}
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Vimos Que Voce Comecou...</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, ha alguns dias voce criou ${pdfCount} etiqueta${pdfCount > 1 ? 's' : ''} no ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Tudo correu bem?</strong>
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Se houve algum problema ou voce tem sugestoes, adorariamos saber. Basta responder a este email.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          A proposito, voce ainda tem <strong>${pdfsAvailable} PDFs gratuitos</strong> disponiveis este mes.
+        </p>
+        ${ctaButton('CONTINUAR CRIANDO ETIQUETAS →', appUrl)}
+      `,
     },
     B: {
       en: `
@@ -1958,6 +2440,22 @@ function getFreeTriedAbandonedContent(variant: AbVariant, lang: EmailLanguage, d
         ${ctaButton('创建更多标签 →', appUrl)}
         <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
           您本月还剩${pdfsAvailable}个免费PDF。
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Como Foi Sua Experiencia?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, voce criou ${pdfCount} etiqueta${pdfCount > 1 ? 's' : ''} conosco recentemente. Adorariamos saber como foi!
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Houve algo que poderia ter sido melhor? Seu feedback nos ajuda a melhorar.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Basta responder a este email com seus comentarios. Lemos cada resposta!
+        </p>
+        ${ctaButton('CRIAR MAIS ETIQUETAS →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Voce ainda tem ${pdfsAvailable} PDFs gratuitos restantes este mes.
         </p>
       `,
     },
@@ -2031,6 +2529,25 @@ function getFreeDormant30dContent(variant: AbVariant, lang: EmailLanguage, data:
           如果您决定回来，您的账户仍然有效，有${pdfsAvailable}个免费PDF可用。
         </p>
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Voce Encontrou o Que Procurava?</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, ja faz um mes desde sua ultima visita ao ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Queremos melhorar. Poderia nos contar o que aconteceu?</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Encontrei outra solucao</li>
+          <li>Era muito complicado</li>
+          <li>Nao tenho codigo ZPL regularmente</li>
+          <li>Outro motivo</li>
+        </ul>
+        ${ctaButton('RESPONDER PESQUISA (30 seg) →', surveyUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Se decidir voltar, sua conta ainda esta ativa com ${pdfsAvailable} PDFs gratuitos.
+        </p>
+      `,
     },
     B: {
       en: `
@@ -2079,6 +2596,22 @@ function getFreeDormant30dContent(variant: AbVariant, lang: EmailLanguage, data:
         ${ctaButton('访问ZPLPDF →', appUrl)}
         <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
           您的账户仍然有效，有${pdfsAvailable}个免费PDF可用。
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Adorariamos Sua Opiniao</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, notamos que voce nao aparece ha um tempo.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Sua opiniao e importante para nos. Se voce tiver um minuto, gostariamos de saber o que poderiamos fazer melhor.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Basta responder a este email - lemos cada resposta e usamos o feedback para melhorar.
+        </p>
+        ${ctaButton('VISITAR ZPLPDF →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Sua conta permanece ativa com ${pdfsAvailable} PDFs gratuitos.
         </p>
       `,
     },
@@ -2156,6 +2689,27 @@ function getFreeAbandoned60dContent(variant: AbVariant, lang: EmailLanguage, dat
           如果您不再需要这项服务，我们理解。您的账户将保持活跃，以备您改变主意。
         </p>
       `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">💔 Sentimos Sua Falta</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, ja faz um tempo desde que nos vimos.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Muita coisa melhorou no ZPLPDF desde sua ultima visita:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>✨ Nova interface mais rapida</li>
+          <li>🔧 Melhor suporte a comandos ZPL</li>
+          <li>📱 Funciona melhor em dispositivos moveis</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Nos de uma segunda chance?</strong>
+        </p>
+        ${ctaButton('EXPERIMENTAR ZPLPDF NOVAMENTE →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Se voce nao precisar mais do servico, entendemos. Sua conta permanecera ativa caso mude de ideia.
+        </p>
+      `,
     },
     B: {
       en: `
@@ -2213,6 +2767,25 @@ function getFreeAbandoned60dContent(variant: AbVariant, lang: EmailLanguage, dat
         ${ctaButton('查看新功能 →', appUrl)}
         <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
           您的账户在等待您。
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Muita Coisa Mudou no ZPLPDF</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, estivemos ocupados melhorando o ZPLPDF desde sua ultima visita.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Nossos usuarios pediram, e nos entregamos:
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>Conversoes mais rapidas</li>
+          <li>Melhores previas de etiquetas</li>
+          <li>Experiencia mobile aprimorada</li>
+          <li>Mais comandos ZPL suportados</li>
+        </ul>
+        ${ctaButton('VER AS NOVIDADES →', appUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Sua conta esta esperando por voce.
         </p>
       `,
     },

@@ -43,6 +43,12 @@ export class TemplateContentDto {
   @ValidateNested()
   @Type(() => EmailContentDto)
   zh?: EmailContentDto;
+
+  @ApiPropertyOptional({ type: EmailContentDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => EmailContentDto)
+  pt?: EmailContentDto;
 }
 
 // ============== Update Template DTO ==============
@@ -93,9 +99,9 @@ export class RollbackTemplateDto {
 // ============== Test Email DTO ==============
 
 export class TestEmailDto {
-  @ApiProperty({ enum: ['en', 'es', 'zh'], example: 'en', description: 'Language for test email' })
-  @IsEnum(['en', 'es', 'zh'])
-  language: 'en' | 'es' | 'zh';
+  @ApiProperty({ enum: ['en', 'es', 'zh', 'pt'], example: 'en', description: 'Language for test email' })
+  @IsEnum(['en', 'es', 'zh', 'pt'])
+  language: 'en' | 'es' | 'zh' | 'pt';
 }
 
 // ============== Response DTOs ==============
@@ -127,12 +133,14 @@ export class EmailTemplateResponseDto {
       en: { subject: 'We miss you!', body: '<html>...</html>' },
       es: { subject: 'Te extrañamos!', body: '<html>...</html>' },
       zh: { subject: '我们想念你!', body: '<html>...</html>' },
+      pt: { subject: 'Sentimos sua falta!', body: '<html>...</html>' },
     },
   })
   content: {
     en: { subject: string; body: string };
     es: { subject: string; body: string };
     zh: { subject: string; body: string };
+    pt?: { subject: string; body: string };
   };
 
   @ApiProperty({ example: ['userName', 'daysInactive', 'appUrl'] })
@@ -166,6 +174,7 @@ export class TemplateVersionResponseDto {
     en: { subject: string; body: string };
     es: { subject: string; body: string };
     zh: { subject: string; body: string };
+    pt?: { subject: string; body: string };
   };
 
   @ApiProperty({ example: 7 })

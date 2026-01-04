@@ -112,6 +112,11 @@ Uses Firebase Auth ID tokens. Guards:
 - `AdminAuthGuard` - Checks user email against `ADMIN_EMAILS` env var
 - `CronAuthGuard` - Validates `X-Cron-Secret` header for scheduled jobs
 
+### GitHub Repository
+
+- **Repo:** `gustavojmarrero/zplpdf_back`
+- **URL:** https://github.com/gustavojmarrero/zplpdf_back
+
 ### Google Cloud Project
 
 - **Project ID:** `intranet-guatever`

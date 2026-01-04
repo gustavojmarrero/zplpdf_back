@@ -270,7 +270,7 @@ export class EmailTemplatesController {
     description: 'Returns rendered template with sample data',
   })
   @ApiParam({ name: 'id', description: 'Template ID' })
-  @ApiQuery({ name: 'language', enum: ['en', 'es', 'zh'], required: false })
+  @ApiQuery({ name: 'language', enum: ['en', 'es', 'zh', 'pt'], required: false })
   @ApiResponse({
     status: 200,
     description: 'Preview generated successfully',
@@ -279,7 +279,7 @@ export class EmailTemplatesController {
   @ApiResponse({ status: 404, description: 'Template not found' })
   async getPreview(
     @Param('id') id: string,
-    @Query('language') language: 'en' | 'es' | 'zh' = 'en',
+    @Query('language') language: 'en' | 'es' | 'zh' | 'pt' = 'en',
   ): Promise<TemplatePreview> {
     const template = await this.firestoreService.getEmailTemplateById(id);
     if (!template) {
@@ -293,7 +293,7 @@ export class EmailTemplatesController {
 
   private generatePreview(
     template: EmailTemplate,
-    language: 'en' | 'es' | 'zh',
+    language: 'en' | 'es' | 'zh' | 'pt',
   ): TemplatePreview {
     const sampleData: Record<string, string | number> = {
       userName: 'John Doe',

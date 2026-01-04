@@ -26,7 +26,7 @@ export type EmailEventType = 'delivered' | 'opened' | 'clicked' | 'bounced' | 'c
 
 export type AbVariant = 'A' | 'B';
 
-export type EmailLanguage = 'en' | 'es' | 'zh';
+export type EmailLanguage = 'en' | 'es' | 'zh' | 'pt';
 
 // ============== Email Queue ==============
 
@@ -262,6 +262,7 @@ export interface EmailTemplate {
     en: EmailTemplateContent;
     es: EmailTemplateContent;
     zh: EmailTemplateContent;
+    pt?: EmailTemplateContent;
   };
   variables: string[];
   createdAt: Date;

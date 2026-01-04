@@ -690,9 +690,11 @@ export class EmailService {
 
     const spanishCountries = ['MX', 'ES', 'AR', 'CO', 'CL', 'PE', 'VE', 'EC', 'GT', 'CU', 'BO', 'DO', 'HN', 'PY', 'SV', 'NI', 'CR', 'PA', 'UY'];
     const chineseCountries = ['CN', 'TW', 'HK', 'SG'];
+    const portugueseCountries = ['BR', 'PT', 'AO', 'MZ', 'CV', 'GW', 'ST', 'TL'];
 
     if (spanishCountries.includes(country.toUpperCase())) return 'es';
     if (chineseCountries.includes(country.toUpperCase())) return 'zh';
+    if (portugueseCountries.includes(country.toUpperCase())) return 'pt';
 
     return 'en';
   }
