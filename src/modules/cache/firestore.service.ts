@@ -5160,11 +5160,20 @@ export class FirestoreService {
       const newVersion = (currentData.version || 1) + 1;
       const now = new Date();
 
-      // Merge content updates
+      // Merge content updates with A/B variant structure
       const updatedContent = {
-        en: { ...currentData.content.en, ...data.content?.en },
-        es: { ...currentData.content.es, ...data.content?.es },
-        zh: { ...currentData.content.zh, ...data.content?.zh },
+        A: {
+          en: { ...currentData.content?.A?.en, ...data.content?.A?.en },
+          es: { ...currentData.content?.A?.es, ...data.content?.A?.es },
+          zh: { ...currentData.content?.A?.zh, ...data.content?.A?.zh },
+          pt: { ...currentData.content?.A?.pt, ...data.content?.A?.pt },
+        },
+        B: {
+          en: { ...currentData.content?.B?.en, ...data.content?.B?.en },
+          es: { ...currentData.content?.B?.es, ...data.content?.B?.es },
+          zh: { ...currentData.content?.B?.zh, ...data.content?.B?.zh },
+          pt: { ...currentData.content?.B?.pt, ...data.content?.B?.pt },
+        },
       };
 
       const updatePayload: Record<string, any> = {

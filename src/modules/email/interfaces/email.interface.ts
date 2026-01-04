@@ -250,6 +250,13 @@ export interface EmailTemplateContent {
   body: string;
 }
 
+export interface LanguageContent {
+  en: EmailTemplateContent;
+  es: EmailTemplateContent;
+  zh: EmailTemplateContent;
+  pt?: EmailTemplateContent;
+}
+
 export interface EmailTemplate {
   id: string;
   templateType: TemplateType;
@@ -259,10 +266,8 @@ export interface EmailTemplate {
   triggerDays: number;
   enabled: boolean;
   content: {
-    en: EmailTemplateContent;
-    es: EmailTemplateContent;
-    zh: EmailTemplateContent;
-    pt?: EmailTemplateContent;
+    A: LanguageContent;
+    B: LanguageContent;
   };
   variables: string[];
   createdAt: Date;
@@ -296,7 +301,10 @@ export interface CreateEmailTemplateData {
 }
 
 export interface UpdateEmailTemplateData {
-  content?: Partial<EmailTemplate['content']>;
+  content?: {
+    A?: Partial<LanguageContent>;
+    B?: Partial<LanguageContent>;
+  };
   triggerDays?: number;
   enabled?: boolean;
   name?: string;

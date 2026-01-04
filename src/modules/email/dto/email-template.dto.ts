@@ -25,7 +25,7 @@ export class EmailContentDto {
   body: string;
 }
 
-export class TemplateContentDto {
+export class LanguageContentDto {
   @ApiPropertyOptional({ type: EmailContentDto })
   @IsOptional()
   @ValidateNested()
@@ -49,6 +49,20 @@ export class TemplateContentDto {
   @ValidateNested()
   @Type(() => EmailContentDto)
   pt?: EmailContentDto;
+}
+
+export class TemplateContentDto {
+  @ApiPropertyOptional({ type: LanguageContentDto, description: 'Variant A content by language' })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LanguageContentDto)
+  A?: LanguageContentDto;
+
+  @ApiPropertyOptional({ type: LanguageContentDto, description: 'Variant B content by language' })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LanguageContentDto)
+  B?: LanguageContentDto;
 }
 
 // ============== Update Template DTO ==============
@@ -130,17 +144,33 @@ export class EmailTemplateResponseDto {
 
   @ApiProperty({
     example: {
-      en: { subject: 'We miss you!', body: '<html>...</html>' },
-      es: { subject: 'Te extrañamos!', body: '<html>...</html>' },
-      zh: { subject: '我们想念你!', body: '<html>...</html>' },
-      pt: { subject: 'Sentimos sua falta!', body: '<html>...</html>' },
+      A: {
+        en: { subject: 'We miss you!', body: '<html>...</html>' },
+        es: { subject: 'Te extrañamos!', body: '<html>...</html>' },
+        zh: { subject: '我们想念你!', body: '<html>...</html>' },
+        pt: { subject: 'Sentimos sua falta!', body: '<html>...</html>' },
+      },
+      B: {
+        en: { subject: 'Come back to ZPLPDF!', body: '<html>...</html>' },
+        es: { subject: 'Vuelve a ZPLPDF!', body: '<html>...</html>' },
+        zh: { subject: '回来ZPLPDF!', body: '<html>...</html>' },
+        pt: { subject: 'Volte para o ZPLPDF!', body: '<html>...</html>' },
+      },
     },
   })
   content: {
-    en: { subject: string; body: string };
-    es: { subject: string; body: string };
-    zh: { subject: string; body: string };
-    pt?: { subject: string; body: string };
+    A: {
+      en: { subject: string; body: string };
+      es: { subject: string; body: string };
+      zh: { subject: string; body: string };
+      pt?: { subject: string; body: string };
+    };
+    B: {
+      en: { subject: string; body: string };
+      es: { subject: string; body: string };
+      zh: { subject: string; body: string };
+      pt?: { subject: string; body: string };
+    };
   };
 
   @ApiProperty({ example: ['userName', 'daysInactive', 'appUrl'] })
@@ -171,10 +201,18 @@ export class TemplateVersionResponseDto {
 
   @ApiProperty()
   content: {
-    en: { subject: string; body: string };
-    es: { subject: string; body: string };
-    zh: { subject: string; body: string };
-    pt?: { subject: string; body: string };
+    A: {
+      en: { subject: string; body: string };
+      es: { subject: string; body: string };
+      zh: { subject: string; body: string };
+      pt?: { subject: string; body: string };
+    };
+    B: {
+      en: { subject: string; body: string };
+      es: { subject: string; body: string };
+      zh: { subject: string; body: string };
+      pt?: { subject: string; body: string };
+    };
   };
 
   @ApiProperty({ example: 7 })

@@ -11,7 +11,7 @@ import type {
   FreeReactivationResult,
   ReactivationEmailType,
 } from './interfaces/email.interface.js';
-import { getEmailTemplate } from './templates/email-templates.js';
+// Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
 @Injectable()
 export class EmailService {
@@ -140,6 +140,7 @@ export class EmailService {
 
   /**
    * Send a single email from the queue
+   * Uses Firestore templates with A/B variant support
    */
   private async sendEmail(queueItem: {
     id: string;
@@ -151,45 +152,40 @@ export class EmailService {
     metadata?: Record<string, any>;
   }): Promise<void> {
     try {
-      let subject: string;
-      let html: string;
-      let text: string | undefined;
-
-      // Try to get template from Firestore first
+      // Get template from Firestore (required - no fallback)
       const firestoreTemplate = await this.firestoreService.getEmailTemplateByKey(queueItem.emailType);
 
-      if (firestoreTemplate?.content) {
-        // Use content from Firestore (editable via frontend)
-        const lang = queueItem.language as EmailLanguage;
-        const content = firestoreTemplate.content[lang] || firestoreTemplate.content.en;
-
-        // Prepare template data with all available variables
-        const templateData = {
-          displayName: queueItem.metadata?.displayName || 'there',
-          userName: queueItem.metadata?.displayName || 'there',
-          email: queueItem.userEmail,
-          ...queueItem.metadata,
-        };
-
-        subject = this.replaceVariables(content.subject, templateData);
-        html = this.replaceVariables(content.body, templateData);
-        // Generate plain text from HTML (simple strip tags)
-        text = html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      } else {
-        // Fallback to hardcoded template (legacy support)
-        const template = getEmailTemplate(
-          queueItem.emailType as EmailType,
-          queueItem.abVariant as AbVariant,
-          queueItem.language as EmailLanguage,
-          {
-            displayName: queueItem.metadata?.displayName || 'there',
-            email: queueItem.userEmail,
-          },
-        );
-        subject = template.subject;
-        html = template.html;
-        text = template.text;
+      if (!firestoreTemplate?.content) {
+        throw new Error(`Template "${queueItem.emailType}" not found in Firestore`);
       }
+
+      const lang = queueItem.language as EmailLanguage;
+      const variant = queueItem.abVariant as AbVariant;
+
+      // Get variant content (A/B structure)
+      const variantContent = firestoreTemplate.content[variant];
+      if (!variantContent) {
+        throw new Error(`Variant "${variant}" not found for template "${queueItem.emailType}"`);
+      }
+
+      // Get language content with fallback to English
+      const langContent = variantContent[lang] || variantContent.en;
+      if (!langContent) {
+        throw new Error(`Language content not found for template "${queueItem.emailType}" variant "${variant}"`);
+      }
+
+      // Prepare template data with all available variables
+      const templateData = {
+        displayName: queueItem.metadata?.displayName || 'there',
+        userName: queueItem.metadata?.displayName || 'there',
+        email: queueItem.userEmail,
+        ...queueItem.metadata,
+      };
+
+      const subject = this.replaceVariables(langContent.subject, templateData);
+      const html = this.replaceVariables(langContent.body, templateData);
+      // Generate plain text from HTML (simple strip tags)
+      const text = html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 
       // Send via Resend
       const result = await this.resend.emails.send({

@@ -280,13 +280,14 @@ export class EmailTemplatesController {
   async getPreview(
     @Param('id') id: string,
     @Query('language') language: 'en' | 'es' | 'zh' | 'pt' = 'en',
+    @Query('variant') variant: 'A' | 'B' = 'A',
   ): Promise<TemplatePreview> {
     const template = await this.firestoreService.getEmailTemplateById(id);
     if (!template) {
       throw new NotFoundException(`Template with ID ${id} not found`);
     }
 
-    return this.generatePreview(template, language);
+    return this.generatePreview(template, language, variant);
   }
 
   // ============== Helper Methods ==============
@@ -294,6 +295,7 @@ export class EmailTemplatesController {
   private generatePreview(
     template: EmailTemplate,
     language: 'en' | 'es' | 'zh' | 'pt',
+    variant: 'A' | 'B' = 'A',
   ): TemplatePreview {
     const sampleData: Record<string, string | number> = {
       userName: 'John Doe',
@@ -310,7 +312,9 @@ export class EmailTemplatesController {
       unsubscribeUrl: 'https://zplpdf.com/unsubscribe?token=sample',
     };
 
-    const content = template.content[language] || template.content.en;
+    // Get content from variant (A/B) and language
+    const variantContent = template.content[variant] || template.content.A;
+    const content = variantContent[language] || variantContent.en;
     let subject = content.subject;
     let body = content.body;
 
