@@ -3287,6 +3287,7 @@ export class FirestoreService {
         id: doc.id,
         month: data.month,
         targets: data.targets,
+        baseline: data.baseline || {}, // Retrocompatibilidad: si no existe, devolver objeto vacío
         actual: data.actual,
         metrics: data.metrics,
         alerts: data.alerts,

@@ -7,6 +7,7 @@ import type {
   GoalAlerts,
   GoalMetricConfig,
   GoalHistoryItem,
+  MetricBehavior,
 } from '../../../common/interfaces/finance.interface.js';
 import { DEFAULT_GOAL_METRICS } from '../../../common/interfaces/finance.interface.js';
 
@@ -72,10 +73,15 @@ export class GoalsService {
       initialActual[key] = existing?.actual?.[key] || 0;
     }
 
+    // Calcular baseline para métricas acumulativas
+    // Si ya existe la meta, preservar el baseline original
+    const baseline = existing?.baseline || (await this.getBaselineForMonth(data.month, Object.keys(data.targets)));
+
     const goal: MonthlyGoal = {
       id: goalId,
       month: data.month,
       targets: data.targets,
+      baseline,
       actual: initialActual,
       metrics,
       alerts: existing?.alerts || {},
@@ -85,7 +91,7 @@ export class GoalsService {
     };
 
     await this.firestoreService.saveGoal(goal);
-    this.logger.log(`Set goals for ${data.month}: ${JSON.stringify(data.targets)}`);
+    this.logger.log(`Set goals for ${data.month}: ${JSON.stringify(data.targets)}, baseline: ${JSON.stringify(baseline)}`);
 
     return goal;
   }
@@ -118,27 +124,73 @@ export class GoalsService {
     // Usar métricas guardadas o defaults
     const metrics = goal.metrics || this.getRelevantDefaultMetrics(Object.keys(goal.targets));
 
-    // Calcular ritmo esperado
+    // Si no hay baseline guardado, calcularlo (retrocompatibilidad)
+    // Verificar si el objeto baseline tiene keys, no solo si existe
+    const hasBaseline = goal.baseline && Object.keys(goal.baseline).length > 0;
+    const baseline = hasBaseline ? goal.baseline : await this.getBaselineForMonth(targetMonth, Object.keys(goal.targets));
+
+    // Calcular ritmo esperado según tipo de métrica
     const paceMultiplier = daysElapsed / totalDays;
     const expectedPace: GoalTargets = {};
     for (const key of Object.keys(goal.targets)) {
-      expectedPace[key] = goal.targets[key] * paceMultiplier;
+      const metric = metrics.find((m) => m.key === key);
+      const behavior = metric?.behavior || this.inferBehavior(key);
+      const target = goal.targets[key];
+      const baselineValue = baseline[key] || 0;
+
+      switch (behavior) {
+        case 'cumulative':
+          // Para métricas acumulativas: baseline + (delta * progreso)
+          const delta = target - baselineValue;
+          expectedPace[key] = baselineValue + delta * paceMultiplier;
+          break;
+        case 'point_in_time':
+          // Para porcentajes: la meta es el valor objetivo (no prorratea)
+          expectedPace[key] = target;
+          break;
+        case 'monthly':
+        default:
+          // Para métricas mensuales: prorratea desde 0
+          expectedPace[key] = target * paceMultiplier;
+          break;
+      }
     }
 
-    // Calcular porcentajes de progreso
+    // Calcular porcentajes de progreso basado en el tipo de métrica
     const progress: Record<string, number> = {};
     for (const key of Object.keys(goal.targets)) {
       const target = goal.targets[key];
       const currentValue = current[key] || 0;
-      progress[key] = target > 0 ? Math.round((currentValue / target) * 10000) / 100 : 0;
+      const baselineValue = baseline[key] || 0;
+      const metric = metrics.find((m) => m.key === key);
+      const behavior = metric?.behavior || this.inferBehavior(key);
+
+      if (behavior === 'cumulative' && target > baselineValue) {
+        // Progreso = (actual - baseline) / (target - baseline)
+        const deltaAchieved = currentValue - baselineValue;
+        const deltaRequired = target - baselineValue;
+        progress[key] = deltaRequired > 0 ? Math.round((deltaAchieved / deltaRequired) * 10000) / 100 : 0;
+      } else {
+        // Métricas mensuales y point_in_time: progreso normal
+        progress[key] = target > 0 ? Math.round((currentValue / target) * 10000) / 100 : 0;
+      }
     }
 
-    // Calcular alertas
+    // Calcular alertas basadas en el comportamiento correcto
     const alerts: GoalAlerts = {};
     for (const key of Object.keys(goal.targets)) {
       const currentValue = current[key] || 0;
       const expectedValue = expectedPace[key] || 0;
-      alerts[`belowPace_${key}`] = currentValue < expectedValue * this.ALERT_THRESHOLD;
+      const metric = metrics.find((m) => m.key === key);
+      const behavior = metric?.behavior || this.inferBehavior(key);
+
+      if (behavior === 'point_in_time') {
+        // Para métricas puntuales, comparar con la meta directa
+        alerts[`belowPace_${key}`] = currentValue < goal.targets[key] * this.ALERT_THRESHOLD;
+      } else {
+        // Para todas las demás, comparar con expectedPace
+        alerts[`belowPace_${key}`] = currentValue < expectedValue * this.ALERT_THRESHOLD;
+      }
     }
 
     // Determinar estado general (excluir métricas sin datos disponibles)
@@ -231,16 +283,44 @@ export class GoalsService {
 
     const metricKeys = Object.keys(goal.targets);
     const actual = await this.calculateActuals(currentMonth, metricKeys);
+    const metrics = goal.metrics || this.getRelevantDefaultMetrics(metricKeys);
 
-    // Calcular alertas
+    // Si no hay baseline guardado, calcularlo (retrocompatibilidad)
+    const hasBaseline = goal.baseline && Object.keys(goal.baseline).length > 0;
+    const baseline = hasBaseline ? goal.baseline : await this.getBaselineForMonth(currentMonth, metricKeys);
+
+    // Calcular alertas con la lógica correcta según tipo de métrica
     const { daysElapsed, totalDays } = this.getMonthProgress(currentMonth);
     const paceMultiplier = daysElapsed / totalDays;
 
     const alerts: GoalAlerts = {};
     for (const key of metricKeys) {
-      const expectedValue = goal.targets[key] * paceMultiplier;
+      const metric = metrics.find((m) => m.key === key);
+      const behavior = metric?.behavior || this.inferBehavior(key);
+      const target = goal.targets[key];
+      const baselineValue = baseline[key] || 0;
       const currentValue = actual[key] || 0;
-      alerts[`belowPace_${key}`] = currentValue < expectedValue * this.ALERT_THRESHOLD;
+
+      let expectedValue: number;
+      switch (behavior) {
+        case 'cumulative':
+          const delta = target - baselineValue;
+          expectedValue = baselineValue + delta * paceMultiplier;
+          break;
+        case 'point_in_time':
+          expectedValue = target;
+          break;
+        case 'monthly':
+        default:
+          expectedValue = target * paceMultiplier;
+          break;
+      }
+
+      if (behavior === 'point_in_time') {
+        alerts[`belowPace_${key}`] = currentValue < target * this.ALERT_THRESHOLD;
+      } else {
+        alerts[`belowPace_${key}`] = currentValue < expectedValue * this.ALERT_THRESHOLD;
+      }
     }
 
     await this.firestoreService.updateGoalActuals(currentMonth, actual, alerts);
@@ -461,5 +541,55 @@ export class GoalsService {
     const daysRemaining = totalDays - daysElapsed;
 
     return { daysElapsed, daysRemaining, totalDays };
+  }
+
+  /**
+   * Infiere el comportamiento de una métrica basado en su key
+   */
+  private inferBehavior(key: string): MetricBehavior {
+    const cumulativeMetrics = ['newUsers', 'proConversions'];
+    const pointInTimeMetrics = ['conversionRate'];
+
+    if (cumulativeMetrics.includes(key)) return 'cumulative';
+    if (pointInTimeMetrics.includes(key)) return 'point_in_time';
+    return 'monthly';
+  }
+
+  /**
+   * Obtiene el baseline para un mes específico
+   * Para métricas acumulativas: usa el target del mes anterior
+   * Para enero 2026 (primer mes): usa valores hardcodeados
+   */
+  private async getBaselineForMonth(month: string, metricKeys: string[]): Promise<GoalTargets> {
+    const baseline: GoalTargets = {};
+
+    // Obtener mes anterior
+    const [year, monthNum] = month.split('-').map(Number);
+    const prevDate = new Date(year, monthNum - 2, 1); // -2 porque monthNum es 1-based
+    const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+    // Buscar meta del mes anterior
+    const prevGoal = await this.firestoreService.getGoal(prevMonth);
+
+    for (const key of metricKeys) {
+      const behavior = this.inferBehavior(key);
+
+      if (behavior === 'cumulative') {
+        if (prevGoal?.targets?.[key]) {
+          // Usar target del mes anterior como baseline
+          baseline[key] = prevGoal.targets[key];
+        } else {
+          // Primer mes o no hay meta anterior: usar hardcoded para enero 2026
+          if (month === '2026-01') {
+            baseline[key] = key === 'newUsers' ? 283 : key === 'proConversions' ? 22 : 0;
+          } else {
+            baseline[key] = 0; // Fallback
+          }
+        }
+      }
+      // Métricas mensuales no necesitan baseline (empiezan de 0)
+    }
+
+    return baseline;
   }
 }

@@ -83,6 +83,9 @@ export interface Expense {
 // Targets dinámicos - permite cualquier métrica
 export type GoalTargets = Record<string, number>;
 
+// Comportamiento de la métrica para cálculo de progreso
+export type MetricBehavior = 'monthly' | 'cumulative' | 'point_in_time';
+
 // Configuración de una métrica individual
 export interface GoalMetricConfig {
   key: string; // e.g., 'revenue', 'traffic', 'cac'
@@ -92,17 +95,19 @@ export interface GoalMetricConfig {
   color: 'green' | 'blue' | 'purple' | 'orange' | 'pink' | 'cyan' | 'amber' | 'red';
   currency?: 'USD' | 'MXN';
   order: number;
+  behavior?: MetricBehavior; // Define cómo se calcula el progreso
 }
 
-// Métricas por defecto
+// Métricas por defecto con behavior
 export const DEFAULT_GOAL_METRICS: GoalMetricConfig[] = [
-  { key: 'revenue', label: 'Ingresos', type: 'currency', icon: 'dollar', color: 'green', currency: 'USD', order: 1 },
-  { key: 'newUsers', label: 'Usuarios Registrados', type: 'number', icon: 'users', color: 'blue', order: 2 },
-  { key: 'proConversions', label: 'Suscripciones Pro', type: 'number', icon: 'crown', color: 'purple', order: 3 },
-  { key: 'traffic', label: 'Tráfico', type: 'number', icon: 'trending', color: 'cyan', order: 4 },
-  { key: 'conversionRate', label: 'Tasa de Conversión', type: 'percentage', icon: 'conversion', color: 'orange', order: 5 },
-  { key: 'adsSpend', label: 'Inversión en Ads', type: 'currency', icon: 'ads', color: 'pink', currency: 'USD', order: 6 },
-  { key: 'cac', label: 'CAC', type: 'currency', icon: 'target', color: 'amber', currency: 'USD', order: 7 },
+  { key: 'revenue', label: 'Ingresos', type: 'currency', icon: 'dollar', color: 'green', currency: 'USD', order: 1, behavior: 'monthly' },
+  { key: 'newUsers', label: 'Usuarios Registrados', type: 'number', icon: 'users', color: 'blue', order: 2, behavior: 'cumulative' },
+  { key: 'proConversions', label: 'Suscripciones Pro', type: 'number', icon: 'crown', color: 'purple', order: 3, behavior: 'cumulative' },
+  { key: 'traffic', label: 'Tráfico', type: 'number', icon: 'trending', color: 'cyan', order: 4, behavior: 'monthly' },
+  { key: 'conversionRate', label: 'Tasa de Conversión', type: 'percentage', icon: 'conversion', color: 'orange', order: 5, behavior: 'point_in_time' },
+  { key: 'adsSpend', label: 'Inversión en Ads', type: 'currency', icon: 'ads', color: 'pink', currency: 'USD', order: 6, behavior: 'monthly' },
+  { key: 'cac', label: 'CAC', type: 'currency', icon: 'target', color: 'amber', currency: 'USD', order: 7, behavior: 'monthly' },
+  { key: 'profit', label: 'Utilidad Neta', type: 'currency', icon: 'chart', color: 'amber', currency: 'USD', order: 8, behavior: 'monthly' },
 ];
 
 export interface GoalAlerts {
@@ -113,6 +118,7 @@ export interface MonthlyGoal {
   id: string; // goal_YYYYMM
   month: string; // YYYY-MM
   targets: GoalTargets;
+  baseline?: GoalTargets; // Valores iniciales para métricas acumulativas
   actual?: GoalTargets; // Se actualiza automáticamente
   metrics?: GoalMetricConfig[]; // Configuración de métricas (usa defaults si no se especifica)
   alerts?: GoalAlerts; // Generadas por cron si vas por debajo
