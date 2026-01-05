@@ -4626,37 +4626,67 @@ export class FirestoreService {
   /**
    * Get PRO users who have been inactive for a specified number of days
    * Used for retention email campaigns
+   * Returns structured response with users, summary, and pagination
    */
   async getProInactiveUsers(params: {
     minDaysInactive: number;
     maxDaysInactive?: number;
+    page?: number;
     limit?: number;
-  }): Promise<Array<{
-    userId: string;
-    userEmail: string;
-    displayName?: string;
-    language: EmailLanguage;
-    daysInactive: number;
-    lastActivityAt: Date | null;
-    pdfsThisMonth: number;
-    labelsThisMonth: number;
-    emailsSent: string[];
-  }>> {
-    const { minDaysInactive, maxDaysInactive, limit: maxResults = 100 } = params;
+  }): Promise<{
+    users: Array<{
+      userId: string;
+      userEmail: string;
+      displayName?: string;
+      language: EmailLanguage;
+      daysInactive: number;
+      lastActivityAt: Date | null;
+      pdfsThisMonth: number;
+      labelsThisMonth: number;
+      emailsSent: string[];
+    }>;
+    summary: {
+      total: number;
+      byPeriod: {
+        days7: number;
+        days14: number;
+        days30: number;
+      };
+      byPlan: {
+        pro: number;
+        promax: number;
+        enterprise: number;
+      };
+    };
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+    };
+  }> {
+    const { minDaysInactive, maxDaysInactive, page = 1, limit = 50 } = params;
     const now = new Date();
     const minDate = new Date(now.getTime() - minDaysInactive * 24 * 60 * 60 * 1000);
     const maxDate = maxDaysInactive
       ? new Date(now.getTime() - maxDaysInactive * 24 * 60 * 60 * 1000)
       : null;
 
+    // Initialize summary counters
+    const summary = {
+      total: 0,
+      byPeriod: { days7: 0, days14: 0, days30: 0 },
+      byPlan: { pro: 0, promax: 0, enterprise: 0 },
+    };
+
     try {
-      // Get PRO users
+      // Get all PRO/PROMAX/ENTERPRISE users for summary calculation
       const usersSnapshot = await this.firestore
         .collection(this.usersCollection)
-        .where('plan', '==', 'pro')
+        .where('plan', 'in', ['pro', 'promax', 'enterprise'])
         .get();
 
-      const inactiveUsers: Array<{
+      const allInactiveUsers: Array<{
         userId: string;
         userEmail: string;
         displayName?: string;
@@ -4666,6 +4696,15 @@ export class FirestoreService {
         pdfsThisMonth: number;
         labelsThisMonth: number;
         emailsSent: string[];
+        plan: string;
+      }> = [];
+
+      // PHASE 1: Calculate summary and collect filtered users (no additional queries)
+      const filteredUsers: Array<{
+        userId: string;
+        userData: FirebaseFirestore.DocumentData;
+        daysInactive: number;
+        lastActivityAt: Date | null;
       }> = [];
 
       for (const doc of usersSnapshot.docs) {
@@ -4680,70 +4719,145 @@ export class FirestoreService {
 
         if (!relevantDate) continue;
 
-        // Check if within the inactive window
+        const daysInactive = Math.floor((now.getTime() - relevantDate.getTime()) / (24 * 60 * 60 * 1000));
+
+        // Count for summary (all inactive users regardless of min/max filter)
+        if (daysInactive >= 7) {
+          summary.byPeriod.days7++;
+          if (userData.plan === 'pro') summary.byPlan.pro++;
+          else if (userData.plan === 'promax') summary.byPlan.promax++;
+          else if (userData.plan === 'enterprise') summary.byPlan.enterprise++;
+        }
+        if (daysInactive >= 14) summary.byPeriod.days14++;
+        if (daysInactive >= 30) summary.byPeriod.days30++;
+
+        // Check if within the inactive window for filtered results
         if (relevantDate > minDate) continue; // Not inactive enough
         if (maxDate && relevantDate < maxDate) continue; // Too inactive (already contacted)
 
-        const daysInactive = Math.floor((now.getTime() - relevantDate.getTime()) / (24 * 60 * 60 * 1000));
+        // Collect for batch processing
+        filteredUsers.push({ userId, userData, daysInactive, lastActivityAt });
+      }
 
-        // Get current month usage
-        const usageId = this.generateUsageId(userId);
-        const usageDoc = await this.firestore.collection(this.usageCollection).doc(usageId).get();
-        const usageData = usageDoc.exists ? usageDoc.data() : { pdfCount: 0, labelCount: 0 };
+      // PHASE 2: OPTIMIZATION - Batch read all usage documents in one query
+      const usageRefs = filteredUsers.map(({ userId }) =>
+        this.firestore.collection(this.usageCollection).doc(this.generateUsageId(userId)),
+      );
+      const usageDocs = usageRefs.length > 0 ? await this.firestore.getAll(...usageRefs) : [];
+      const usageMap = new Map<string, FirebaseFirestore.DocumentData>();
+      usageDocs.forEach((doc, index) => {
+        if (doc.exists) {
+          usageMap.set(filteredUsers[index].userId, doc.data()!);
+        }
+      });
 
-        // Get emails already sent to this user
-        const emailsSnapshot = await this.firestore
+      // PHASE 3: OPTIMIZATION - Parallel email queries instead of sequential
+      const emailPromises = filteredUsers.map(({ userId }) =>
+        this.firestore
           .collection(this.emailQueueCollection)
           .where('userId', '==', userId)
           .where('emailType', 'in', ['pro_inactive_7_days', 'pro_inactive_14_days', 'pro_inactive_30_days'])
           .where('status', 'in', ['pending', 'sent'])
-          .get();
+          .get(),
+      );
+      const emailSnapshots = await Promise.all(emailPromises);
+      const emailsMap = new Map<string, string[]>();
+      emailSnapshots.forEach((snapshot, index) => {
+        emailsMap.set(filteredUsers[index].userId, snapshot.docs.map(d => d.data().emailType));
+      });
 
-        const emailsSent = emailsSnapshot.docs.map(d => d.data().emailType);
+      // PHASE 4: Build final array using Maps (O(1) lookups, no queries)
+      for (const { userId, userData, daysInactive, lastActivityAt } of filteredUsers) {
+        const usageData = usageMap.get(userId) || { pdfCount: 0, labelCount: 0 };
+        const emailsSent = emailsMap.get(userId) || [];
 
-        inactiveUsers.push({
+        allInactiveUsers.push({
           userId,
           userEmail: userData.email,
           displayName: userData.displayName,
           language: this.detectLanguageFromCountry(userData.country),
           daysInactive,
           lastActivityAt,
-          pdfsThisMonth: usageData.pdfCount || 0,
-          labelsThisMonth: usageData.labelCount || 0,
+          pdfsThisMonth: usageData?.pdfCount || 0,
+          labelsThisMonth: usageData?.labelCount || 0,
           emailsSent,
+          plan: userData.plan,
         });
-
-        if (inactiveUsers.length >= maxResults) break;
       }
 
       // Sort by days inactive (most inactive first)
-      inactiveUsers.sort((a, b) => b.daysInactive - a.daysInactive);
+      allInactiveUsers.sort((a, b) => b.daysInactive - a.daysInactive);
 
-      return inactiveUsers;
+      // Calculate total for pagination
+      summary.total = allInactiveUsers.length;
+      const totalPages = Math.ceil(summary.total / limit);
+
+      // Apply pagination
+      const startIndex = (page - 1) * limit;
+      const paginatedUsers = allInactiveUsers.slice(startIndex, startIndex + limit);
+
+      // Remove plan field from output (only used for summary)
+      const users = paginatedUsers.map(({ plan, ...user }) => user);
+
+      return {
+        users,
+        summary,
+        pagination: {
+          page,
+          limit,
+          total: summary.total,
+          totalPages,
+        },
+      };
     } catch (error) {
       this.logger.error(`Error getting PRO inactive users: ${error.message}`);
-      return [];
+      return {
+        users: [],
+        summary,
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      };
     }
   }
 
   /**
    * Get PRO power users (users with high PDF count in a given month)
    * Used for testimonial requests and recognition
+   * Returns structured response with users, summary, and pagination
    */
   async getProPowerUsers(params: {
-    minPdfsPerMonth?: number;
+    minPercentile?: number; // Minimum percentile (e.g., 90 for top 10%)
     month?: string; // Format: YYYY-MM (defaults to previous month)
+    page?: number;
     limit?: number;
-  }): Promise<Array<{
-    userId: string;
-    userEmail: string;
-    displayName?: string;
-    language: EmailLanguage;
-    pdfsThisMonth: number;
-    labelsThisMonth: number;
-    monthsAsPro: number;
-  }>> {
-    const { minPdfsPerMonth = 50, month, limit: maxResults = 100 } = params;
+  }): Promise<{
+    users: Array<{
+      userId: string;
+      userEmail: string;
+      displayName?: string;
+      language: EmailLanguage;
+      pdfsThisMonth: number;
+      labelsThisMonth: number;
+      monthsAsPro: number;
+    }>;
+    summary: {
+      total: number;
+      topPerformers: number;
+      avgMonthlyPdfs: number;
+      byPlan: {
+        free: number;
+        pro: number;
+        promax: number;
+        enterprise: number;
+      };
+    };
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+    };
+  }> {
+    const { minPercentile = 90, month, page = 1, limit = 50 } = params;
 
     // Default to previous month
     const targetDate = month
@@ -4751,14 +4865,21 @@ export class FirestoreService {
       : new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
     const targetMonth = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
 
+    // Initialize summary
+    const summary = {
+      total: 0,
+      topPerformers: 0,
+      avgMonthlyPdfs: 0,
+      byPlan: { free: 0, pro: 0, promax: 0, enterprise: 0 },
+    };
+
     try {
-      // Get PRO users
+      // Get all users with any plan for summary
       const usersSnapshot = await this.firestore
         .collection(this.usersCollection)
-        .where('plan', '==', 'pro')
         .get();
 
-      const powerUsers: Array<{
+      const allUsersWithUsage: Array<{
         userId: string;
         userEmail: string;
         displayName?: string;
@@ -4766,59 +4887,105 @@ export class FirestoreService {
         pdfsThisMonth: number;
         labelsThisMonth: number;
         monthsAsPro: number;
+        plan: string;
       }> = [];
 
+      let totalPdfs = 0;
+      let usersWithUsage = 0;
+
+      // OPTIMIZATION: Batch read all usage documents in one query instead of N queries
+      const usageRefs = usersSnapshot.docs.map(doc =>
+        this.firestore.collection(this.usageCollection).doc(`${doc.id}_${targetMonth}`),
+      );
+
+      // Batch read: 1 query for all usage docs instead of N individual queries
+      const usageDocs = usageRefs.length > 0 ? await this.firestore.getAll(...usageRefs) : [];
+
+      // Create Map for O(1) lookup
+      const usageMap = new Map<string, FirebaseFirestore.DocumentData>();
+      usageDocs.forEach((doc, index) => {
+        if (doc.exists) {
+          usageMap.set(usersSnapshot.docs[index].id, doc.data()!);
+        }
+      });
+
+      // Now iterate without additional queries
       for (const doc of usersSnapshot.docs) {
         const userData = doc.data();
         const userId = doc.id;
 
-        // Get usage for target month
-        const usageId = `${userId}_${targetMonth}`;
-        const usageDoc = await this.firestore.collection(this.usageCollection).doc(usageId).get();
+        // Get usage from Map (O(1) lookup, no query)
+        const usageData = usageMap.get(userId) || null;
+        const pdfCount = usageData?.pdfCount || 0;
 
-        if (!usageDoc.exists) continue;
+        if (pdfCount > 0) {
+          usersWithUsage++;
+          totalPdfs += pdfCount;
 
-        const usageData = usageDoc.data();
-        const pdfCount = usageData.pdfCount || 0;
+          // Count by plan
+          const plan = userData.plan || 'free';
+          if (plan === 'free') summary.byPlan.free++;
+          else if (plan === 'pro') summary.byPlan.pro++;
+          else if (plan === 'promax') summary.byPlan.promax++;
+          else if (plan === 'enterprise') summary.byPlan.enterprise++;
 
-        if (pdfCount < minPdfsPerMonth) continue;
+          // Calculate months as PRO
+          const createdAt = userData.createdAt?.toDate?.() || userData.createdAt || new Date();
+          const monthsAsPro = Math.floor((new Date().getTime() - createdAt.getTime()) / (30 * 24 * 60 * 60 * 1000));
 
-        // Calculate months as PRO
-        const createdAt = userData.createdAt?.toDate?.() || userData.createdAt || new Date();
-        const monthsAsPro = Math.floor((new Date().getTime() - createdAt.getTime()) / (30 * 24 * 60 * 60 * 1000));
-
-        // Check if already received power user email this month
-        const emailsSnapshot = await this.firestore
-          .collection(this.emailQueueCollection)
-          .where('userId', '==', userId)
-          .where('emailType', '==', 'pro_power_user')
-          .where('status', 'in', ['pending', 'sent'])
-          .where('createdAt', '>=', targetDate)
-          .limit(1)
-          .get();
-
-        if (!emailsSnapshot.empty) continue; // Already received this month
-
-        powerUsers.push({
-          userId,
-          userEmail: userData.email,
-          displayName: userData.displayName,
-          language: this.detectLanguageFromCountry(userData.country),
-          pdfsThisMonth: pdfCount,
-          labelsThisMonth: usageData.labelCount || 0,
-          monthsAsPro: Math.max(1, monthsAsPro),
-        });
-
-        if (powerUsers.length >= maxResults) break;
+          allUsersWithUsage.push({
+            userId,
+            userEmail: userData.email,
+            displayName: userData.displayName,
+            language: this.detectLanguageFromCountry(userData.country),
+            pdfsThisMonth: pdfCount,
+            labelsThisMonth: usageData?.labelCount || 0,
+            monthsAsPro: Math.max(1, monthsAsPro),
+            plan,
+          });
+        }
       }
 
       // Sort by PDF count (highest first)
-      powerUsers.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
+      allUsersWithUsage.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
 
-      return powerUsers;
+      // Calculate percentile threshold
+      const percentileIndex = Math.floor(allUsersWithUsage.length * (1 - minPercentile / 100));
+      const percentileThreshold = allUsersWithUsage[percentileIndex]?.pdfsThisMonth || 0;
+
+      // Filter to power users (above percentile threshold)
+      const powerUsers = allUsersWithUsage.filter(u => u.pdfsThisMonth >= percentileThreshold);
+
+      // Update summary
+      summary.total = powerUsers.length;
+      summary.topPerformers = Math.min(10, powerUsers.length); // Top 10 performers
+      summary.avgMonthlyPdfs = usersWithUsage > 0 ? Math.round(totalPdfs / usersWithUsage) : 0;
+
+      // Apply pagination
+      const totalPages = Math.ceil(powerUsers.length / limit);
+      const startIndex = (page - 1) * limit;
+      const paginatedUsers = powerUsers.slice(startIndex, startIndex + limit);
+
+      // Remove plan field from output
+      const users = paginatedUsers.map(({ plan, ...user }) => user);
+
+      return {
+        users,
+        summary,
+        pagination: {
+          page,
+          limit,
+          total: powerUsers.length,
+          totalPages,
+        },
+      };
     } catch (error) {
       this.logger.error(`Error getting PRO power users: ${error.message}`);
-      return [];
+      return {
+        users: [],
+        summary,
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      };
     }
   }
 
@@ -4857,6 +5024,16 @@ export class FirestoreService {
 
       const inactiveUsers: FreeInactiveUser[] = [];
 
+      // PHASE 1: Filter users by basic criteria (no additional queries)
+      const filteredUsers: Array<{
+        userId: string;
+        userData: FirebaseFirestore.DocumentData;
+        registeredAt: Date;
+        lastActiveAt: Date | null;
+        daysSinceRegistration: number;
+        daysInactive: number;
+      }> = [];
+
       for (const doc of usersSnapshot.docs) {
         const userData = doc.data();
         const userId = doc.id;
@@ -4882,29 +5059,56 @@ export class FirestoreService {
         if (minDaysInactive !== undefined && daysInactive < minDaysInactive) continue;
         if (maxDaysInactive !== undefined && daysInactive > maxDaysInactive) continue;
 
-        // Get total usage (all time)
-        const usageSnapshot = await this.firestore
-          .collection(this.usageCollection)
-          .where('userId', '==', userId)
-          .get();
+        filteredUsers.push({ userId, userData, registeredAt, lastActiveAt, daysSinceRegistration, daysInactive });
+      }
 
+      // PHASE 2: OPTIMIZATION - Batch read all usage documents and group by userId
+      // Get all usage docs for filtered users in parallel queries (more efficient than N sequential)
+      const usagePromises = filteredUsers.map(({ userId }) =>
+        this.firestore.collection(this.usageCollection).where('userId', '==', userId).get(),
+      );
+      const usageSnapshots = await Promise.all(usagePromises);
+
+      // Create Map with aggregated usage per user
+      const usageMap = new Map<string, { pdfCount: number; labelCount: number }>();
+      usageSnapshots.forEach((snapshot, index) => {
         let totalPdfCount = 0;
         let totalLabelCount = 0;
-        for (const usageDoc of usageSnapshot.docs) {
+        for (const usageDoc of snapshot.docs) {
           const usageData = usageDoc.data();
           totalPdfCount += usageData.pdfCount || 0;
           totalLabelCount += usageData.labelCount || 0;
         }
+        usageMap.set(filteredUsers[index].userId, { pdfCount: totalPdfCount, labelCount: totalLabelCount });
+      });
+
+      // PHASE 3: Filter by segment and collect users that need email queries
+      const usersForEmailQuery: Array<{
+        userId: string;
+        userData: FirebaseFirestore.DocumentData;
+        registeredAt: Date;
+        lastActiveAt: Date | null;
+        daysSinceRegistration: number;
+        daysInactive: number;
+        totalPdfCount: number;
+        totalLabelCount: number;
+        userSegment: FreeInactiveSegment;
+      }> = [];
+
+      for (const user of filteredUsers) {
+        const usage = usageMap.get(user.userId) || { pdfCount: 0, labelCount: 0 };
+        const totalPdfCount = usage.pdfCount;
+        const totalLabelCount = usage.labelCount;
 
         // Determine user segment
         let userSegment: FreeInactiveSegment;
         if (totalPdfCount === 0) {
           userSegment = 'never_used';
-        } else if (totalPdfCount <= 3 && daysInactive >= 14) {
+        } else if (totalPdfCount <= 3 && user.daysInactive >= 14) {
           userSegment = 'tried_abandoned';
-        } else if (totalPdfCount > 3 && daysInactive >= 30) {
+        } else if (totalPdfCount > 3 && user.daysInactive >= 30) {
           userSegment = 'dormant';
-        } else if (daysInactive >= 60) {
+        } else if (user.daysInactive >= 60) {
           userSegment = 'abandoned';
         } else {
           continue; // Doesn't fit any reactivation segment
@@ -4913,8 +5117,15 @@ export class FirestoreService {
         // Filter by segment if specified
         if (segment && userSegment !== segment) continue;
 
-        // Get emails already sent to this user (reactivation emails)
-        const emailsSnapshot = await this.firestore
+        usersForEmailQuery.push({ ...user, totalPdfCount, totalLabelCount, userSegment });
+
+        // Early exit if we have enough candidates (with buffer for email filtering)
+        if (usersForEmailQuery.length >= maxResults * 2) break;
+      }
+
+      // PHASE 4: OPTIMIZATION - Parallel email queries instead of sequential
+      const emailPromises = usersForEmailQuery.map(({ userId }) =>
+        this.firestore
           .collection(this.emailQueueCollection)
           .where('userId', '==', userId)
           .where('emailType', 'in', [
@@ -4925,15 +5136,19 @@ export class FirestoreService {
             'free_abandoned_60d',
           ])
           .where('status', 'in', ['pending', 'sent'])
-          .get();
+          .get(),
+      );
+      const emailSnapshots = await Promise.all(emailPromises);
 
-        const emailsSent = emailsSnapshot.docs.map((d) => d.data().emailType);
-
-        // Get last email sent info
+      // Create Map with email data per user
+      const emailsMap = new Map<string, { emailsSent: string[]; lastEmailSentAt: Date | null; lastEmailType: string | null }>();
+      emailSnapshots.forEach((snapshot, index) => {
+        const emailsSent = snapshot.docs.map((d) => d.data().emailType);
         let lastEmailSentAt: Date | null = null;
         let lastEmailType: string | null = null;
-        if (emailsSnapshot.docs.length > 0) {
-          const sortedEmails = emailsSnapshot.docs
+
+        if (snapshot.docs.length > 0) {
+          const sortedEmails = snapshot.docs
             .map((d) => d.data())
             .sort((a, b) => {
               const dateA = a.sentAt?.toDate?.() || a.createdAt?.toDate?.() || new Date(0);
@@ -4946,21 +5161,28 @@ export class FirestoreService {
           }
         }
 
+        emailsMap.set(usersForEmailQuery[index].userId, { emailsSent, lastEmailSentAt, lastEmailType });
+      });
+
+      // PHASE 5: Build final array using Maps (O(1) lookups)
+      for (const user of usersForEmailQuery) {
+        const emailData = emailsMap.get(user.userId) || { emailsSent: [], lastEmailSentAt: null, lastEmailType: null };
+
         inactiveUsers.push({
-          userId,
-          userEmail: userData.email,
-          displayName: userData.displayName,
-          language: this.detectLanguageFromCountry(userData.country),
-          registeredAt,
-          lastActiveAt,
-          daysSinceRegistration,
-          daysInactive,
-          pdfCount: totalPdfCount,
-          labelCount: totalLabelCount,
-          segment: userSegment,
-          emailsSent,
-          lastEmailSentAt,
-          lastEmailType,
+          userId: user.userId,
+          userEmail: user.userData.email,
+          displayName: user.userData.displayName,
+          language: this.detectLanguageFromCountry(user.userData.country),
+          registeredAt: user.registeredAt,
+          lastActiveAt: user.lastActiveAt,
+          daysSinceRegistration: user.daysSinceRegistration,
+          daysInactive: user.daysInactive,
+          pdfCount: user.totalPdfCount,
+          labelCount: user.totalLabelCount,
+          segment: user.userSegment,
+          emailsSent: emailData.emailsSent,
+          lastEmailSentAt: emailData.lastEmailSentAt,
+          lastEmailType: emailData.lastEmailType,
         });
 
         if (inactiveUsers.length >= maxResults) break;

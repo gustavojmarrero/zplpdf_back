@@ -19,7 +19,7 @@ import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { ResendWebhookDto } from './dto/resend-webhook.dto.js';
 import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto, OnboardingFunnelDto } from './dto/email-metrics.dto.js';
-import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser, FreeReactivationResult, FreeInactiveUser } from './interfaces/email.interface.js';
+import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser, FreeReactivationResult, FreeInactiveUser, InactiveUsersResponse, PowerUsersResponse } from './interfaces/email.interface.js';
 
 @ApiTags('email')
 @Controller()
@@ -402,52 +402,96 @@ export class EmailController {
     description: 'Returns PRO users who have not used the service for a specified number of days.',
   })
   @ApiQuery({
-    name: 'minDays',
+    name: 'minDaysInactive',
     required: false,
     type: Number,
     description: 'Minimum days of inactivity (default: 7)',
   })
   @ApiQuery({
-    name: 'maxDays',
+    name: 'maxDaysInactive',
     required: false,
     type: Number,
     description: 'Maximum days of inactivity (optional)',
   })
   @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number for pagination (default: 1)',
+  })
+  @ApiQuery({
     name: 'limit',
     required: false,
     type: Number,
-    description: 'Maximum number of users to return (default: 100)',
+    description: 'Maximum number of users per page (default: 50)',
   })
   @ApiResponse({
     status: 200,
     description: 'Inactive PRO users retrieved',
     schema: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          userId: { type: 'string' },
-          userEmail: { type: 'string' },
-          displayName: { type: 'string', nullable: true },
-          daysInactive: { type: 'number' },
-          lastActivityAt: { type: 'string', format: 'date-time', nullable: true },
-          pdfsThisMonth: { type: 'number' },
-          labelsThisMonth: { type: 'number' },
-          emailsSent: { type: 'array', items: { type: 'string' } },
+      type: 'object',
+      properties: {
+        users: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              userId: { type: 'string' },
+              userEmail: { type: 'string' },
+              displayName: { type: 'string', nullable: true },
+              daysInactive: { type: 'number' },
+              lastActivityAt: { type: 'string', format: 'date-time', nullable: true },
+              pdfsThisMonth: { type: 'number' },
+              labelsThisMonth: { type: 'number' },
+              emailsSent: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+        summary: {
+          type: 'object',
+          properties: {
+            total: { type: 'number' },
+            byPeriod: {
+              type: 'object',
+              properties: {
+                days7: { type: 'number' },
+                days14: { type: 'number' },
+                days30: { type: 'number' },
+              },
+            },
+            byPlan: {
+              type: 'object',
+              properties: {
+                pro: { type: 'number' },
+                promax: { type: 'number' },
+                enterprise: { type: 'number' },
+              },
+            },
+          },
+        },
+        pagination: {
+          type: 'object',
+          properties: {
+            page: { type: 'number' },
+            limit: { type: 'number' },
+            total: { type: 'number' },
+            totalPages: { type: 'number' },
+          },
         },
       },
     },
   })
   async getInactiveProUsers(
-    @Query('minDays') minDays?: string,
-    @Query('maxDays') maxDays?: string,
+    @Query('minDaysInactive') minDaysInactive?: string,
+    @Query('maxDaysInactive') maxDaysInactive?: string,
+    @Query('page') page?: string,
     @Query('limit') limit?: string,
-  ): Promise<ProInactiveUser[]> {
+  ): Promise<InactiveUsersResponse> {
     return this.firestoreService.getProInactiveUsers({
-      minDaysInactive: minDays ? parseInt(minDays, 10) : 7,
-      maxDaysInactive: maxDays ? parseInt(maxDays, 10) : undefined,
-      limit: limit ? parseInt(limit, 10) : 100,
+      minDaysInactive: minDaysInactive ? parseInt(minDaysInactive, 10) : 7,
+      maxDaysInactive: maxDaysInactive ? parseInt(maxDaysInactive, 10) : undefined,
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 50,
     });
   }
 
@@ -456,13 +500,13 @@ export class EmailController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get PRO power users',
-    description: 'Returns PRO users with high usage (>50 PDFs per month by default).',
+    description: 'Returns users in the top percentile of usage (default: top 10%).',
   })
   @ApiQuery({
-    name: 'minPdfs',
+    name: 'minPercentile',
     required: false,
     type: Number,
-    description: 'Minimum PDFs per month to qualify as power user (default: 50)',
+    description: 'Minimum percentile to qualify as power user (default: 90, meaning top 10%)',
   })
   @ApiQuery({
     name: 'month',
@@ -471,38 +515,77 @@ export class EmailController {
     description: 'Month to check in YYYY-MM format (default: previous month)',
   })
   @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number for pagination (default: 1)',
+  })
+  @ApiQuery({
     name: 'limit',
     required: false,
     type: Number,
-    description: 'Maximum number of users to return (default: 100)',
+    description: 'Maximum number of users per page (default: 50)',
   })
   @ApiResponse({
     status: 200,
     description: 'PRO power users retrieved',
     schema: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          userId: { type: 'string' },
-          userEmail: { type: 'string' },
-          displayName: { type: 'string', nullable: true },
-          pdfsThisMonth: { type: 'number' },
-          labelsThisMonth: { type: 'number' },
-          monthsAsPro: { type: 'number' },
+      type: 'object',
+      properties: {
+        users: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              userId: { type: 'string' },
+              userEmail: { type: 'string' },
+              displayName: { type: 'string', nullable: true },
+              pdfsThisMonth: { type: 'number' },
+              labelsThisMonth: { type: 'number' },
+              monthsAsPro: { type: 'number' },
+            },
+          },
+        },
+        summary: {
+          type: 'object',
+          properties: {
+            total: { type: 'number' },
+            topPerformers: { type: 'number' },
+            avgMonthlyPdfs: { type: 'number' },
+            byPlan: {
+              type: 'object',
+              properties: {
+                free: { type: 'number' },
+                pro: { type: 'number' },
+                promax: { type: 'number' },
+                enterprise: { type: 'number' },
+              },
+            },
+          },
+        },
+        pagination: {
+          type: 'object',
+          properties: {
+            page: { type: 'number' },
+            limit: { type: 'number' },
+            total: { type: 'number' },
+            totalPages: { type: 'number' },
+          },
         },
       },
     },
   })
   async getPowerUsers(
-    @Query('minPdfs') minPdfs?: string,
+    @Query('minPercentile') minPercentile?: string,
     @Query('month') month?: string,
+    @Query('page') page?: string,
     @Query('limit') limit?: string,
-  ): Promise<ProPowerUser[]> {
+  ): Promise<PowerUsersResponse> {
     return this.firestoreService.getProPowerUsers({
-      minPdfsPerMonth: minPdfs ? parseInt(minPdfs, 10) : 50,
+      minPercentile: minPercentile ? parseInt(minPercentile, 10) : 90,
       month: month,
-      limit: limit ? parseInt(limit, 10) : 100,
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 50,
     });
   }
 

@@ -207,6 +207,52 @@ export interface ProPowerUser {
   monthsAsPro: number;
 }
 
+// Response structure for PRO inactive users endpoint
+export interface InactiveUsersResponse {
+  users: ProInactiveUser[];
+  summary: {
+    total: number;
+    byPeriod: {
+      days7: number;
+      days14: number;
+      days30: number;
+    };
+    byPlan: {
+      pro: number;
+      promax: number;
+      enterprise: number;
+    };
+  };
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+// Response structure for PRO power users endpoint
+export interface PowerUsersResponse {
+  users: ProPowerUser[];
+  summary: {
+    total: number;
+    topPerformers: number;
+    avgMonthlyPdfs: number;
+    byPlan: {
+      free: number;
+      pro: number;
+      promax: number;
+      enterprise: number;
+    };
+  };
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 // ============== FREE Reactivation Interfaces ==============
 
 export type FreeInactiveSegment = 'never_used' | 'tried_abandoned' | 'dormant' | 'abandoned';

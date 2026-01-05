@@ -768,13 +768,13 @@ export class EmailService {
 
       // Get PRO users inactive 7-13 days (if template enabled)
       if (is7DaysEnabled) {
-        const inactive7Days = await this.firestoreService.getProInactiveUsers({
+        const inactive7DaysResponse = await this.firestoreService.getProInactiveUsers({
           minDaysInactive: 7,
           maxDaysInactive: 14,
           limit: 50,
         });
 
-        for (const user of inactive7Days) {
+        for (const user of inactive7DaysResponse.users) {
           if (user.emailsSent.includes('pro_inactive_7_days')) {
             skipped++;
             continue;
@@ -803,13 +803,13 @@ export class EmailService {
 
       // Get PRO users inactive 14-29 days (if template enabled)
       if (is14DaysEnabled) {
-        const inactive14Days = await this.firestoreService.getProInactiveUsers({
+        const inactive14DaysResponse = await this.firestoreService.getProInactiveUsers({
           minDaysInactive: 14,
           maxDaysInactive: 30,
           limit: 50,
         });
 
-        for (const user of inactive14Days) {
+        for (const user of inactive14DaysResponse.users) {
           if (user.emailsSent.includes('pro_inactive_14_days')) {
             skipped++;
             continue;
@@ -838,12 +838,12 @@ export class EmailService {
 
       // Get PRO users inactive 30+ days (if template enabled)
       if (is30DaysEnabled) {
-        const inactive30Days = await this.firestoreService.getProInactiveUsers({
+        const inactive30DaysResponse = await this.firestoreService.getProInactiveUsers({
           minDaysInactive: 30,
           limit: 50,
         });
 
-        for (const user of inactive30Days) {
+        for (const user of inactive30DaysResponse.users) {
           if (user.emailsSent.includes('pro_inactive_30_days')) {
             skipped++;
             continue;
@@ -901,13 +901,13 @@ export class EmailService {
         return { scheduled: 0, skipped: 0, executedAt: new Date() };
       }
 
-      // Get power users from previous month
-      const powerUsers = await this.firestoreService.getProPowerUsers({
-        minPdfsPerMonth: 50,
+      // Get power users from previous month (top 10% of users)
+      const powerUsersResponse = await this.firestoreService.getProPowerUsers({
+        minPercentile: 90,
         limit: 50,
       });
 
-      for (const user of powerUsers) {
+      for (const user of powerUsersResponse.users) {
         await this.firestoreService.createEmailQueue({
           userId: user.userId,
           userEmail: user.userEmail,
