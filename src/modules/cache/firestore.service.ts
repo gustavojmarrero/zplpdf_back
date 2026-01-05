@@ -4699,7 +4699,32 @@ export class FirestoreService {
         plan: string;
       }> = [];
 
-      // PHASE 1: Calculate summary and collect filtered users (no additional queries)
+      // PHASE 1: Get lastActiveAt from conversion history for all users (parallel queries)
+      // lastActiveAt is NOT stored in user document - it must be calculated from conversions history
+      const historyPromises = usersSnapshot.docs.map(doc =>
+        this.firestore
+          .collection(this.historyCollection)
+          .where('userId', '==', doc.id)
+          .orderBy('createdAt', 'desc')
+          .limit(1)
+          .get()
+          .catch(() => null), // Ignore errors (e.g., no index)
+      );
+      const historySnapshots = await Promise.all(historyPromises);
+
+      // Create Map of userId -> lastActiveAt
+      const lastActiveAtMap = new Map<string, Date | null>();
+      historySnapshots.forEach((snapshot, index) => {
+        if (snapshot && !snapshot.empty) {
+          const historyData = snapshot.docs[0].data();
+          const lastActiveAt = historyData.createdAt?.toDate?.() || historyData.createdAt || null;
+          lastActiveAtMap.set(usersSnapshot.docs[index].id, lastActiveAt);
+        } else {
+          lastActiveAtMap.set(usersSnapshot.docs[index].id, null);
+        }
+      });
+
+      // PHASE 2: Calculate summary and collect filtered users
       const filteredUsers: Array<{
         userId: string;
         userData: FirebaseFirestore.DocumentData;
@@ -4711,11 +4736,12 @@ export class FirestoreService {
         const userData = doc.data();
         const userId = doc.id;
 
-        // Check lastActiveAt (field name in Firestore is lastActiveAt, not lastActivityAt)
-        const lastActivityAt = userData.lastActiveAt?.toDate?.() || userData.lastActiveAt || null;
+        // Get lastActiveAt from conversion history (calculated in PHASE 1)
+        const lastActivityAt = lastActiveAtMap.get(userId) || null;
 
         // If no activity at all, consider created date
-        const relevantDate = lastActivityAt || (userData.createdAt?.toDate?.() || userData.createdAt);
+        const createdAt = userData.createdAt?.toDate?.() || userData.createdAt;
+        const relevantDate = lastActivityAt || createdAt;
 
         if (!relevantDate) continue;
 
@@ -4739,7 +4765,7 @@ export class FirestoreService {
         filteredUsers.push({ userId, userData, daysInactive, lastActivityAt });
       }
 
-      // PHASE 2: OPTIMIZATION - Batch read all usage documents in one query
+      // PHASE 3: OPTIMIZATION - Batch read all usage documents in one query
       const usageRefs = filteredUsers.map(({ userId }) =>
         this.firestore.collection(this.usageCollection).doc(this.generateUsageId(userId)),
       );
@@ -4751,7 +4777,7 @@ export class FirestoreService {
         }
       });
 
-      // PHASE 3: OPTIMIZATION - Parallel email queries instead of sequential
+      // PHASE 4: OPTIMIZATION - Parallel email queries instead of sequential
       const emailPromises = filteredUsers.map(({ userId }) =>
         this.firestore
           .collection(this.emailQueueCollection)
@@ -4766,7 +4792,7 @@ export class FirestoreService {
         emailsMap.set(filteredUsers[index].userId, snapshot.docs.map(d => d.data().emailType));
       });
 
-      // PHASE 4: Build final array using Maps (O(1) lookups, no queries)
+      // PHASE 5: Build final array using Maps (O(1) lookups, no queries)
       for (const { userId, userData, daysInactive, lastActivityAt } of filteredUsers) {
         const usageData = usageMap.get(userId) || { pdfCount: 0, labelCount: 0 };
         const emailsSent = emailsMap.get(userId) || [];
@@ -4863,7 +4889,8 @@ export class FirestoreService {
     const targetDate = month
       ? new Date(`${month}-01`)
       : new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
-    const targetMonth = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
+    // Format: YYYYMM (without hyphen) to match generateUsageId() format
+    const targetMonth = `${targetDate.getFullYear()}${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
 
     // Initialize summary
     const summary = {
