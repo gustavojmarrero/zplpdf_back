@@ -296,6 +296,7 @@ export class PaymentsService {
     const subscriptionId = session.subscription as string;
     const user = await this.firestoreService.getUserById(userId);
     const billingCountry = session.customer_details?.address?.country || undefined;
+    const billingCity = session.customer_details?.address?.city || undefined;
     const currency = (session.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
     const amount = session.amount_total || 0;
 
@@ -335,12 +336,13 @@ export class PaymentsService {
       stripeSubscriptionId: subscriptionId,
     };
 
-    // Update country from billing address if available and not already set
+    // Update country/city from billing address if available and not already set by Stripe
     if (billingCountry && (!user?.country || user.countrySource === 'ip')) {
       updateData.country = billingCountry;
+      updateData.city = billingCity;
       updateData.countrySource = 'stripe';
       updateData.countryDetectedAt = new Date();
-      this.logger.log(`Updated user ${userId} country to ${billingCountry} from Stripe billing`);
+      this.logger.log(`Updated user ${userId} geo to ${billingCountry}/${billingCity || 'unknown'} from Stripe billing`);
     }
 
     await this.withRetry(

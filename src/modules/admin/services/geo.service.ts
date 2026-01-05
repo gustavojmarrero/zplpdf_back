@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FirestoreService } from '../../cache/firestore.service.js';
+import type { User } from '../../../common/interfaces/user.interface.js';
 
 // Mapeo de códigos de país a nombres
 const COUNTRY_NAMES: Record<string, string> = {
@@ -33,21 +34,34 @@ const COUNTRY_NAMES: Record<string, string> = {
   unknown: 'Desconocido',
 };
 
-interface IPAPIResponse {
-  status: string;
+interface IPGuideResponse {
+  ip: string;
+  location: {
+    city: string;
+    country: string;
+    timezone: string;
+    latitude: number;
+    longitude: number;
+  };
+  network: {
+    cidr: string;
+    hosts: {
+      start: string;
+      end: string;
+    };
+    autonomous_system: {
+      asn: number;
+      name: string;
+      organization: string;
+      country: string; // Código ISO (MX, US, etc.)
+      rir: string;
+    };
+  };
+}
+
+export interface GeoData {
   country: string;
-  countryCode: string;
-  region: string;
-  regionName: string;
   city: string;
-  zip: string;
-  lat: number;
-  lon: number;
-  timezone: string;
-  isp: string;
-  org: string;
-  as: string;
-  query: string;
 }
 
 export interface CountryDistribution {
@@ -96,18 +110,19 @@ export interface CountryPotential {
 @Injectable()
 export class GeoService {
   private readonly logger = new Logger(GeoService.name);
-  private readonly IP_API_URL = 'http://ip-api.com/json';
+  private readonly IP_GUIDE_URL = 'https://ip.guide';
 
   // Cache en memoria para evitar llamadas repetidas
-  private ipCache = new Map<string, { country: string; timestamp: number }>();
+  private ipCache = new Map<string, { country: string; city: string; timestamp: number }>();
   private readonly CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 horas
+  private readonly GEO_REFRESH_DAYS = 7; // Refrescar geo cada 7 días
 
   constructor(private readonly firestoreService: FirestoreService) {}
 
   /**
-   * Detecta el país de un usuario por su dirección IP
+   * Detecta el país y ciudad de un usuario por su dirección IP usando ip.guide
    */
-  async detectCountryByIP(ip: string): Promise<string | null> {
+  async detectCountryByIP(ip: string): Promise<GeoData | null> {
     // Ignorar IPs locales
     if (this.isLocalIP(ip)) {
       this.logger.debug(`Ignoring local IP: ${ip}`);
@@ -117,52 +132,70 @@ export class GeoService {
     // Verificar cache
     const cached = this.ipCache.get(ip);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
-      this.logger.debug(`Using cached country for IP ${ip}: ${cached.country}`);
-      return cached.country;
+      this.logger.debug(`Using cached geo for IP ${ip}: ${cached.country}/${cached.city}`);
+      return { country: cached.country, city: cached.city };
     }
 
     try {
-      // Usar ip-api.com (gratuito, 45 req/min)
-      const response = await fetch(`${this.IP_API_URL}/${ip}?fields=status,countryCode`);
+      const response = await fetch(`${this.IP_GUIDE_URL}/${ip}`);
 
       if (!response.ok) {
-        throw new Error(`IP API error: ${response.status}`);
+        throw new Error(`ip.guide error: ${response.status}`);
       }
 
-      const data = (await response.json()) as IPAPIResponse;
+      const data = (await response.json()) as IPGuideResponse;
 
-      if (data.status !== 'success') {
-        throw new Error(`IP API failed for ${ip}`);
+      // Extraer código ISO del país desde network.autonomous_system.country
+      const country = data.network?.autonomous_system?.country || null;
+      const city = data.location?.city || '';
+
+      if (!country) {
+        throw new Error(`ip.guide returned no country for ${ip}`);
       }
-
-      const country = data.countryCode;
 
       // Guardar en cache
-      this.ipCache.set(ip, { country, timestamp: Date.now() });
+      this.ipCache.set(ip, { country, city, timestamp: Date.now() });
 
-      this.logger.log(`Detected country ${country} for IP ${ip}`);
-      return country;
+      this.logger.log(`Detected ${country}/${city} for IP ${ip}`);
+      return { country, city };
     } catch (error) {
-      this.logger.warn(`Failed to detect country for IP ${ip}: ${error.message}`);
+      this.logger.warn(`Failed to detect geo for IP ${ip}: ${error.message}`);
       return null;
     }
   }
 
   /**
-   * Actualiza el país de un usuario
+   * Verifica si debemos refrescar la geolocalización de un usuario
+   * Retorna true si han pasado más de 7 días desde la última detección
+   */
+  shouldRefreshGeo(user: User): boolean {
+    if (!user.countryDetectedAt) return true;
+
+    const detectedAt = user.countryDetectedAt instanceof Date
+      ? user.countryDetectedAt
+      : new Date(user.countryDetectedAt);
+
+    const daysSinceDetection = (Date.now() - detectedAt.getTime()) / (1000 * 60 * 60 * 24);
+    return daysSinceDetection >= this.GEO_REFRESH_DAYS;
+  }
+
+  /**
+   * Actualiza el país y ciudad de un usuario
    */
   async updateUserCountry(
     userId: string,
     country: string,
     source: 'ip' | 'stripe',
+    city?: string,
   ): Promise<void> {
     await this.firestoreService.updateUser(userId, {
       country,
+      city,
       countrySource: source,
       countryDetectedAt: new Date(),
     });
 
-    this.logger.log(`Updated user ${userId} country to ${country} (source: ${source})`);
+    this.logger.log(`Updated user ${userId} geo to ${country}/${city || 'unknown'} (source: ${source})`);
   }
 
   /**

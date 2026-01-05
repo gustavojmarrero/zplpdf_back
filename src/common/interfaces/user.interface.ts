@@ -23,6 +23,7 @@ export interface User {
   simulationExpiresAt?: Date;
   // Campos de geolocalización
   country?: string; // Código ISO 3166-1 alpha-2 (MX, US, ES, etc.)
+  city?: string;
   countrySource?: CountrySource;
   countryDetectedAt?: Date;
   // Campos de actividad e inactividad (para GA4)

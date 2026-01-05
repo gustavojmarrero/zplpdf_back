@@ -55,18 +55,24 @@ export class UsersService {
         emailVerified,
       };
 
-      // Detectar país si el usuario aún no lo tiene
-      if (!existingUser.country && clientIP) {
+      // Detectar geolocalización si:
+      // 1. No tiene país, O
+      // 2. countrySource es 'ip' y han pasado 7 días (no actualizar si es 'stripe')
+      const shouldUpdateGeo = !existingUser.country ||
+        (existingUser.countrySource === 'ip' && this.geoService.shouldRefreshGeo(existingUser));
+
+      if (shouldUpdateGeo && clientIP) {
         try {
-          const detectedCountry = await this.geoService.detectCountryByIP(clientIP);
-          if (detectedCountry) {
-            updates.country = detectedCountry;
+          const geoData = await this.geoService.detectCountryByIP(clientIP);
+          if (geoData) {
+            updates.country = geoData.country;
+            updates.city = geoData.city;
             updates.countrySource = 'ip';
             updates.countryDetectedAt = new Date();
-            this.logger.log(`Detected country ${detectedCountry} for existing user ${firebaseUser.uid}`);
+            this.logger.log(`Detected geo ${geoData.country}/${geoData.city} for existing user ${firebaseUser.uid}`);
           }
         } catch (error) {
-          this.logger.warn(`Failed to detect country for ${firebaseUser.uid}: ${error.message}`);
+          this.logger.warn(`Failed to detect geo for ${firebaseUser.uid}: ${error.message}`);
         }
       }
 
@@ -78,17 +84,19 @@ export class UsersService {
       };
     }
 
-    // Detectar país por IP para nuevos usuarios
+    // Detectar geolocalización por IP para nuevos usuarios
     let country: string | undefined;
+    let city: string | undefined;
     if (clientIP) {
       try {
-        const detectedCountry = await this.geoService.detectCountryByIP(clientIP);
-        if (detectedCountry) {
-          country = detectedCountry;
-          this.logger.log(`Detected country ${country} for new user ${firebaseUser.uid}`);
+        const geoData = await this.geoService.detectCountryByIP(clientIP);
+        if (geoData) {
+          country = geoData.country;
+          city = geoData.city;
+          this.logger.log(`Detected geo ${country}/${city} for new user ${firebaseUser.uid}`);
         }
       } catch (error) {
-        this.logger.warn(`Failed to detect country for ${firebaseUser.uid}: ${error.message}`);
+        this.logger.warn(`Failed to detect geo for ${firebaseUser.uid}: ${error.message}`);
       }
     }
 
@@ -101,6 +109,7 @@ export class UsersService {
       plan: 'free',
       role: 'user',
       country,
+      city,
       countrySource: country ? 'ip' : undefined,
       countryDetectedAt: country ? new Date() : undefined,
       createdAt: new Date(),
