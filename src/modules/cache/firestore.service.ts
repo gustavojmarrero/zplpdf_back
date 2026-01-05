@@ -4711,8 +4711,8 @@ export class FirestoreService {
         const userData = doc.data();
         const userId = doc.id;
 
-        // Check lastActivityAt
-        const lastActivityAt = userData.lastActivityAt?.toDate?.() || userData.lastActivityAt || null;
+        // Check lastActiveAt (field name in Firestore is lastActiveAt, not lastActivityAt)
+        const lastActivityAt = userData.lastActiveAt?.toDate?.() || userData.lastActiveAt || null;
 
         // If no activity at all, consider created date
         const relevantDate = lastActivityAt || (userData.createdAt?.toDate?.() || userData.createdAt);
