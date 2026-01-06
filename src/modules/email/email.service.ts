@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
+import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import type {
   EmailType,
   AbVariant,
@@ -10,6 +11,7 @@ import type {
   ScheduleEmailsResult,
   FreeReactivationResult,
   ReactivationEmailType,
+  PowerUsersResponse,
 } from './interfaces/email.interface.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
@@ -23,6 +25,7 @@ export class EmailService {
   constructor(
     private readonly configService: ConfigService,
     private readonly firestoreService: FirestoreService,
+    private readonly periodCalculatorService: PeriodCalculatorService,
   ) {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     this.fromEmail = this.configService.get<string>('RESEND_FROM_EMAIL') || 'ZPLPDF <noreply@zplpdf.com>';
@@ -1072,5 +1075,125 @@ export class EmailService {
       byType,
       executedAt: new Date(),
     };
+  }
+
+  /**
+   * Get PRO power users using individual billing periods
+   * Unlike getProPowerUsers() which uses calendar month, this method
+   * calculates each user's period individually based on their subscription
+   */
+  async getPowerUsersWithPeriod(params: {
+    minPercentile?: number;
+    page?: number;
+    limit?: number;
+  }): Promise<PowerUsersResponse> {
+    const { minPercentile = 90, page = 1, limit = 50 } = params;
+
+    const summary = {
+      total: 0,
+      topPerformers: 0,
+      avgMonthlyPdfs: 0,
+      byPlan: { free: 0, pro: 0, promax: 0, enterprise: 0 },
+    };
+
+    try {
+      // Get all users
+      const allUsers = await this.firestoreService.getAllUsers();
+
+      const allUsersWithUsage: Array<{
+        userId: string;
+        userEmail: string;
+        displayName?: string;
+        language: EmailLanguage;
+        pdfsThisMonth: number;
+        labelsThisMonth: number;
+        monthsAsPro: number;
+        plan: string;
+      }> = [];
+
+      let totalPdfs = 0;
+      let usersWithUsage = 0;
+
+      // Calculate period and usage for each user individually
+      for (const user of allUsers) {
+        const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod({
+          id: user.id,
+          plan: user.plan as 'free' | 'pro' | 'promax' | 'enterprise',
+          createdAt: user.createdAt,
+          stripeSubscriptionId: user.stripeSubscriptionId,
+        });
+
+        const usage = await this.firestoreService.getOrCreateUsageWithPeriod(user.id, periodInfo);
+        const pdfCount = usage.pdfCount || 0;
+
+        if (pdfCount > 0) {
+          usersWithUsage++;
+          totalPdfs += pdfCount;
+
+          // Count by plan
+          const plan = user.plan || 'free';
+          if (plan === 'free') summary.byPlan.free++;
+          else if (plan === 'pro') summary.byPlan.pro++;
+          else if (plan === 'promax') summary.byPlan.promax++;
+          else if (plan === 'enterprise') summary.byPlan.enterprise++;
+
+          // Calculate months as PRO
+          const createdAt = user.createdAt instanceof Date ? user.createdAt : new Date(user.createdAt);
+          const monthsAsPro = Math.floor((new Date().getTime() - createdAt.getTime()) / (30 * 24 * 60 * 60 * 1000));
+
+          allUsersWithUsage.push({
+            userId: user.id,
+            userEmail: user.email,
+            displayName: user.displayName,
+            language: this.detectLanguageFromCountry(user.country),
+            pdfsThisMonth: pdfCount,
+            labelsThisMonth: usage.labelCount || 0,
+            monthsAsPro: Math.max(1, monthsAsPro),
+            plan,
+          });
+        }
+      }
+
+      // Sort by PDF count (highest first)
+      allUsersWithUsage.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
+
+      // Calculate percentile threshold
+      const percentileIndex = Math.floor(allUsersWithUsage.length * (1 - minPercentile / 100));
+      const percentileThreshold = allUsersWithUsage[percentileIndex]?.pdfsThisMonth || 0;
+
+      // Filter to power users (above percentile threshold)
+      const powerUsers = allUsersWithUsage.filter(u => u.pdfsThisMonth >= percentileThreshold);
+
+      // Update summary
+      summary.total = powerUsers.length;
+      summary.topPerformers = Math.min(10, powerUsers.length);
+      summary.avgMonthlyPdfs = usersWithUsage > 0 ? Math.round(totalPdfs / usersWithUsage) : 0;
+
+      // Apply pagination
+      const totalPages = Math.ceil(powerUsers.length / limit);
+      const startIndex = (page - 1) * limit;
+      const paginatedUsers = powerUsers.slice(startIndex, startIndex + limit);
+
+      // Remove plan field from output
+      const users = paginatedUsers.map(({ plan, ...user }) => user);
+
+      return {
+        users,
+        summary,
+        pagination: {
+          page,
+          limit,
+          total: powerUsers.length,
+          totalPages,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error getting power users with period: ${error.message}`);
+      return {
+        users: [],
+        summary,
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      };
+    }
   }
 }

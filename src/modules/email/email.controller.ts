@@ -500,19 +500,13 @@ export class EmailController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get PRO power users',
-    description: 'Returns users in the top percentile of usage (default: top 10%).',
+    description: 'Returns users in the top percentile of usage based on their individual billing period (default: top 10%).',
   })
   @ApiQuery({
     name: 'minPercentile',
     required: false,
     type: Number,
     description: 'Minimum percentile to qualify as power user (default: 90, meaning top 10%)',
-  })
-  @ApiQuery({
-    name: 'month',
-    required: false,
-    type: String,
-    description: 'Month to check in YYYY-MM format (default: previous month)',
   })
   @ApiQuery({
     name: 'page',
@@ -577,13 +571,11 @@ export class EmailController {
   })
   async getPowerUsers(
     @Query('minPercentile') minPercentile?: string,
-    @Query('month') month?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ): Promise<PowerUsersResponse> {
-    return this.firestoreService.getProPowerUsers({
+    return this.emailService.getPowerUsersWithPeriod({
       minPercentile: minPercentile ? parseInt(minPercentile, 10) : 90,
-      month: month,
       page: page ? parseInt(page, 10) : 1,
       limit: limit ? parseInt(limit, 10) : 50,
     });

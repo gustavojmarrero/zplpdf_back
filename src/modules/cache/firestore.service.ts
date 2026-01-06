@@ -377,6 +377,31 @@ export class FirestoreService {
     }
   }
 
+  /**
+   * Get all users from Firestore
+   * Used for power user calculations with individual billing periods
+   */
+  async getAllUsers(): Promise<User[]> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.usersCollection)
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: doc.id,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        } as User;
+      });
+    } catch (error) {
+      this.logger.error(`Error getting all users: ${error.message}`);
+      throw error;
+    }
+  }
+
   // ============== Usage ==============
 
   private generateUsageId(userId: string, date: Date = new Date()): string {
