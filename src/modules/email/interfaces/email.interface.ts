@@ -274,6 +274,26 @@ export interface FreeInactiveUser {
   lastEmailType: string | null;
 }
 
+// Response structure for FREE inactive users endpoint
+export interface FreeInactiveUsersResponse {
+  users: FreeInactiveUser[];
+  summary: {
+    total: number;
+    bySegment: {
+      never_used: number;
+      tried_abandoned: number;
+      dormant: number;
+      abandoned: number;
+    };
+  };
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
 export interface FreeReactivationResult {
   processed: number;
   emailsScheduled: number;

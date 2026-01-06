@@ -1004,7 +1004,7 @@ export class EmailService {
       }
 
       // Get all FREE inactive users
-      const inactiveUsers = await this.firestoreService.getFreeInactiveUsers({
+      const { users: inactiveUsers } = await this.firestoreService.getFreeInactiveUsers({
         limit: 200,
       });
 

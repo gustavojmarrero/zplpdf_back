@@ -20,6 +20,7 @@ import type {
   EmailLanguage,
   FreeInactiveUser,
   FreeInactiveSegment,
+  FreeInactiveUsersResponse,
   EmailTemplate,
   TemplateVersion,
   CreateEmailTemplateData,
@@ -5055,17 +5056,30 @@ export class FirestoreService {
     maxDaysInactive?: number;
     minDaysSinceRegistration?: number;
     maxDaysSinceRegistration?: number;
+    page?: number;
     limit?: number;
-  }): Promise<FreeInactiveUser[]> {
+  }): Promise<FreeInactiveUsersResponse> {
     const {
       segment,
       minDaysInactive,
       maxDaysInactive,
       minDaysSinceRegistration,
       maxDaysSinceRegistration,
-      limit: maxResults = 100,
+      page = 1,
+      limit = 100,
     } = params;
     const now = new Date();
+
+    // Initialize summary
+    const summary = {
+      total: 0,
+      bySegment: {
+        never_used: 0,
+        tried_abandoned: 0,
+        dormant: 0,
+        abandoned: 0,
+      },
+    };
 
     try {
       // Get FREE users only
@@ -5074,7 +5088,7 @@ export class FirestoreService {
         .where('plan', '==', 'free')
         .get();
 
-      const inactiveUsers: FreeInactiveUser[] = [];
+      const allInactiveUsers: FreeInactiveUser[] = [];
 
       // PHASE 1: Filter users by basic criteria (no additional queries)
       const filteredUsers: Array<{
@@ -5170,9 +5184,6 @@ export class FirestoreService {
         if (segment && userSegment !== segment) continue;
 
         usersForEmailQuery.push({ ...user, totalPdfCount, totalLabelCount, userSegment });
-
-        // Early exit if we have enough candidates (with buffer for email filtering)
-        if (usersForEmailQuery.length >= maxResults * 2) break;
       }
 
       // PHASE 4: OPTIMIZATION - Parallel email queries instead of sequential
@@ -5220,7 +5231,7 @@ export class FirestoreService {
       for (const user of usersForEmailQuery) {
         const emailData = emailsMap.get(user.userId) || { emailsSent: [], lastEmailSentAt: null, lastEmailType: null };
 
-        inactiveUsers.push({
+        allInactiveUsers.push({
           userId: user.userId,
           userEmail: user.userData.email,
           displayName: user.userData.displayName,
@@ -5237,16 +5248,38 @@ export class FirestoreService {
           lastEmailType: emailData.lastEmailType,
         });
 
-        if (inactiveUsers.length >= maxResults) break;
+        // Count by segment for summary
+        summary.bySegment[user.userSegment]++;
       }
 
       // Sort by days inactive (most inactive first)
-      inactiveUsers.sort((a, b) => b.daysInactive - a.daysInactive);
+      allInactiveUsers.sort((a, b) => b.daysInactive - a.daysInactive);
 
-      return inactiveUsers;
+      // Update summary total
+      summary.total = allInactiveUsers.length;
+
+      // Apply pagination
+      const totalPages = Math.ceil(allInactiveUsers.length / limit);
+      const startIndex = (page - 1) * limit;
+      const paginatedUsers = allInactiveUsers.slice(startIndex, startIndex + limit);
+
+      return {
+        users: paginatedUsers,
+        summary,
+        pagination: {
+          page,
+          limit,
+          total: allInactiveUsers.length,
+          totalPages,
+        },
+      };
     } catch (error) {
       this.logger.error(`Error getting FREE inactive users: ${error.message}`);
-      return [];
+      return {
+        users: [],
+        summary,
+        pagination: { page, limit, total: 0, totalPages: 0 },
+      };
     }
   }
 

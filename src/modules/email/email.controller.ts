@@ -19,7 +19,7 @@ import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { ResendWebhookDto } from './dto/resend-webhook.dto.js';
 import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto, OnboardingFunnelDto } from './dto/email-metrics.dto.js';
-import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser, FreeReactivationResult, FreeInactiveUser, InactiveUsersResponse, PowerUsersResponse } from './interfaces/email.interface.js';
+import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser, FreeReactivationResult, FreeInactiveUser, FreeInactiveUsersResponse, InactiveUsersResponse, PowerUsersResponse } from './interfaces/email.interface.js';
 
 @ApiTags('email')
 @Controller()
@@ -646,33 +646,68 @@ export class EmailController {
     description: 'Maximum days of inactivity',
   })
   @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number for pagination (default: 1)',
+  })
+  @ApiQuery({
     name: 'limit',
     required: false,
     type: Number,
-    description: 'Maximum number of users to return (default: 100)',
+    description: 'Maximum number of users per page (default: 100)',
   })
   @ApiResponse({
     status: 200,
     description: 'Inactive FREE users retrieved',
     schema: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          userId: { type: 'string' },
-          userEmail: { type: 'string' },
-          displayName: { type: 'string', nullable: true },
-          language: { type: 'string', enum: ['en', 'es', 'zh'] },
-          registeredAt: { type: 'string', format: 'date-time' },
-          lastActiveAt: { type: 'string', format: 'date-time', nullable: true },
-          daysSinceRegistration: { type: 'number' },
-          daysInactive: { type: 'number' },
-          pdfCount: { type: 'number' },
-          labelCount: { type: 'number' },
-          segment: { type: 'string', enum: ['never_used', 'tried_abandoned', 'dormant', 'abandoned'] },
-          emailsSent: { type: 'array', items: { type: 'string' } },
-          lastEmailSentAt: { type: 'string', format: 'date-time', nullable: true },
-          lastEmailType: { type: 'string', nullable: true },
+      type: 'object',
+      properties: {
+        users: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              userId: { type: 'string' },
+              userEmail: { type: 'string' },
+              displayName: { type: 'string', nullable: true },
+              language: { type: 'string', enum: ['en', 'es', 'zh'] },
+              registeredAt: { type: 'string', format: 'date-time' },
+              lastActiveAt: { type: 'string', format: 'date-time', nullable: true },
+              daysSinceRegistration: { type: 'number' },
+              daysInactive: { type: 'number' },
+              pdfCount: { type: 'number' },
+              labelCount: { type: 'number' },
+              segment: { type: 'string', enum: ['never_used', 'tried_abandoned', 'dormant', 'abandoned'] },
+              emailsSent: { type: 'array', items: { type: 'string' } },
+              lastEmailSentAt: { type: 'string', format: 'date-time', nullable: true },
+              lastEmailType: { type: 'string', nullable: true },
+            },
+          },
+        },
+        summary: {
+          type: 'object',
+          properties: {
+            total: { type: 'number' },
+            bySegment: {
+              type: 'object',
+              properties: {
+                never_used: { type: 'number' },
+                tried_abandoned: { type: 'number' },
+                dormant: { type: 'number' },
+                abandoned: { type: 'number' },
+              },
+            },
+          },
+        },
+        pagination: {
+          type: 'object',
+          properties: {
+            page: { type: 'number' },
+            limit: { type: 'number' },
+            total: { type: 'number' },
+            totalPages: { type: 'number' },
+          },
         },
       },
     },
@@ -681,12 +716,14 @@ export class EmailController {
     @Query('segment') segment?: 'never_used' | 'tried_abandoned' | 'dormant' | 'abandoned',
     @Query('minDaysInactive') minDaysInactive?: string,
     @Query('maxDaysInactive') maxDaysInactive?: string,
+    @Query('page') page?: string,
     @Query('limit') limit?: string,
-  ): Promise<FreeInactiveUser[]> {
+  ): Promise<FreeInactiveUsersResponse> {
     return this.firestoreService.getFreeInactiveUsers({
       segment,
       minDaysInactive: minDaysInactive ? parseInt(minDaysInactive, 10) : undefined,
       maxDaysInactive: maxDaysInactive ? parseInt(maxDaysInactive, 10) : undefined,
+      page: page ? parseInt(page, 10) : 1,
       limit: limit ? parseInt(limit, 10) : 100,
     });
   }
