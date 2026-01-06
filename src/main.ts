@@ -12,6 +12,9 @@ async function bootstrap() {
     rawBody: true,
   });
 
+  // Confiar en el proxy de Cloud Run para obtener la IP real del cliente
+  app.set('trust proxy', true);
+
   // Configurar headers de seguridad con Helmet
   app.use(helmet({
     crossOriginEmbedderPolicy: false,
