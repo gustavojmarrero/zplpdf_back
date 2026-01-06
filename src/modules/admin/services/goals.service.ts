@@ -1,6 +1,11 @@
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { FirestoreService } from '../../cache/firestore.service.js';
 import { ExchangeRateService } from './exchange-rate.service.js';
+import {
+  getCurrentMonthInTimezone,
+  getMonthDatesInTimezone,
+  getCurrentDayInTimezone,
+} from '../../../utils/timezone.util.js';
 import type {
   MonthlyGoal,
   GoalTargets,
@@ -507,15 +512,11 @@ export class GoalsService {
   }
 
   private getCurrentMonth(): string {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return getCurrentMonthInTimezone();
   }
 
   private getMonthDates(month: string): { startDate: Date; endDate: Date } {
-    const [year, monthNum] = month.split('-').map(Number);
-    const startDate = new Date(year, monthNum - 1, 1, 0, 0, 0);
-    const endDate = new Date(year, monthNum, 0, 23, 59, 59);
-    return { startDate, endDate };
+    return getMonthDatesInTimezone(month);
   }
 
   private getMonthProgress(month: string): {
@@ -525,7 +526,10 @@ export class GoalsService {
   } {
     const { startDate, endDate } = this.getMonthDates(month);
     const now = new Date();
-    const totalDays = endDate.getDate();
+
+    // Calcular total de días en el mes
+    const [year, monthNum] = month.split('-').map(Number);
+    const totalDays = new Date(year, monthNum, 0).getDate();
 
     // Si el mes ya pasó, todo está transcurrido
     if (now > endDate) {
@@ -537,7 +541,8 @@ export class GoalsService {
       return { daysElapsed: 0, daysRemaining: totalDays, totalDays };
     }
 
-    const daysElapsed = now.getDate();
+    // Obtener día actual en GMT-6
+    const daysElapsed = getCurrentDayInTimezone(now);
     const daysRemaining = totalDays - daysElapsed;
 
     return { daysElapsed, daysRemaining, totalDays };
