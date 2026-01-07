@@ -330,6 +330,8 @@ export class FirestoreService {
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
         simulationExpiresAt: data.simulationExpiresAt?.toDate?.() || data.simulationExpiresAt,
+        subscriptionPeriodStart: data.subscriptionPeriodStart?.toDate?.() || data.subscriptionPeriodStart,
+        subscriptionPeriodEnd: data.subscriptionPeriodEnd?.toDate?.() || data.subscriptionPeriodEnd,
       } as User;
     } catch (error) {
       this.logger.error(`Error al obtener usuario: ${error.message}`);
