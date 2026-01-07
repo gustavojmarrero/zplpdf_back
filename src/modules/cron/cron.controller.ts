@@ -8,6 +8,7 @@ import {
   GenerateRecurringExpensesResult,
   UpdateGoalsResult,
   CheckInactiveUsersResult,
+  MigrateSubscriptionPeriodsResult,
 } from './cron.service.js';
 import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 
@@ -196,5 +197,38 @@ export class CronController {
   })
   async checkInactiveUsers(): Promise<CheckInactiveUsersResult> {
     return this.cronService.checkInactiveUsers();
+  }
+
+  @Post('migrate-subscription-periods')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Migrate subscription periods from Stripe to Firestore (one-time)',
+    description:
+      'For PRO/Promax users, fetches current_period_start/end from Stripe and stores in Firestore. This eliminates real-time Stripe calls for billing period calculation.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Migration completed',
+    schema: {
+      properties: {
+        updated: { type: 'number', example: 24 },
+        skipped: { type: 'number', example: 5 },
+        errors: { type: 'number', example: 0 },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid cron secret',
+  })
+  async migrateSubscriptionPeriods(): Promise<MigrateSubscriptionPeriodsResult> {
+    return this.cronService.migrateSubscriptionPeriods();
   }
 }

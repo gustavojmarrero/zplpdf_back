@@ -18,6 +18,8 @@
 import * as dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
+import * as fs from 'fs';
+import * as path from 'path';
 import Stripe from 'stripe';
 import admin from 'firebase-admin';
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
@@ -47,8 +49,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 });
 
 // Inicializar Firebase Admin
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const credentials = require(credentialsPath);
+const absolutePath = path.resolve(credentialsPath);
+const credentialsContent = fs.readFileSync(absolutePath, 'utf-8');
+const credentials = JSON.parse(credentialsContent);
 if (admin.apps.length === 0) {
   admin.initializeApp({
     credential: admin.credential.cert(credentials),

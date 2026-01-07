@@ -1,4 +1,6 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
@@ -40,11 +42,20 @@ export interface CheckInactiveUsersResult {
   executedAt: Date;
 }
 
+export interface MigrateSubscriptionPeriodsResult {
+  updated: number;
+  skipped: number;
+  errors: number;
+  executedAt: Date;
+}
+
 @Injectable()
 export class CronService {
   private readonly logger = new Logger(CronService.name);
+  private readonly stripe: Stripe;
 
   constructor(
+    private readonly configService: ConfigService,
     private readonly firestoreService: FirestoreService,
     private readonly periodCalculatorService: PeriodCalculatorService,
     @Inject(forwardRef(() => ExchangeRateService))
@@ -54,7 +65,12 @@ export class CronService {
     @Inject(forwardRef(() => GoalsService))
     private readonly goalsService: GoalsService,
     private readonly ga4Service: GA4Service,
-  ) {}
+  ) {
+    const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+    if (stripeKey) {
+      this.stripe = new Stripe(stripeKey, { apiVersion: '2025-11-17.clover' as Stripe.LatestApiVersion });
+    }
+  }
 
   async resetExpiredUsage(): Promise<ResetUsageResult> {
     this.logger.log('Starting usage reset cron job...');
@@ -277,6 +293,90 @@ export class CronService {
         notified30Days,
         executedAt: new Date(),
       };
+    }
+  }
+
+  /**
+   * Migrate subscription periods from Stripe to Firestore
+   * One-time migration for existing PRO users
+   */
+  async migrateSubscriptionPeriods(): Promise<MigrateSubscriptionPeriodsResult> {
+    this.logger.log('Starting subscription periods migration...');
+
+    if (!this.stripe) {
+      throw new Error('Stripe not configured');
+    }
+
+    let updated = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    try {
+      // Get all PRO users
+      const allUsers = await this.firestoreService.getAllUsers();
+      const proUsers = allUsers.filter(u => u.plan === 'pro' || u.plan === 'promax');
+
+      this.logger.log(`Found ${proUsers.length} PRO/Promax users`);
+
+      for (const user of proUsers) {
+        // Skip users without subscription ID
+        if (!user.stripeSubscriptionId) {
+          this.logger.warn(`User ${user.email} has no stripeSubscriptionId`);
+          skipped++;
+          continue;
+        }
+
+        // Skip users who already have period data
+        if (user.subscriptionPeriodStart && user.subscriptionPeriodEnd) {
+          this.logger.debug(`User ${user.email} already has period data`);
+          skipped++;
+          continue;
+        }
+
+        try {
+          // Fetch subscription from Stripe
+          const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+
+          // Extract period from subscription items
+          const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
+          const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+
+          if (!periodStart || !periodEnd) {
+            this.logger.warn(`User ${user.email}: No period data in subscription`);
+            skipped++;
+            continue;
+          }
+
+          // Update user in Firestore
+          await this.firestoreService.updateUser(user.id, {
+            subscriptionPeriodStart: new Date(periodStart * 1000),
+            subscriptionPeriodEnd: new Date(periodEnd * 1000),
+          });
+
+          const startDate = new Date(periodStart * 1000).toISOString().split('T')[0];
+          const endDate = new Date(periodEnd * 1000).toISOString().split('T')[0];
+          this.logger.log(`✅ ${user.email}: ${startDate} → ${endDate}`);
+          updated++;
+        } catch (error) {
+          this.logger.error(`❌ ${user.email}: ${error.message}`);
+          errors++;
+        }
+
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      this.logger.log(`Migration completed: ${updated} updated, ${skipped} skipped, ${errors} errors`);
+
+      return {
+        updated,
+        skipped,
+        errors,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Error in migration: ${error.message}`);
+      throw error;
     }
   }
 }
