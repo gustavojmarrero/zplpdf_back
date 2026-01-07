@@ -76,17 +76,29 @@ export class StorageService {
   /**
    * Genera una URL firmada para cualquier archivo en el bucket
    * @param filePath Path del archivo en el bucket (ej: label-xxx.pdf)
+   * @param downloadFilename Nombre del archivo para descarga (opcional)
    * @param expirationMinutes Tiempo de expiración en minutos (default: 15)
    * @returns URL firmada
    */
-  async generateSignedUrlForPath(filePath: string, expirationMinutes: number = 15): Promise<string> {
+  async generateSignedUrlForPath(
+    filePath: string,
+    downloadFilename?: string,
+    expirationMinutes: number = 15,
+  ): Promise<string> {
     const file = this.storage.bucket(this.bucketName).file(filePath);
 
-    const [url] = await file.getSignedUrl({
+    const options: any = {
       version: 'v4',
       action: 'read',
       expires: Date.now() + expirationMinutes * 60 * 1000,
-    });
+    };
+
+    // Si se proporciona nombre de descarga, añadir responseDisposition
+    if (downloadFilename) {
+      options.responseDisposition = `attachment; filename="${downloadFilename}"`;
+    }
+
+    const [url] = await file.getSignedUrl(options);
 
     return url;
   }

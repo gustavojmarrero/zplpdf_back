@@ -244,10 +244,13 @@ export class UsersService {
     return Promise.all(
       history.map(async (record) => {
         if (record.fileUrl && record.status === 'completed') {
-          const storagePath = this.extractStoragePath(record.fileUrl);
+          const { storagePath, downloadFilename } = this.extractStorageInfo(record.fileUrl);
           if (storagePath) {
             try {
-              record.fileUrl = await this.storageService.generateSignedUrlForPath(storagePath);
+              record.fileUrl = await this.storageService.generateSignedUrlForPath(
+                storagePath,
+                downloadFilename,
+              );
             } catch (error) {
               this.logger.warn(`Failed to regenerate URL for ${record.jobId}: ${error.message}`);
             }
@@ -259,15 +262,37 @@ export class UsersService {
   }
 
   /**
-   * Extrae el path del archivo de una URL firmada de Google Cloud Storage
+   * Extrae el path del archivo y el nombre de descarga de una URL firmada de Google Cloud Storage
    * @param signedUrl URL firmada completa
-   * @returns Path del archivo (ej: label-xxx.pdf) o null si no se puede extraer
+   * @returns Objeto con storagePath y downloadFilename
    */
-  private extractStoragePath(signedUrl: string): string | null {
-    // URL: https://storage.googleapis.com/bucket/label-xxx.pdf?X-Goog-...
-    // Extraer: label-xxx.pdf
-    const match = signedUrl.match(/googleapis\.com\/[^/]+\/([^?]+)/);
-    return match ? match[1] : null;
+  private extractStorageInfo(signedUrl: string): { storagePath: string | null; downloadFilename: string | null } {
+    // Extraer path: https://storage.googleapis.com/bucket/label-xxx.pdf?X-Goog-...
+    const pathMatch = signedUrl.match(/googleapis\.com\/[^/]+\/([^?]+)/);
+    const storagePath = pathMatch ? pathMatch[1] : null;
+
+    // Extraer nombre de descarga del parámetro response-content-disposition
+    // Formato: ...&response-content-disposition=attachment%3B%20filename%3D%22nombre.pdf%22&...
+    let downloadFilename: string | null = null;
+    try {
+      const url = new URL(signedUrl);
+      const disposition = url.searchParams.get('response-content-disposition');
+      if (disposition) {
+        // Formato: attachment; filename="nombre.pdf"
+        const filenameMatch = disposition.match(/filename="([^"]+)"/);
+        if (filenameMatch) {
+          downloadFilename = filenameMatch[1];
+        }
+      }
+    } catch {
+      // Si no se puede parsear la URL, intentar con regex
+      const filenameMatch = signedUrl.match(/filename%3D%22([^%]+)%22/i);
+      if (filenameMatch) {
+        downloadFilename = decodeURIComponent(filenameMatch[1]);
+      }
+    }
+
+    return { storagePath, downloadFilename };
   }
 
   async checkCanConvert(
