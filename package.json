@@ -40,6 +40,7 @@
     "class-validator": "^0.14.1",
     "firebase-admin": "^13.6.0",
     "helmet": "^8.1.0",
+    "pdf-lib": "^1.17.1",
     "pdf-merger-js": "^5.1.2",
     "pdf-to-png-converter": "^3.11.0",
     "pdfjs-dist": "^5.4.449",

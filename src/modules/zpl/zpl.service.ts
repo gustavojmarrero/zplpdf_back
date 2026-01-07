@@ -4,6 +4,7 @@ import axios from 'axios';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
 import PDFMerger from 'pdf-merger-js';
+import { PDFDocument } from 'pdf-lib';
 import { Storage } from '@google-cloud/storage';
 import { ConfigService } from '@nestjs/config';
 import archiver from 'archiver';
@@ -1007,6 +1008,7 @@ export class ZplService {
 
   /**
    * Reconstruye el PDF final usando la secuencia original
+   * OPTIMIZADO: Pre-carga chunks en paralelo y agrupa operaciones por chunk
    * @param chunkPdfs Array de buffers PDF de chunks
    * @param originalSequence Array de índices que representan el orden original
    * @returns Buffer del PDF final fusionado
@@ -1015,13 +1017,13 @@ export class ZplService {
     chunkPdfs: Buffer[],
     originalSequence: number[],
   ): Promise<Buffer> {
+    const startTime = Date.now();
     try {
       // Validar que hay chunks para procesar
       if (!chunkPdfs || chunkPdfs.length === 0) {
         throw new Error('No hay PDFs para fusionar');
       }
 
-      // Filtrar chunks válidos (no vacíos ni undefined)
       const validChunks = chunkPdfs.filter(chunk => chunk && chunk.length > 0);
       if (validChunks.length === 0) {
         throw new Error('Todos los chunks PDF están vacíos o son inválidos');
@@ -1031,40 +1033,97 @@ export class ZplService {
         this.logger.warn(`${chunkPdfs.length - validChunks.length} chunks PDF fueron descartados por estar vacíos`);
       }
 
-      const merger = new PDFMerger();
-      let lastChunkUsed = -1;
+      // OPTIMIZACIÓN 1: Pre-cargar todos los documentos en paralelo
+      const loadStartTime = Date.now();
+      const loadedDocs = await Promise.all(
+        chunkPdfs.map(async (chunk, index) => {
+          if (!chunk || chunk.length === 0) return null;
+          try {
+            return await PDFDocument.load(chunk, { ignoreEncryption: true });
+          } catch (error) {
+            this.logger.warn(`Error cargando chunk ${index}: ${error.message}`);
+            return null;
+          }
+        })
+      );
+      this.logger.debug(`Pre-carga de ${chunkPdfs.length} chunks completada en ${Date.now() - loadStartTime}ms`);
+
+      const finalDoc = await PDFDocument.create();
+      finalDoc.setProducer('zplpdf-service');
+
+      // OPTIMIZACIÓN 2: Agrupar páginas por chunk para copiar en batch
+      const chunkPageGroups = new Map<number, {
+        pageIndices: number[];
+        outputPositions: number[];
+      }>();
+
+      originalSequence.forEach((blockIdx, outputPosition) => {
+        const chunkNumber = Math.floor(blockIdx / this.CHUNK_SIZE);
+        const pageInChunk = blockIdx % this.CHUNK_SIZE;
+
+        if (!chunkPageGroups.has(chunkNumber)) {
+          chunkPageGroups.set(chunkNumber, { pageIndices: [], outputPositions: [] });
+        }
+
+        const group = chunkPageGroups.get(chunkNumber)!;
+        group.pageIndices.push(pageInChunk);
+        group.outputPositions.push(outputPosition);
+      });
+
+      // OPTIMIZACIÓN 3: Copiar páginas en batch por chunk
+      const copyStartTime = Date.now();
+      const copiedPagesWithPositions: { page: any; position: number }[] = [];
       let skippedPages = 0;
 
-      for (const blockIdx of originalSequence) {
-        const chunkNumber = Math.floor(blockIdx / this.CHUNK_SIZE);
-        const pageInChunk = (blockIdx % this.CHUNK_SIZE) + 1;
+      for (const [chunkNumber, group] of chunkPageGroups) {
+        const srcDoc = loadedDocs[chunkNumber];
 
-        // Verificar que el chunk existe y es válido
-        const chunkPdfData = chunkPdfs[chunkNumber];
-        if (!chunkPdfData || chunkPdfData.length === 0) {
-          this.logger.warn(`Chunk ${chunkNumber} está vacío, saltando página ${pageInChunk}`);
-          skippedPages++;
+        if (!srcDoc) {
+          this.logger.warn(`Chunk ${chunkNumber} no disponible, saltando ${group.pageIndices.length} páginas`);
+          skippedPages += group.pageIndices.length;
           continue;
         }
 
         try {
-          await merger.add(chunkPdfData, pageInChunk.toString());
-        } catch (pageError) {
-          this.logger.warn(`Error al agregar página ${pageInChunk} del chunk ${chunkNumber}: ${pageError.message}`);
-          skippedPages++;
-          continue;
+          // Copiar TODAS las páginas necesarias de este chunk en UNA sola operación
+          const copiedPages = await finalDoc.copyPages(srcDoc, group.pageIndices);
+          copiedPages.forEach((page, i) => {
+            copiedPagesWithPositions.push({
+              page,
+              position: group.outputPositions[i],
+            });
+          });
+        } catch (error) {
+          this.logger.warn(`Error copiando páginas del chunk ${chunkNumber}: ${error.message}`);
+          skippedPages += group.pageIndices.length;
         }
       }
+      this.logger.debug(`Copia de páginas completada en ${Date.now() - copyStartTime}ms`);
+
+      // Ordenar y agregar páginas en el orden correcto
+      const sortStartTime = Date.now();
+      copiedPagesWithPositions.sort((a, b) => a.position - b.position);
+
+      for (const { page } of copiedPagesWithPositions) {
+        finalDoc.addPage(page);
+      }
+      this.logger.debug(`Ordenamiento y agregado de ${copiedPagesWithPositions.length} páginas en ${Date.now() - sortStartTime}ms`);
 
       if (skippedPages > 0) {
         this.logger.warn(`Se omitieron ${skippedPages} páginas durante la fusión`);
       }
 
-      const result = await merger.saveAsBuffer();
+      // Guardar como buffer
+      const saveStartTime = Date.now();
+      const pdfBytes = await finalDoc.save();
+      const result = Buffer.from(pdfBytes);
+      this.logger.debug(`Guardado de PDF (${result.length} bytes) completado en ${Date.now() - saveStartTime}ms`);
+
       if (!result || result.length === 0) {
         throw new Error('El PDF resultante está vacío');
       }
 
+      this.logger.log(`Fusión de PDF completada: ${originalSequence.length} páginas en ${Date.now() - startTime}ms`);
       return result;
     } catch (error) {
       this.logger.error(`Error al fusionar PDFs: ${error.message}`);
