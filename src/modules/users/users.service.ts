@@ -224,9 +224,15 @@ export class UsersService {
       throw new ForbiddenException('User not found');
     }
 
-    // Only Pro and Enterprise can access history
-    if (user.plan === 'free') {
-      throw new ForbiddenException('History is only available for Pro and Enterprise plans');
+    // Admins sin simulación tienen acceso ilimitado
+    const isAdminUnlimited = user.role === 'admin' && !this.isSimulationActive(user);
+
+    // Usar plan efectivo (considera simulación para admins)
+    const effectivePlan = this.getEffectivePlan(user);
+
+    // Solo Free no tiene acceso al historial (Pro, Pro Max y Enterprise sí)
+    if (!isAdminUnlimited && effectivePlan === 'free') {
+      throw new ForbiddenException('History is only available for Pro, Pro Max and Enterprise plans');
     }
 
     const offset = (page - 1) * limit;
