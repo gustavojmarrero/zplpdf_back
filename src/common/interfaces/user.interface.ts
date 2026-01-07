@@ -17,6 +17,9 @@ export interface User {
   role: UserRole;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
+  // Período de facturación (sincronizado desde Stripe webhooks)
+  subscriptionPeriodStart?: Date;
+  subscriptionPeriodEnd?: Date;
   planLimits?: PlanLimits;
   // Campos de simulación de plan (solo para admins)
   simulatedPlan?: PlanType;

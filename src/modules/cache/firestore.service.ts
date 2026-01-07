@@ -148,6 +148,9 @@ export interface PaginatedUsers {
     email: string;
     displayName?: string;
     plan: string;
+    stripeSubscriptionId?: string;
+    subscriptionPeriodStart?: Date;
+    subscriptionPeriodEnd?: Date;
     usage: {
       pdfCount: number;
       labelCount: number;
@@ -395,6 +398,8 @@ export class FirestoreService {
           id: doc.id,
           createdAt: data.createdAt?.toDate?.() || data.createdAt,
           updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+          subscriptionPeriodStart: data.subscriptionPeriodStart?.toDate?.() || data.subscriptionPeriodStart,
+          subscriptionPeriodEnd: data.subscriptionPeriodEnd?.toDate?.() || data.subscriptionPeriodEnd,
         } as User;
       });
     } catch (error) {
@@ -520,6 +525,46 @@ export class FirestoreService {
   }
 
   // ============== Usage con Período Calculado ==============
+
+  /**
+   * Obtiene múltiples documentos de usage en una sola operación batch
+   * Mucho más eficiente que llamar getOrCreateUsageWithPeriod() para cada usuario
+   */
+  async batchGetUsage(
+    periodIds: string[],
+  ): Promise<Map<string, Usage | null>> {
+    if (periodIds.length === 0) {
+      return new Map();
+    }
+
+    try {
+      const refs = periodIds.map(id =>
+        this.firestore.collection(this.usageCollection).doc(id),
+      );
+
+      const snapshots = await this.firestore.getAll(...refs);
+      const result = new Map<string, Usage | null>();
+
+      for (let i = 0; i < periodIds.length; i++) {
+        const doc = snapshots[i];
+        if (doc.exists) {
+          const data = doc.data();
+          result.set(periodIds[i], {
+            ...data,
+            periodStart: data.periodStart?.toDate?.() || data.periodStart,
+            periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
+          } as Usage);
+        } else {
+          result.set(periodIds[i], null);
+        }
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error(`Error in batchGetUsage: ${error.message}`);
+      throw error;
+    }
+  }
 
   /**
    * Obtiene o crea un documento de uso usando un período calculado externamente
@@ -1738,6 +1783,9 @@ export class FirestoreService {
             email: userData.email,
             displayName: userData.displayName,
             plan: userData.plan,
+            stripeSubscriptionId: userData.stripeSubscriptionId,
+            subscriptionPeriodStart: userData.subscriptionPeriodStart?.toDate?.() || userData.subscriptionPeriodStart,
+            subscriptionPeriodEnd: userData.subscriptionPeriodEnd?.toDate?.() || userData.subscriptionPeriodEnd,
             usage,
             createdAt: userData.createdAt?.toDate?.() || userData.createdAt,
             lastActiveAt,

@@ -78,7 +78,7 @@ export class CronService {
           }
 
           // Calcular nuevo período basado en el plan del usuario
-          const newPeriodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+          const newPeriodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
 
           // Crear nuevo documento de uso con el período calculado
           await this.firestoreService.getOrCreateUsageWithPeriod(user.id, newPeriodInfo);

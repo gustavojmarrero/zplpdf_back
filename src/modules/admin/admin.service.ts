@@ -229,10 +229,12 @@ export class AdminService {
       const usersWithCorrectUsage = await Promise.all(
         result.users.map(async (user) => {
           try {
-            const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod({
+            const periodInfo = this.periodCalculatorService.calculateCurrentPeriod({
               id: user.id,
               plan: user.plan as PlanType,
               createdAt: user.createdAt,
+              subscriptionPeriodStart: user.subscriptionPeriodStart,
+              subscriptionPeriodEnd: user.subscriptionPeriodEnd,
             });
             const usage = await this.firestoreService.getOrCreateUsageWithPeriod(user.id, periodInfo);
             return {
@@ -725,11 +727,12 @@ export class AdminService {
     }
 
     // 2. Get current usage using the correct period calculation
-    const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod({
+    const periodInfo = this.periodCalculatorService.calculateCurrentPeriod({
       id: user.id,
       plan: user.plan,
       createdAt: user.createdAt,
-      stripeSubscriptionId: user.stripeSubscriptionId,
+      subscriptionPeriodStart: user.subscriptionPeriodStart,
+      subscriptionPeriodEnd: user.subscriptionPeriodEnd,
     });
     const currentUsage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
     const planLimits = user.planLimits || DEFAULT_PLAN_LIMITS[user.plan];

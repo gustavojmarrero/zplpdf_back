@@ -176,8 +176,8 @@ export class UsersService {
       throw new ForbiddenException('User not found');
     }
 
-    // Calcular período basado en plan (Free: desde createdAt, Pro: desde Stripe)
-    const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+    // Calcular período basado en plan (Free: desde createdAt, Pro: desde Firestore)
+    const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
     const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
 
     // Usar límites efectivos (considera simulación para admins)
@@ -249,7 +249,7 @@ export class UsersService {
 
     // Admins sin simulación activa tienen acceso ilimitado
     if (user.role === 'admin' && !this.isSimulationActive(user)) {
-      const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+      const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
       return { allowed: true, periodInfo };
     }
 
@@ -273,8 +273,8 @@ export class UsersService {
 
     const limits = this.getEffectivePlanLimits(user);
 
-    // Calcular período basado en plan (Free: desde createdAt, Pro: desde Stripe)
-    const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+    // Calcular período basado en plan (Free: desde createdAt, Pro: desde Firestore)
+    const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
     const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
 
     // Check labels per PDF limit
@@ -360,7 +360,7 @@ export class UsersService {
         // Fallback: calcular período (para compatibilidad hacia atrás)
         const user = await this.firestoreService.getUserById(userId);
         if (user) {
-          const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod(user);
+          const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
           await this.firestoreService.incrementUsageWithPeriod(userId, periodInfo.periodId, 1, labelCount);
         }
       }

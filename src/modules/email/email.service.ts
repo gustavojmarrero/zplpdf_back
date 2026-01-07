@@ -1100,6 +1100,35 @@ export class EmailService {
       // Get all users
       const allUsers = await this.firestoreService.getAllUsers();
 
+      // Calculate periods for all users (sync - no await needed)
+      const userPeriods = allUsers.map((user) => {
+        const periodInfo = this.periodCalculatorService.calculateCurrentPeriod({
+          id: user.id,
+          plan: user.plan as 'free' | 'pro' | 'promax' | 'enterprise',
+          createdAt: user.createdAt,
+          subscriptionPeriodStart: user.subscriptionPeriodStart,
+          subscriptionPeriodEnd: user.subscriptionPeriodEnd,
+        });
+        return { user, periodInfo };
+      });
+
+      // Batch fetch all usage documents in a single Firestore operation
+      const periodIds = userPeriods.map(up => up.periodInfo.periodId);
+      const usageMap = await this.firestoreService.batchGetUsage(periodIds);
+
+      // Combine user data with usage
+      const usersWithUsageData = userPeriods.map(({ user, periodInfo }) => {
+        const usage = usageMap.get(periodInfo.periodId) || {
+          odId: periodInfo.periodId,
+          userId: user.id,
+          periodStart: periodInfo.periodStart,
+          periodEnd: periodInfo.periodEnd,
+          pdfCount: 0,
+          labelCount: 0,
+        };
+        return { user, usage };
+      });
+
       const allUsersWithUsage: Array<{
         userId: string;
         userEmail: string;
@@ -1114,16 +1143,8 @@ export class EmailService {
       let totalPdfs = 0;
       let usersWithUsage = 0;
 
-      // Calculate period and usage for each user individually
-      for (const user of allUsers) {
-        const periodInfo = await this.periodCalculatorService.calculateCurrentPeriod({
-          id: user.id,
-          plan: user.plan as 'free' | 'pro' | 'promax' | 'enterprise',
-          createdAt: user.createdAt,
-          stripeSubscriptionId: user.stripeSubscriptionId,
-        });
-
-        const usage = await this.firestoreService.getOrCreateUsageWithPeriod(user.id, periodInfo);
+      // Process results
+      for (const { user, usage } of usersWithUsageData) {
         const pdfCount = usage.pdfCount || 0;
 
         if (pdfCount > 0) {

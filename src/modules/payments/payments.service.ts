@@ -300,14 +300,21 @@ export class PaymentsService {
     const currency = (session.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
     const amount = session.amount_total || 0;
 
-    // Get plan from subscription price
+    // Get plan and period from subscription
     let plan: PaidPlanType = 'pro';
+    let subscriptionPeriodStart: Date | undefined;
+    let subscriptionPeriodEnd: Date | undefined;
     try {
       const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
       const priceId = subscription.items.data[0]?.price?.id;
       if (priceId) {
         plan = this.getPlanFromPriceId(priceId);
       }
+      // Extract billing period dates (type cast for Stripe API compatibility)
+      const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
+      const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+      if (periodStart) subscriptionPeriodStart = new Date(periodStart * 1000);
+      if (periodEnd) subscriptionPeriodEnd = new Date(periodEnd * 1000);
     } catch (error) {
       this.logger.warn(`Failed to get subscription details: ${error.message}`);
     }
@@ -334,6 +341,8 @@ export class PaymentsService {
     const updateData: Record<string, unknown> = {
       plan,
       stripeSubscriptionId: subscriptionId,
+      subscriptionPeriodStart,
+      subscriptionPeriodEnd,
     };
 
     // Update country/city from billing address if available and not already set by Stripe
@@ -443,11 +452,17 @@ export class PaymentsService {
     const plan = priceId ? this.getPlanFromPriceId(priceId) : 'pro';
 
     // Check subscription status with retry
+    // Type cast for Stripe API compatibility
+    const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
+    const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+
     if (subscription.status === 'active') {
       await this.withRetry(
         () => this.firestoreService.updateUser(user.id, {
           plan,
           stripeSubscriptionId: subscription.id,
+          subscriptionPeriodStart: periodStart ? new Date(periodStart * 1000) : undefined,
+          subscriptionPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : undefined,
         }),
         `handleSubscriptionUpdated(${user.id})`,
       );
@@ -554,8 +569,10 @@ export class PaymentsService {
       return;
     }
 
-    // Get plan from invoice subscription
+    // Get plan and period from invoice subscription
     let plan: PaidPlanType = (user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
+    let subscriptionPeriodStart: Date | undefined;
+    let subscriptionPeriodEnd: Date | undefined;
     const subscriptionId = (invoice as { subscription?: string | null }).subscription as string;
     if (subscriptionId) {
       try {
@@ -564,6 +581,11 @@ export class PaymentsService {
         if (priceId) {
           plan = this.getPlanFromPriceId(priceId);
         }
+        // Extract new billing period dates (type cast for Stripe API compatibility)
+        const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
+        const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+        if (periodStart) subscriptionPeriodStart = new Date(periodStart * 1000);
+        if (periodEnd) subscriptionPeriodEnd = new Date(periodEnd * 1000);
       } catch (error) {
         this.logger.warn(`Failed to get subscription details for invoice: ${error.message}`);
       }
@@ -617,6 +639,15 @@ export class PaymentsService {
 
     await this.firestoreService.saveTransaction(transaction);
     this.logger.log(`Saved ${transactionType} transaction: ${transactionId} for user ${user.id}`);
+
+    // Update user's billing period dates
+    if (subscriptionPeriodStart && subscriptionPeriodEnd) {
+      await this.firestoreService.updateUser(user.id, {
+        subscriptionPeriodStart,
+        subscriptionPeriodEnd,
+      });
+      this.logger.log(`Updated billing period for user ${user.id}: ${subscriptionPeriodStart.toISOString()} - ${subscriptionPeriodEnd.toISOString()}`);
+    }
 
     // Save subscription event for renewal tracking
     if (billingReason === 'subscription_cycle') {

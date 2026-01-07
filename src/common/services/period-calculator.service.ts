@@ -1,5 +1,4 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { BillingService } from '../../modules/billing/billing.service.js';
+import { Injectable } from '@nestjs/common';
 
 export interface PeriodInfo {
   periodStart: Date;
@@ -11,32 +10,40 @@ export interface UserForPeriod {
   id: string;
   plan: 'free' | 'pro' | 'promax' | 'enterprise';
   createdAt: Date;
-  stripeSubscriptionId?: string;
+  // Fechas del período de suscripción (sincronizadas desde Stripe webhooks)
+  subscriptionPeriodStart?: Date;
+  subscriptionPeriodEnd?: Date;
 }
 
 @Injectable()
 export class PeriodCalculatorService {
-  constructor(
-    @Inject(forwardRef(() => BillingService))
-    private readonly billingService: BillingService,
-  ) {}
-
   /**
    * Calcula el período actual para un usuario basado en su plan
    * - Free: período mensual desde fecha de registro (createdAt)
-   * - Pro/Enterprise: sincronizado con current_period_end de Stripe
+   * - Pro/Enterprise: usa fechas guardadas en Firestore (sincronizadas desde Stripe)
    */
-  async calculateCurrentPeriod(user: UserForPeriod): Promise<PeriodInfo> {
+  calculateCurrentPeriod(user: UserForPeriod): PeriodInfo {
     if (user.plan === 'free') {
       return this.calculateFreePeriod(user.id, user.createdAt);
     }
 
-    // Pro/Enterprise: usar Stripe si tiene suscripción
-    if (user.stripeSubscriptionId) {
-      return this.calculateStripePeriod(user);
+    // Pro/Enterprise: usar fechas guardadas en Firestore
+    if (user.subscriptionPeriodStart && user.subscriptionPeriodEnd) {
+      const periodStart = user.subscriptionPeriodStart instanceof Date
+        ? user.subscriptionPeriodStart
+        : new Date(user.subscriptionPeriodStart);
+      const periodEnd = user.subscriptionPeriodEnd instanceof Date
+        ? user.subscriptionPeriodEnd
+        : new Date(user.subscriptionPeriodEnd);
+
+      return {
+        periodStart,
+        periodEnd,
+        periodId: this.generatePeriodId(user.id, periodStart),
+      };
     }
 
-    // Fallback para usuarios sin suscripción activa
+    // Fallback para usuarios Pro sin fechas de período (pendiente migración)
     return this.calculateFreePeriod(user.id, user.createdAt);
   }
 
@@ -68,32 +75,6 @@ export class PeriodCalculatorService {
       periodEnd,
       periodId: this.generatePeriodId(userId, periodStart),
     };
-  }
-
-  /**
-   * Pro/Enterprise con Stripe: usar fechas de la suscripción
-   */
-  private async calculateStripePeriod(user: UserForPeriod): Promise<PeriodInfo> {
-    try {
-      const subscription = await this.billingService.getSubscription(user.id);
-
-      if (!subscription || !subscription.currentPeriodEnd) {
-        // Fallback a lógica free si no hay suscripción válida
-        return this.calculateFreePeriod(user.id, user.createdAt);
-      }
-
-      const periodStart = new Date(subscription.currentPeriodStart * 1000);
-      const periodEnd = new Date(subscription.currentPeriodEnd * 1000);
-
-      return {
-        periodStart,
-        periodEnd,
-        periodId: this.generatePeriodId(user.id, periodStart),
-      };
-    } catch {
-      // En caso de error con Stripe, usar fallback
-      return this.calculateFreePeriod(user.id, user.createdAt);
-    }
   }
 
   /**
