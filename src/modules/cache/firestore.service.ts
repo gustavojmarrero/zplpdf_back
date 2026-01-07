@@ -179,6 +179,10 @@ export interface ConversionStatus {
   createdAt: string;
   updatedAt: string;
   errorMessage?: string;
+  // Campos de progreso granular
+  phase?: 'validating' | 'processing' | 'merging' | 'uploading';
+  chunksCompleted?: number;
+  chunksTotal?: number;
 }
 
 @Injectable()

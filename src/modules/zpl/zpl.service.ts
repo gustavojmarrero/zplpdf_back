@@ -351,15 +351,15 @@ export class ZplService {
     }
 
     try {
-      // Actualizar estado a procesando
+      // Actualizar estado a procesando (el progreso se actualiza en los métodos de conversión)
       job.status = 'processing';
-      job.progress = 10;
+      job.progress = 0;
       this.jobs.set(jobId, job);
 
       // Actualizar Firestore
       this.firestoreService.updateConversionStatus(jobId, {
         status: 'processing',
-        progress: 10,
+        progress: 0,
       }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
 
       const size = job.labelSize;
@@ -392,6 +392,9 @@ export class ZplService {
         job.userPlan,
       );
       this.logger.log(`Nombre generado: ${downloadFilename}`);
+
+      // Fase 4: Subiendo archivo (90%)
+      this.updateProgress(jobId, 90, 'uploading');
 
       // Guardar el archivo en Google Cloud Storage
       await this.storage
@@ -496,13 +499,39 @@ export class ZplService {
       case 'pending':
         return 'Conversión en cola';
       case 'processing':
-        return `Procesando (${status.progress || 0}%)`;
+        return this.getPhaseMessage(status.phase, status.chunksCompleted, status.chunksTotal, status.progress);
       case 'completed':
         return 'Conversión completada';
       case 'error':
         return `Error: ${status.errorMessage || 'Desconocido'}`;
       default:
         return 'Estado desconocido';
+    }
+  }
+
+  /**
+   * Obtiene mensaje descriptivo según la fase de procesamiento
+   */
+  private getPhaseMessage(
+    phase?: string,
+    chunksCompleted?: number,
+    chunksTotal?: number,
+    progress?: number,
+  ): string {
+    switch (phase) {
+      case 'validating':
+        return 'Validando archivo ZPL...';
+      case 'processing':
+        if (chunksCompleted && chunksTotal) {
+          return `Procesando etiquetas (${chunksCompleted}/${chunksTotal})...`;
+        }
+        return 'Procesando etiquetas...';
+      case 'merging':
+        return 'Generando archivo...';
+      case 'uploading':
+        return 'Subiendo archivo...';
+      default:
+        return `Procesando (${progress || 0}%)`;
     }
   }
 
@@ -594,6 +623,30 @@ export class ZplService {
   }
 
   /**
+   * Actualiza el progreso de una conversión en caché local y Firestore
+   */
+  private updateProgress(
+    jobId: string,
+    progress: number,
+    phase: 'validating' | 'processing' | 'merging' | 'uploading',
+    chunksCompleted?: number,
+    chunksTotal?: number,
+  ): void {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      job.progress = progress;
+      this.jobs.set(jobId, job);
+    }
+
+    this.firestoreService.updateConversionStatus(jobId, {
+      progress,
+      phase,
+      chunksCompleted,
+      chunksTotal,
+    }).catch(err => this.logger.error(`Error actualizando progreso: ${err.message}`));
+  }
+
+  /**
    * Convierte ZPL a PDF
    * @param zplRaw Contenido ZPL
    * @param labelSize Tamaño de etiqueta
@@ -613,6 +666,10 @@ export class ZplService {
       if (!zplRaw) {
         throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
       }
+
+      // Fase 1: Validación (5%)
+      this.updateProgress(jobId, 5, 'validating');
+
       // 1. Extraer y normalizar bloques ZPL
       const parsedBlocks = this.splitAndExtractCopies(zplRaw);
       if (parsedBlocks.length === 0) {
@@ -627,10 +684,17 @@ export class ZplService {
 
       // 3. Dividir bloques únicos en chunks de 50 (límite de Labelary)
       const chunkRanges = this.calculateChunkRanges(uniqueBlocks.length);
+      const totalChunks = chunkRanges.length;
 
       // 4. Convertir cada chunk de bloques únicos a PDF
       const chunkPdfs: Buffer[] = [];
-      for (const range of chunkRanges) {
+      for (let i = 0; i < chunkRanges.length; i++) {
+        const range = chunkRanges[i];
+
+        // Fase 2: Procesamiento de chunks (10-75%)
+        const progress = Math.round(10 + ((i + 1) / totalChunks) * 65);
+        this.updateProgress(jobId, progress, 'processing', i + 1, totalChunks);
+
         const chunkBlocks = uniqueBlocks.slice(range.start, range.end);
 
         const formattedBlocks = chunkBlocks.map(({ normalizedContent }) => {
@@ -645,6 +709,9 @@ export class ZplService {
         const pdfBuffer = await this.callLabelary(chunkZpl, labelSize, jobId, userId, userPlan, labelCount);
         chunkPdfs.push(pdfBuffer);
       }
+
+      // Fase 3: Fusión de PDF (80%)
+      this.updateProgress(jobId, 80, 'merging');
 
       // 5. Reconstruir el PDF final (replicando cada bloque según copies)
       return this.reconstructFinalPdf(chunkPdfs, originalSequence);
@@ -683,6 +750,9 @@ export class ZplService {
         throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
       }
 
+      // Fase 1: Validación (5%)
+      this.updateProgress(jobId, 5, 'validating');
+
       // 1. Extraer y normalizar bloques ZPL
       const parsedBlocks = this.splitAndExtractCopies(zplRaw);
       if (parsedBlocks.length === 0) {
@@ -697,10 +767,17 @@ export class ZplService {
 
       // 3. Dividir en chunks de 50 (mismo que PDF)
       const chunkRanges = this.calculateChunkRanges(uniqueBlocks.length);
+      const totalChunks = chunkRanges.length;
 
       // 4. Obtener PDFs por chunks y convertir a imágenes
       const allUniqueImages: Buffer[] = [];
-      for (const range of chunkRanges) {
+      for (let i = 0; i < chunkRanges.length; i++) {
+        const range = chunkRanges[i];
+
+        // Fase 2: Procesamiento de chunks (10-75%)
+        const progress = Math.round(10 + ((i + 1) / totalChunks) * 65);
+        this.updateProgress(jobId, progress, 'processing', i + 1, totalChunks);
+
         const chunkBlocks = uniqueBlocks.slice(range.start, range.end);
 
         const formattedBlocks = chunkBlocks.map(({ normalizedContent }) => {
@@ -720,6 +797,9 @@ export class ZplService {
         const images = await this.pdfToImages(pdfBuffer);
         allUniqueImages.push(...images);
       }
+
+      // Fase 3: Generando ZIP (80%)
+      this.updateProgress(jobId, 80, 'merging');
 
       // 5. Crear ZIP con imágenes duplicadas según secuencia original
       return this.createImagesZip(allUniqueImages, originalSequence, outputFormat);
