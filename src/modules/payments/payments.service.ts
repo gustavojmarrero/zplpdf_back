@@ -137,6 +137,55 @@ export class PaymentsService {
 
     // Get or create Stripe customer
     const user = await this.firestoreService.getUserById(userId);
+
+    // VALIDATION: Prevent duplicate subscriptions
+    // Check if user already has the same plan
+    if (user?.plan === plan) {
+      throw new BadRequestException(
+        `You are already subscribed to the ${plan.toUpperCase()} plan. Manage your subscription from your account settings.`,
+      );
+    }
+
+    // Check if user has an active subscription in Stripe (defense in depth)
+    if (user?.stripeSubscriptionId) {
+      try {
+        const existingSubscription = await this.stripe.subscriptions.retrieve(
+          user.stripeSubscriptionId,
+        );
+
+        if (['active', 'trialing', 'past_due'].includes(existingSubscription.status)) {
+          // Get the current plan from the subscription
+          const currentPriceId = existingSubscription.items.data[0]?.price?.id;
+          const currentPlan = currentPriceId ? this.getPlanFromPriceId(currentPriceId) : 'pro';
+
+          // If trying to buy the same plan, reject
+          if (currentPlan === plan) {
+            throw new BadRequestException(
+              `You already have an active ${plan.toUpperCase()} subscription. Manage it from your account settings.`,
+            );
+          }
+
+          // If upgrading from pro to promax, redirect to upgrade endpoint
+          if (currentPlan === 'pro' && plan === 'promax') {
+            throw new BadRequestException(
+              'Use the upgrade endpoint to upgrade from PRO to PRO MAX.',
+            );
+          }
+
+          this.logger.warn(
+            `User ${userId} has existing ${currentPlan} subscription ${user.stripeSubscriptionId}, ` +
+            `attempting to create checkout for ${plan}`,
+          );
+        }
+      } catch (error) {
+        if (error instanceof BadRequestException) throw error;
+        // Subscription doesn't exist in Stripe (maybe switched test/live mode)
+        this.logger.warn(
+          `Could not verify subscription ${user.stripeSubscriptionId}: ${error.message}`,
+        );
+      }
+    }
+
     let customerId = user?.stripeCustomerId;
 
     // Verify customer exists in current Stripe mode (test/live)
@@ -288,13 +337,32 @@ export class PaymentsService {
   async handleCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {
     const userId = session.metadata?.firebaseUid;
 
+    // Detailed logging for debugging
+    this.logger.log(
+      `Processing checkout.session.completed: session=${session.id}, ` +
+      `userId=${userId || 'MISSING'}, subscription=${session.subscription}, ` +
+      `customer=${session.customer}`,
+    );
+
     if (!userId) {
-      this.logger.error('No firebaseUid in session metadata');
+      this.logger.error(
+        `No firebaseUid in session metadata. Session: ${session.id}, ` +
+        `Customer: ${session.customer}, Email: ${session.customer_details?.email}`,
+      );
       return;
     }
 
     const subscriptionId = session.subscription as string;
     const user = await this.firestoreService.getUserById(userId);
+
+    // Log if user already has a different subscription (indicates duplicate checkout)
+    if (user?.stripeSubscriptionId && user.stripeSubscriptionId !== subscriptionId) {
+      this.logger.warn(
+        `DUPLICATE CHECKOUT DETECTED: User ${userId} already has subscription ${user.stripeSubscriptionId}. ` +
+        `New subscription from checkout: ${subscriptionId}. ` +
+        `User plan: ${user.plan}. Previous subscription may be orphaned in Stripe.`,
+      );
+    }
     const billingCountry = session.customer_details?.address?.country || undefined;
     const billingCity = session.customer_details?.address?.city || undefined;
     const currency = (session.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
@@ -338,12 +406,17 @@ export class PaymentsService {
     }
 
     // Update user plan with retry
+    // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
     const updateData: Record<string, unknown> = {
       plan,
       stripeSubscriptionId: subscriptionId,
-      subscriptionPeriodStart,
-      subscriptionPeriodEnd,
     };
+    if (subscriptionPeriodStart) {
+      updateData.subscriptionPeriodStart = subscriptionPeriodStart;
+    }
+    if (subscriptionPeriodEnd) {
+      updateData.subscriptionPeriodEnd = subscriptionPeriodEnd;
+    }
 
     // Update country/city from billing address if available and not already set by Stripe
     if (billingCountry && (!user?.country || user.countrySource === 'ip')) {
@@ -457,13 +530,19 @@ export class PaymentsService {
     const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
 
     if (subscription.status === 'active') {
+      // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
+      const activeUpdateData: Record<string, unknown> = {
+        plan,
+        stripeSubscriptionId: subscription.id,
+      };
+      if (periodStart) {
+        activeUpdateData.subscriptionPeriodStart = new Date(periodStart * 1000);
+      }
+      if (periodEnd) {
+        activeUpdateData.subscriptionPeriodEnd = new Date(periodEnd * 1000);
+      }
       await this.withRetry(
-        () => this.firestoreService.updateUser(user.id, {
-          plan,
-          stripeSubscriptionId: subscription.id,
-          subscriptionPeriodStart: periodStart ? new Date(periodStart * 1000) : undefined,
-          subscriptionPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : undefined,
-        }),
+        () => this.firestoreService.updateUser(user.id, activeUpdateData),
         `handleSubscriptionUpdated(${user.id})`,
       );
       this.logger.log(`Subscription updated for user ${user.id}: active (${plan})`);
