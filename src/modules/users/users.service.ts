@@ -13,6 +13,7 @@ import { BATCH_LIMITS } from '../zpl/interfaces/batch.interface.js';
 import { isBlockedEmailDomain } from '../../common/constants/blocked-email-domains.js';
 import { GeoService } from '../admin/services/geo.service.js';
 import { EmailService } from '../email/email.service.js';
+import { StorageService } from '../storage/storage.service.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -33,6 +34,7 @@ export class UsersService {
     private readonly geoService: GeoService,
     @Inject(forwardRef(() => EmailService))
     private readonly emailService: EmailService,
+    private readonly storageService: StorageService,
   ) {}
 
   async syncUser(firebaseUser: FirebaseUser, clientIP?: string): Promise<User> {
@@ -236,7 +238,36 @@ export class UsersService {
     }
 
     const offset = (page - 1) * limit;
-    return this.firestoreService.getUserConversionHistory(userId, limit, offset);
+    const history = await this.firestoreService.getUserConversionHistory(userId, limit, offset);
+
+    // Regenerar URLs firmadas frescas para cada registro completado
+    return Promise.all(
+      history.map(async (record) => {
+        if (record.fileUrl && record.status === 'completed') {
+          const storagePath = this.extractStoragePath(record.fileUrl);
+          if (storagePath) {
+            try {
+              record.fileUrl = await this.storageService.generateSignedUrlForPath(storagePath);
+            } catch (error) {
+              this.logger.warn(`Failed to regenerate URL for ${record.jobId}: ${error.message}`);
+            }
+          }
+        }
+        return record;
+      }),
+    );
+  }
+
+  /**
+   * Extrae el path del archivo de una URL firmada de Google Cloud Storage
+   * @param signedUrl URL firmada completa
+   * @returns Path del archivo (ej: label-xxx.pdf) o null si no se puede extraer
+   */
+  private extractStoragePath(signedUrl: string): string | null {
+    // URL: https://storage.googleapis.com/bucket/label-xxx.pdf?X-Goog-...
+    // Extraer: label-xxx.pdf
+    const match = signedUrl.match(/googleapis\.com\/[^/]+\/([^?]+)/);
+    return match ? match[1] : null;
   }
 
   async checkCanConvert(

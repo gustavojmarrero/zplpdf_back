@@ -64,12 +64,30 @@ export class StorageService {
     const file = this.storage
       .bucket(this.bucketName)
       .file(`zpl-pdfs/${zplHash}.pdf`);
-    
+
     const [url] = await file.getSignedUrl({
       action: 'read',
       expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
     });
-    
+
+    return url;
+  }
+
+  /**
+   * Genera una URL firmada para cualquier archivo en el bucket
+   * @param filePath Path del archivo en el bucket (ej: label-xxx.pdf)
+   * @param expirationMinutes Tiempo de expiración en minutos (default: 15)
+   * @returns URL firmada
+   */
+  async generateSignedUrlForPath(filePath: string, expirationMinutes: number = 15): Promise<string> {
+    const file = this.storage.bucket(this.bucketName).file(filePath);
+
+    const [url] = await file.getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + expirationMinutes * 60 * 1000,
+    });
+
     return url;
   }
 } 

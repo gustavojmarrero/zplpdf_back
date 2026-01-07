@@ -6,6 +6,7 @@ import { ZplModule } from '../zpl/zpl.module.js';
 import { PeriodModule } from '../../common/services/period.module.js';
 import { AdminModule } from '../admin/admin.module.js';
 import { EmailModule } from '../email/email.module.js';
+import { StorageModule } from '../storage/storage.module.js';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { EmailModule } from '../email/email.module.js';
     PeriodModule,
     forwardRef(() => AdminModule),
     forwardRef(() => EmailModule),
+    StorageModule,
   ],
   controllers: [UsersController],
   providers: [UsersService],

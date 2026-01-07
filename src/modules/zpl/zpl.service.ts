@@ -1275,16 +1275,17 @@ export class ZplService {
   /**
    * Genera una URL firmada para un archivo en Google Cloud Storage
    * @param storageFilename Nombre del archivo en storage
-   * @param downloadFilename Nombre del archivo para descarga
+   * @param downloadFilename Nombre del archivo para descarga (opcional, usa storageFilename si no se proporciona)
    * @returns URL firmada con tiempo de expiración
    */
-  private async generateSignedUrl(storageFilename: string, downloadFilename: string): Promise<string> {
+  public async generateSignedUrl(storageFilename: string, downloadFilename?: string): Promise<string> {
     try {
+      const filename = downloadFilename || storageFilename;
       const options = {
         version: 'v4' as const,
         action: 'read' as const,
         expires: Date.now() + this.URL_EXPIRATION_TIME,
-        responseDisposition: `attachment; filename="${downloadFilename}"`,
+        responseDisposition: `attachment; filename="${filename}"`,
       };
 
       const file = this.storage.bucket(this.bucket).file(storageFilename);
