@@ -192,13 +192,13 @@ export class ZplService {
         );
       }
 
-      // Obtener información del usuario
+      // Obtener información del usuario y plan efectivo (considera simulación para admins)
       const user = await this.usersService.getUserById(userId);
-      const userPlan = user?.plan || 'free';
+      const userPlan = user ? this.usersService.getEffectivePlan(user) : 'free';
 
       // Validate Pro plan for image formats
       if (outputFormat !== OutputFormat.PDF) {
-        if (!user || user.plan === 'free') {
+        if (!user || userPlan === 'free') {
           throw new HttpException(
             {
               error: ErrorCodes.IMAGE_FORMAT_PRO_ONLY,
@@ -1525,7 +1525,9 @@ export class ZplService {
         );
       }
 
-      const planLimits = BATCH_LIMITS[user.plan] || BATCH_LIMITS.free;
+      // Usar plan efectivo (considera simulación para admins)
+      const effectivePlan = this.usersService.getEffectivePlan(user);
+      const planLimits = BATCH_LIMITS[effectivePlan] || BATCH_LIMITS.free;
 
       if (!planLimits.batchAllowed) {
         throw new HttpException(
