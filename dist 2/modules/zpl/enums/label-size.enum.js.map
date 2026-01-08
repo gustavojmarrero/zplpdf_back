@@ -1,0 +1,1 @@
+{"version":3,"sources":["../../../../src/modules/zpl/enums/label-size.enum.ts"],"sourcesContent":["export enum LabelSize {\n  TWO_BY_ONE = '2x1',\n  TWO_BY_FOUR = '2x4',\n  FOUR_BY_TWO = '4x2',\n  FOUR_BY_SIX = '4x6',\n} "],"names":["LabelSize"],"mappings":"AAAA,OAAO,IAAA,AAAKA,mCAAAA;;;;;WAAAA;MAKX"}

@@ -171,9 +171,28 @@ export class GeoService {
   shouldRefreshGeo(user: User): boolean {
     if (!user.countryDetectedAt) return true;
 
-    const detectedAt = user.countryDetectedAt instanceof Date
-      ? user.countryDetectedAt
-      : new Date(user.countryDetectedAt);
+    let detectedAt: Date;
+
+    if (user.countryDetectedAt instanceof Date) {
+      detectedAt = user.countryDetectedAt;
+    } else if (typeof user.countryDetectedAt === 'string') {
+      detectedAt = new Date(user.countryDetectedAt);
+    } else if (user.countryDetectedAt && typeof (user.countryDetectedAt as any).toDate === 'function') {
+      // Firestore Timestamp object
+      detectedAt = (user.countryDetectedAt as any).toDate();
+    } else if (user.countryDetectedAt && (user.countryDetectedAt as any)._seconds !== undefined) {
+      // Firestore Timestamp raw object { _seconds, _nanoseconds }
+      detectedAt = new Date((user.countryDetectedAt as any)._seconds * 1000);
+    } else {
+      // Fallback: try direct conversion
+      detectedAt = new Date(user.countryDetectedAt as any);
+    }
+
+    // If date is invalid, refresh
+    if (isNaN(detectedAt.getTime())) {
+      this.logger.warn(`Invalid countryDetectedAt for user, forcing refresh`);
+      return true;
+    }
 
     const daysSinceDetection = (Date.now() - detectedAt.getTime()) / (1000 * 60 * 60 * 24);
     return daysSinceDetection >= this.GEO_REFRESH_DAYS;

@@ -1,0 +1,1 @@
+{"version":3,"sources":["../../../../src/modules/zpl/enums/output-format.enum.ts"],"sourcesContent":["export enum OutputFormat {\n  PDF = 'pdf',\n  PNG = 'png',\n  JPEG = 'jpeg',\n}\n"],"names":["OutputFormat"],"mappings":"AAAA,OAAO,IAAA,AAAKA,sCAAAA;;;;WAAAA;MAIX"}
