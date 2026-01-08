@@ -45,13 +45,15 @@ export class UsersController {
   ): Promise<UserProfileDto> {
     // Obtener IP del cliente (considera X-Forwarded-For para Cloud Run)
     const clientIP = this.getClientIP(req);
-    const syncedUser = await this.usersService.syncUser(user, clientIP);
+    // Obtener geo de headers de Vercel (más confiable que ip.guide)
+    const vercelGeo = this.getVercelGeo(req);
+    const syncedUser = await this.usersService.syncUser(user, clientIP, vercelGeo);
     return {
       id: syncedUser.id,
       email: syncedUser.email,
       displayName: syncedUser.displayName,
       emailVerified: syncedUser.emailVerified ?? false,
-      plan: syncedUser.plan,
+      plan: this.usersService.getEffectivePlan(syncedUser),
       createdAt: syncedUser.createdAt,
       hasStripeSubscription: !!syncedUser.stripeSubscriptionId,
     };
@@ -70,6 +72,21 @@ export class UsersController {
     }
     // Fallback a IP directa
     return req.ip || req.socket?.remoteAddress;
+  }
+
+  /**
+   * Extrae datos de geolocalización de los headers de Vercel
+   * Vercel inyecta automáticamente x-vercel-ip-country y x-vercel-ip-city
+   */
+  private getVercelGeo(req: Request): { country: string; city?: string } | undefined {
+    const country = req.headers['x-vercel-ip-country'] as string;
+    const city = req.headers['x-vercel-ip-city'] as string;
+
+    // Validar que sea un código ISO de 2 caracteres
+    if (country && country.length === 2) {
+      return { country: country.toUpperCase(), city: city || undefined };
+    }
+    return undefined;
   }
 
   @Get('me')

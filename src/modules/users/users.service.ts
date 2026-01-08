@@ -37,7 +37,11 @@ export class UsersService {
     private readonly storageService: StorageService,
   ) {}
 
-  async syncUser(firebaseUser: FirebaseUser, clientIP?: string): Promise<User> {
+  async syncUser(
+    firebaseUser: FirebaseUser,
+    clientIP?: string,
+    vercelGeo?: { country: string; city?: string },
+  ): Promise<User> {
     // Obtener estado fresco de emailVerified desde Firebase Auth
     let emailVerified = false;
     try {
@@ -63,18 +67,27 @@ export class UsersService {
       const shouldUpdateGeo = !existingUser.country ||
         (existingUser.countrySource === 'ip' && this.geoService.shouldRefreshGeo(existingUser));
 
-      if (shouldUpdateGeo && clientIP) {
-        try {
-          const geoData = await this.geoService.detectCountryByIP(clientIP);
-          if (geoData) {
-            updates.country = geoData.country;
-            updates.city = geoData.city;
-            updates.countrySource = 'ip';
-            updates.countryDetectedAt = new Date();
-            this.logger.log(`Detected geo ${geoData.country}/${geoData.city} for existing user ${firebaseUser.uid}`);
+      if (shouldUpdateGeo) {
+        // Prioridad: 1. Vercel headers (edge), 2. ip.guide API (fallback)
+        if (vercelGeo?.country) {
+          updates.country = vercelGeo.country;
+          updates.city = vercelGeo.city;
+          updates.countrySource = 'ip';
+          updates.countryDetectedAt = new Date();
+          this.logger.log(`Using Vercel geo ${vercelGeo.country}/${vercelGeo.city || ''} for existing user ${firebaseUser.uid}`);
+        } else if (clientIP) {
+          try {
+            const geoData = await this.geoService.detectCountryByIP(clientIP);
+            if (geoData) {
+              updates.country = geoData.country;
+              updates.city = geoData.city;
+              updates.countrySource = 'ip';
+              updates.countryDetectedAt = new Date();
+              this.logger.log(`Detected geo ${geoData.country}/${geoData.city} for existing user ${firebaseUser.uid}`);
+            }
+          } catch (error) {
+            this.logger.warn(`Failed to detect geo for ${firebaseUser.uid}: ${error.message}`);
           }
-        } catch (error) {
-          this.logger.warn(`Failed to detect geo for ${firebaseUser.uid}: ${error.message}`);
         }
       }
 
@@ -86,10 +99,16 @@ export class UsersService {
       };
     }
 
-    // Detectar geolocalización por IP para nuevos usuarios
+    // Detectar geolocalización para nuevos usuarios
+    // Prioridad: 1. Vercel headers (edge), 2. ip.guide API (fallback)
     let country: string | undefined;
     let city: string | undefined;
-    if (clientIP) {
+
+    if (vercelGeo?.country) {
+      country = vercelGeo.country;
+      city = vercelGeo.city;
+      this.logger.log(`Using Vercel geo ${country}/${city || ''} for new user ${firebaseUser.uid}`);
+    } else if (clientIP) {
       try {
         const geoData = await this.geoService.detectCountryByIP(clientIP);
         if (geoData) {
@@ -155,7 +174,7 @@ export class UsersService {
       email: user.email,
       displayName: user.displayName,
       emailVerified,
-      plan: user.plan,
+      plan: this.getEffectivePlan(user),
       createdAt: user.createdAt,
       hasStripeSubscription: !!user.stripeSubscriptionId,
     };
