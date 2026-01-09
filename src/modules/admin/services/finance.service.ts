@@ -389,10 +389,15 @@ export class FinanceService {
     // Convertir LTV a USD (aproximado)
     const exchangeRate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
 
+    // Calcular ingreso mensual promedio (LTV / meses de suscripción)
+    const avgMonthlyRevenue = avgMonths > 0 ? (avgLtv / avgMonths) / exchangeRate : 0;
+
     return {
       avgLtv: avgLtv / exchangeRate,
       avgLtvMxn: avgLtv,
       avgSubscriptionMonths: Math.round(avgMonths * 10) / 10,
+      totalCustomers: userCount,
+      avgMonthlyRevenue: Math.round(avgMonthlyRevenue * 100) / 100,
       byPlan: {
         pro: {
           ltv: byPlan.pro.ltv / exchangeRate,

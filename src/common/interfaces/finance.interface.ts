@@ -207,6 +207,8 @@ export interface LTVData {
   avgLtv: number;
   avgLtvMxn: number;
   avgSubscriptionMonths: number;
+  totalCustomers: number;
+  avgMonthlyRevenue: number;
   byPlan: {
     pro: { ltv: number; avgMonths: number };
     promax: { ltv: number; avgMonths: number };
