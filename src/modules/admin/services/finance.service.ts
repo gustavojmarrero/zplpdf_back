@@ -392,11 +392,14 @@ export class FinanceService {
     // Calcular ingreso mensual promedio (LTV / meses de suscripción)
     const avgMonthlyRevenue = avgMonths > 0 ? (avgLtv / avgMonths) / exchangeRate : 0;
 
+    // Obtener total de suscriptores activos (misma fuente que churn)
+    const totalCustomers = await this.firestoreService.getActiveSubscribersCount();
+
     return {
       avgLtv: avgLtv / exchangeRate,
       avgLtvMxn: avgLtv,
       avgSubscriptionMonths: Math.round(avgMonths * 10) / 10,
-      totalCustomers: userCount,
+      totalCustomers,
       avgMonthlyRevenue: Math.round(avgMonthlyRevenue * 100) / 100,
       byPlan: {
         pro: {
