@@ -575,6 +575,43 @@ export class FinanceService {
   // ============================================
 
   /**
+   * Calcula el MRR de los últimos 30 días (rolling)
+   * Más preciso que el MRR del mes calendario para valoración
+   */
+  async getMRRLast30Days(): Promise<{ mrrMxn: number; mrrUsd: number }> {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+    const revenue = await this.firestoreService.getRevenueByPeriod(thirtyDaysAgo, now);
+    let mrrMxn = revenue.totalMxn;
+
+    let exchangeRate = 20;
+    if (revenue.totalUsd > 0) {
+      try {
+        const conversion = await this.exchangeRateService.convertUsdToMxn(
+          revenue.totalUsd,
+          this.firestoreService,
+        );
+        mrrMxn += conversion.amountMxn;
+        exchangeRate = conversion.rate;
+      } catch {
+        mrrMxn += revenue.totalUsd * 20;
+      }
+    } else {
+      try {
+        exchangeRate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+      } catch {
+        // Usar tasa por defecto
+      }
+    }
+
+    return {
+      mrrMxn,
+      mrrUsd: mrrMxn / exchangeRate,
+    };
+  }
+
+  /**
    * Calcula la valoración del negocio usando metodología Revenue Multiple
    * Múltiplo dinámico basado en métricas reales del SaaS
    */
@@ -582,7 +619,8 @@ export class FinanceService {
     this.logger.log('Calculating business valuation...');
 
     // 1. Obtener métricas base en paralelo
-    const [mrrHistory, churnData, profit, exchangeRate, previousValuations] = await Promise.all([
+    const [mrrLast30Days, mrrHistory, churnData, profit, exchangeRate, previousValuations] = await Promise.all([
+      this.getMRRLast30Days(),
       this.getMRRHistory(12),
       this.getChurnRate('month'),
       this.getProfitMargin('month'),
@@ -590,9 +628,9 @@ export class FinanceService {
       this.firestoreService.getValuationHistory(1),
     ]);
 
-    // 2. Calcular MRR y ARR
-    const mrrMxn = mrrHistory.current.mrr;
-    const mrrUsd = mrrMxn / exchangeRate;
+    // 2. Calcular MRR (últimos 30 días rolling) y ARR
+    const mrrMxn = mrrLast30Days.mrrMxn;
+    const mrrUsd = mrrLast30Days.mrrUsd;
     const arrMxn = mrrMxn * 12;
     const arrUsd = mrrUsd * 12;
 
