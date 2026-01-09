@@ -2638,6 +2638,7 @@ export class FirestoreService {
   // Email templates admin
   private readonly emailTemplatesCollection = 'email_templates';
   private readonly templateVersionsCollection = 'email_template_versions';
+  private readonly valuationsCollection = 'business_valuations';
 
   /**
    * Guarda o actualiza estadísticas por hora de Labelary
@@ -5656,6 +5657,116 @@ export class FirestoreService {
     } catch (error) {
       this.logger.error(`Error rolling back template: ${error.message}`);
       throw error;
+    }
+  }
+
+  // ==================== Business Valuation ====================
+
+  /**
+   * Guarda un snapshot de valoración del negocio
+   * Usa el mes como ID para evitar duplicados
+   */
+  async saveValuationSnapshot(snapshot: {
+    month: string;
+    arr: number;
+    arrMxn: number;
+    mrr: number;
+    mrrMxn: number;
+    valuationLow: number;
+    valuationMid: number;
+    valuationHigh: number;
+    valuationLowMxn: number;
+    valuationMidMxn: number;
+    valuationHighMxn: number;
+    multipleLow: number;
+    multipleMid: number;
+    multipleHigh: number;
+    growthRate: number;
+    churnRate: number;
+    nrr: number;
+    profitMargin: number;
+    ruleOf40Score: number;
+    healthScore: number;
+    exchangeRate: number;
+    calculatedAt: Date;
+  }): Promise<void> {
+    try {
+      const docId = `valuation_${snapshot.month.replace(/-/g, '')}`;
+      await this.firestore.collection(this.valuationsCollection).doc(docId).set({
+        ...snapshot,
+        calculatedAt: snapshot.calculatedAt,
+      });
+      this.logger.log(`Saved valuation snapshot: ${docId}`);
+    } catch (error) {
+      this.logger.error(`Error saving valuation snapshot: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene el historial de valoraciones del negocio
+   */
+  async getValuationHistory(months: number = 12): Promise<Array<{
+    month: string;
+    arr: number;
+    arrMxn: number;
+    mrr: number;
+    mrrMxn: number;
+    valuationLow: number;
+    valuationMid: number;
+    valuationHigh: number;
+    valuationLowMxn: number;
+    valuationMidMxn: number;
+    valuationHighMxn: number;
+    multipleLow: number;
+    multipleMid: number;
+    multipleHigh: number;
+    growthRate: number;
+    churnRate: number;
+    nrr: number;
+    profitMargin: number;
+    ruleOf40Score: number;
+    healthScore: number;
+    exchangeRate: number;
+    calculatedAt: Date;
+  }>> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.valuationsCollection)
+        .orderBy('calculatedAt', 'desc')
+        .limit(months)
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          month: data.month,
+          arr: data.arr,
+          arrMxn: data.arrMxn,
+          mrr: data.mrr,
+          mrrMxn: data.mrrMxn,
+          valuationLow: data.valuationLow,
+          valuationMid: data.valuationMid,
+          valuationHigh: data.valuationHigh,
+          valuationLowMxn: data.valuationLowMxn,
+          valuationMidMxn: data.valuationMidMxn,
+          valuationHighMxn: data.valuationHighMxn,
+          multipleLow: data.multipleLow,
+          multipleMid: data.multipleMid,
+          multipleHigh: data.multipleHigh,
+          growthRate: data.growthRate,
+          churnRate: data.churnRate,
+          nrr: data.nrr,
+          profitMargin: data.profitMargin,
+          ruleOf40Score: data.ruleOf40Score,
+          healthScore: data.healthScore,
+          exchangeRate: data.exchangeRate,
+          calculatedAt: data.calculatedAt?.toDate ? data.calculatedAt.toDate() : new Date(data.calculatedAt),
+        };
+      });
+    } catch (error) {
+      this.logger.error(`Error getting valuation history: ${error.message}`);
+      return [];
     }
   }
 }

@@ -230,3 +230,88 @@ export interface ProfitData {
   profitMxn: number;
   profitMargin: number; // Porcentaje
 }
+
+// ============================================
+// Business Valuation (Valoración del negocio)
+// ============================================
+
+export interface ValuationSnapshot {
+  month: string; // YYYY-MM
+  arr: number; // USD
+  arrMxn: number;
+  mrr: number; // USD
+  mrrMxn: number;
+  valuationLow: number; // USD
+  valuationMid: number;
+  valuationHigh: number;
+  valuationLowMxn: number;
+  valuationMidMxn: number;
+  valuationHighMxn: number;
+  multipleLow: number;
+  multipleMid: number;
+  multipleHigh: number;
+  growthRate: number;
+  churnRate: number;
+  nrr: number;
+  profitMargin: number;
+  ruleOf40Score: number;
+  healthScore: number;
+  exchangeRate: number;
+  calculatedAt: Date;
+}
+
+export interface ValuationFactor {
+  value: number;
+  impact: 'positive' | 'neutral' | 'negative';
+  weight: number;
+  contribution: number;
+  explanation: string;
+}
+
+export interface ValuationFactors {
+  growthRate: ValuationFactor;
+  churnRate: ValuationFactor;
+  nrr: ValuationFactor;
+  profitMargin: ValuationFactor;
+  ruleOf40: ValuationFactor;
+}
+
+export interface ValuationRange {
+  low: number;
+  mid: number;
+  high: number;
+}
+
+export interface ValuationProjection {
+  arr12Months: number;
+  arr12MonthsMxn: number;
+  valuation12Months: ValuationRange;
+  valuation12MonthsMxn: ValuationRange;
+  growthAssumption: number;
+}
+
+export interface PreviousMonthComparison {
+  valuation: number;
+  valuationMxn: number;
+  change: number;
+  changeDirection: 'up' | 'down' | 'stable';
+  month: string;
+}
+
+export interface BusinessValuationData {
+  valuation: ValuationRange;
+  valuationMxn: ValuationRange;
+  multiple: ValuationRange;
+  arr: number;
+  arrMxn: number;
+  mrr: number;
+  mrrMxn: number;
+  factors: ValuationFactors;
+  healthScore: number;
+  healthLevel: 'excellent' | 'good' | 'fair' | 'poor';
+  projection: ValuationProjection;
+  previousMonth?: PreviousMonthComparison;
+  calculatedAt: Date;
+  methodology: string;
+  exchangeRate: number;
+}

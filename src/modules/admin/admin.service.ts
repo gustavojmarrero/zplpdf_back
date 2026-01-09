@@ -1258,4 +1258,18 @@ export class AdminService {
       data: result,
     };
   }
+
+  // ==================== Business Valuation ====================
+
+  async getBusinessValuation() {
+    return this.financeService.getBusinessValuation();
+  }
+
+  async getValuationHistory(months: number) {
+    const history = await this.firestoreService.getValuationHistory(months);
+    return {
+      success: true,
+      data: { history },
+    };
+  }
 }

@@ -8,6 +8,11 @@ import type {
   LTVData,
   ProfitData,
   StripeTransaction,
+  BusinessValuationData,
+  ValuationFactors,
+  ValuationSnapshot,
+  ValuationRange,
+  PreviousMonthComparison,
 } from '../../../common/interfaces/finance.interface.js';
 
 // Mapa de códigos ISO a nombres de países
@@ -563,5 +568,389 @@ export class FinanceService {
       previousStartDate: new Date(startDate.getTime() - periodMs),
       previousEndDate: new Date(startDate.getTime() - 1),
     };
+  }
+
+  // ============================================
+  // Business Valuation Methods
+  // ============================================
+
+  /**
+   * Calcula la valoración del negocio usando metodología Revenue Multiple
+   * Múltiplo dinámico basado en métricas reales del SaaS
+   */
+  async getBusinessValuation(): Promise<BusinessValuationData> {
+    this.logger.log('Calculating business valuation...');
+
+    // 1. Obtener métricas base en paralelo
+    const [mrrHistory, churnData, profit, exchangeRate, previousValuations] = await Promise.all([
+      this.getMRRHistory(12),
+      this.getChurnRate('month'),
+      this.getProfitMargin('month'),
+      this.exchangeRateService.getExchangeRate(this.firestoreService),
+      this.firestoreService.getValuationHistory(1),
+    ]);
+
+    // 2. Calcular MRR y ARR
+    const mrrMxn = mrrHistory.current.mrr;
+    const mrrUsd = mrrMxn / exchangeRate;
+    const arrMxn = mrrMxn * 12;
+    const arrUsd = mrrUsd * 12;
+
+    // 3. Calcular Growth Rate anual
+    const growthRate = this.calculateAnnualGrowthRate(mrrHistory.history);
+
+    // 4. Calcular Net Revenue Retention (NRR)
+    const nrr = this.calculateNRR(mrrHistory.history);
+
+    // 5. Calcular Rule of 40
+    const ruleOf40Score = growthRate + profit.profitMargin;
+    const passedRuleOf40 = ruleOf40Score >= 40;
+
+    // 6. Calcular múltiplo dinámico
+    const multipleCalc = this.calculateDynamicMultiple({
+      growthRate,
+      churnRate: churnData.churnRate,
+      nrr,
+      profitMargin: profit.profitMargin,
+      ruleOf40Score,
+      passedRuleOf40,
+    });
+
+    // 7. Calcular valoración
+    const valuation: ValuationRange = {
+      low: Math.round(arrUsd * multipleCalc.low),
+      mid: Math.round(arrUsd * multipleCalc.mid),
+      high: Math.round(arrUsd * multipleCalc.high),
+    };
+
+    const valuationMxn: ValuationRange = {
+      low: Math.round(valuation.low * exchangeRate),
+      mid: Math.round(valuation.mid * exchangeRate),
+      high: Math.round(valuation.high * exchangeRate),
+    };
+
+    // 8. Calcular Health Score
+    const healthScore = this.calculateHealthScore({
+      growthRate,
+      churnRate: churnData.churnRate,
+      nrr,
+      profitMargin: profit.profitMargin,
+      ruleOf40Score,
+    });
+
+    // 9. Proyección a 12 meses
+    const projectedGrowth = Math.max(growthRate, 10); // Mínimo 10% growth
+    const arr12Months = arrUsd * (1 + projectedGrowth / 100);
+    const projection = {
+      arr12Months: Math.round(arr12Months),
+      arr12MonthsMxn: Math.round(arr12Months * exchangeRate),
+      valuation12Months: {
+        low: Math.round(arr12Months * multipleCalc.low),
+        mid: Math.round(arr12Months * multipleCalc.mid),
+        high: Math.round(arr12Months * multipleCalc.high),
+      },
+      valuation12MonthsMxn: {
+        low: Math.round(arr12Months * multipleCalc.low * exchangeRate),
+        mid: Math.round(arr12Months * multipleCalc.mid * exchangeRate),
+        high: Math.round(arr12Months * multipleCalc.high * exchangeRate),
+      },
+      growthAssumption: Math.round(projectedGrowth * 100) / 100,
+    };
+
+    // 10. Comparación con mes anterior
+    let previousMonth: PreviousMonthComparison | undefined;
+    if (previousValuations && previousValuations.length > 0) {
+      const prev = previousValuations[0];
+      const change =
+        prev.valuationMid > 0 ? ((valuation.mid - prev.valuationMid) / prev.valuationMid) * 100 : 0;
+      previousMonth = {
+        valuation: prev.valuationMid,
+        valuationMxn: prev.valuationMidMxn,
+        change: Math.round(change * 100) / 100,
+        changeDirection: change > 1 ? 'up' : change < -1 ? 'down' : 'stable',
+        month: prev.month,
+      };
+    }
+
+    // 11. Guardar snapshot histórico (solo si es un nuevo mes)
+    const currentMonth = this.getCurrentMonth();
+    const shouldSaveSnapshot =
+      !previousValuations || previousValuations.length === 0 || previousValuations[0].month !== currentMonth;
+
+    if (shouldSaveSnapshot) {
+      await this.saveValuationSnapshot({
+        month: currentMonth,
+        arr: arrUsd,
+        arrMxn,
+        mrr: mrrUsd,
+        mrrMxn,
+        valuationLow: valuation.low,
+        valuationMid: valuation.mid,
+        valuationHigh: valuation.high,
+        valuationLowMxn: valuationMxn.low,
+        valuationMidMxn: valuationMxn.mid,
+        valuationHighMxn: valuationMxn.high,
+        multipleLow: multipleCalc.low,
+        multipleMid: multipleCalc.mid,
+        multipleHigh: multipleCalc.high,
+        growthRate,
+        churnRate: churnData.churnRate,
+        nrr,
+        profitMargin: profit.profitMargin,
+        ruleOf40Score,
+        healthScore,
+        exchangeRate,
+        calculatedAt: new Date(),
+      });
+    }
+
+    return {
+      valuation,
+      valuationMxn,
+      multiple: multipleCalc,
+      arr: Math.round(arrUsd * 100) / 100,
+      arrMxn: Math.round(arrMxn * 100) / 100,
+      mrr: Math.round(mrrUsd * 100) / 100,
+      mrrMxn: Math.round(mrrMxn * 100) / 100,
+      factors: this.buildFactorsDetail({
+        growthRate,
+        churnRate: churnData.churnRate,
+        nrr,
+        profitMargin: profit.profitMargin,
+        ruleOf40Score,
+        passedRuleOf40,
+      }),
+      healthScore,
+      healthLevel: this.getHealthLevel(healthScore),
+      projection,
+      previousMonth,
+      calculatedAt: new Date(),
+      methodology: 'Revenue Multiple (ARR x Dynamic Multiple)',
+      exchangeRate,
+    };
+  }
+
+  /**
+   * Calcula el múltiplo dinámico basado en benchmarks SaaS
+   */
+  private calculateDynamicMultiple(metrics: {
+    growthRate: number;
+    churnRate: number;
+    nrr: number;
+    profitMargin: number;
+    ruleOf40Score: number;
+    passedRuleOf40: boolean;
+  }): ValuationRange {
+    // Múltiplo base para SaaS pequeño: 3x-4x
+    let baseMultiple = 3.5;
+
+    // Bonus por Growth Rate (>20% anual = +1x por cada 10%)
+    if (metrics.growthRate > 20) {
+      const bonusMultiplier = Math.floor((metrics.growthRate - 20) / 10);
+      baseMultiple += bonusMultiplier * 1;
+    }
+
+    // Bonus por Churn Rate bajo (<3% mensual = +1x)
+    if (metrics.churnRate < 3) {
+      baseMultiple += 1;
+    } else if (metrics.churnRate < 5) {
+      baseMultiple += 0.5;
+    }
+
+    // Bonus por NRR alto (>110% = +1x)
+    if (metrics.nrr > 110) {
+      baseMultiple += 1;
+    } else if (metrics.nrr > 100) {
+      baseMultiple += 0.5;
+    }
+
+    // Bonus por Profit Margin (>20% = +1x)
+    if (metrics.profitMargin > 20) {
+      baseMultiple += 1;
+    } else if (metrics.profitMargin > 0) {
+      baseMultiple += 0.5;
+    }
+
+    // Bonus por Rule of 40 (+2x si cumple)
+    if (metrics.passedRuleOf40) {
+      baseMultiple += 2;
+    }
+
+    // Límites: mínimo 2x, máximo 15x
+    baseMultiple = Math.max(2, Math.min(15, baseMultiple));
+
+    return {
+      low: Math.round(baseMultiple * 0.7 * 10) / 10, // -30%
+      mid: Math.round(baseMultiple * 10) / 10,
+      high: Math.round(baseMultiple * 1.4 * 10) / 10, // +40%
+    };
+  }
+
+  /**
+   * Calcula la tasa de crecimiento anual basada en historial de MRR
+   */
+  private calculateAnnualGrowthRate(history: Array<{ month: string; mrr: number }>): number {
+    if (history.length < 2) return 0;
+
+    // Comparar MRR actual vs hace 12 meses (o el más antiguo disponible)
+    const currentMrr = history[history.length - 1]?.mrr || 0;
+    const oldestMrr = history[0]?.mrr || 0;
+
+    if (oldestMrr === 0) return currentMrr > 0 ? 100 : 0;
+
+    const monthsSpan = history.length - 1;
+    if (monthsSpan === 0) return 0;
+
+    const monthlyGrowth = Math.pow(currentMrr / oldestMrr, 1 / monthsSpan) - 1;
+    const annualGrowth = (Math.pow(1 + monthlyGrowth, 12) - 1) * 100;
+
+    return Math.round(annualGrowth * 100) / 100;
+  }
+
+  /**
+   * Calcula Net Revenue Retention (NRR)
+   * NRR = (MRR inicio + expansion - contraccion - churn) / MRR inicio * 100
+   */
+  private calculateNRR(history: Array<{ month: string; mrr: number }>): number {
+    if (history.length < 2) return 100;
+
+    const startMrr = history[0]?.mrr || 0;
+    const endMrr = history[history.length - 1]?.mrr || 0;
+
+    if (startMrr === 0) return 100;
+
+    // NRR simplificado basado en crecimiento de MRR existente
+    const nrr = (endMrr / startMrr) * 100;
+
+    return Math.round(nrr * 100) / 100;
+  }
+
+  /**
+   * Calcula Health Score del negocio (0-100)
+   */
+  private calculateHealthScore(metrics: {
+    growthRate: number;
+    churnRate: number;
+    nrr: number;
+    profitMargin: number;
+    ruleOf40Score: number;
+  }): number {
+    let score = 50; // Base score
+
+    // Growth Rate (max +20 puntos)
+    if (metrics.growthRate >= 50) score += 20;
+    else if (metrics.growthRate >= 30) score += 15;
+    else if (metrics.growthRate >= 20) score += 10;
+    else if (metrics.growthRate >= 10) score += 5;
+    else if (metrics.growthRate < 0) score -= 10;
+
+    // Churn Rate (max +20 puntos)
+    if (metrics.churnRate <= 2) score += 20;
+    else if (metrics.churnRate <= 3) score += 15;
+    else if (metrics.churnRate <= 5) score += 10;
+    else if (metrics.churnRate <= 7) score += 5;
+    else score -= 10;
+
+    // NRR (max +15 puntos)
+    if (metrics.nrr >= 120) score += 15;
+    else if (metrics.nrr >= 110) score += 12;
+    else if (metrics.nrr >= 100) score += 8;
+    else score -= 5;
+
+    // Profit Margin (max +15 puntos)
+    if (metrics.profitMargin >= 30) score += 15;
+    else if (metrics.profitMargin >= 20) score += 12;
+    else if (metrics.profitMargin >= 10) score += 8;
+    else if (metrics.profitMargin >= 0) score += 4;
+    else score -= 10;
+
+    // Rule of 40 (max +10 puntos)
+    if (metrics.ruleOf40Score >= 50) score += 10;
+    else if (metrics.ruleOf40Score >= 40) score += 8;
+    else if (metrics.ruleOf40Score >= 30) score += 4;
+
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  private getHealthLevel(score: number): 'excellent' | 'good' | 'fair' | 'poor' {
+    if (score >= 80) return 'excellent';
+    if (score >= 60) return 'good';
+    if (score >= 40) return 'fair';
+    return 'poor';
+  }
+
+  private buildFactorsDetail(metrics: {
+    growthRate: number;
+    churnRate: number;
+    nrr: number;
+    profitMargin: number;
+    ruleOf40Score: number;
+    passedRuleOf40: boolean;
+  }): ValuationFactors {
+    return {
+      growthRate: {
+        value: Math.round(metrics.growthRate * 100) / 100,
+        impact: metrics.growthRate > 20 ? 'positive' : metrics.growthRate > 0 ? 'neutral' : 'negative',
+        weight: 3,
+        contribution: metrics.growthRate > 20 ? Math.floor((metrics.growthRate - 20) / 10) : 0,
+        explanation:
+          metrics.growthRate > 20
+            ? `Crecimiento ${metrics.growthRate.toFixed(1)}% anual agrega +${Math.floor((metrics.growthRate - 20) / 10)}x al multiplo`
+            : `Crecimiento ${metrics.growthRate.toFixed(1)}% anual (objetivo: >20%)`,
+      },
+      churnRate: {
+        value: Math.round(metrics.churnRate * 100) / 100,
+        impact: metrics.churnRate < 3 ? 'positive' : metrics.churnRate < 5 ? 'neutral' : 'negative',
+        weight: 2,
+        contribution: metrics.churnRate < 3 ? 1 : metrics.churnRate < 5 ? 0.5 : 0,
+        explanation:
+          metrics.churnRate < 3
+            ? `Churn ${metrics.churnRate.toFixed(2)}% excelente, agrega +1x`
+            : `Churn ${metrics.churnRate.toFixed(2)}% (objetivo: <3%)`,
+      },
+      nrr: {
+        value: Math.round(metrics.nrr * 100) / 100,
+        impact: metrics.nrr > 110 ? 'positive' : metrics.nrr > 100 ? 'neutral' : 'negative',
+        weight: 2,
+        contribution: metrics.nrr > 110 ? 1 : metrics.nrr > 100 ? 0.5 : 0,
+        explanation:
+          metrics.nrr > 110
+            ? `NRR ${metrics.nrr.toFixed(1)}% indica expansion neta, agrega +1x`
+            : `NRR ${metrics.nrr.toFixed(1)}% (objetivo: >110%)`,
+      },
+      profitMargin: {
+        value: Math.round(metrics.profitMargin * 100) / 100,
+        impact: metrics.profitMargin > 20 ? 'positive' : metrics.profitMargin > 0 ? 'neutral' : 'negative',
+        weight: 2,
+        contribution: metrics.profitMargin > 20 ? 1 : metrics.profitMargin > 0 ? 0.5 : 0,
+        explanation:
+          metrics.profitMargin > 20
+            ? `Margen ${metrics.profitMargin.toFixed(1)}% saludable, agrega +1x`
+            : `Margen ${metrics.profitMargin.toFixed(1)}% (objetivo: >20%)`,
+      },
+      ruleOf40: {
+        value: Math.round(metrics.ruleOf40Score * 100) / 100,
+        impact: metrics.passedRuleOf40 ? 'positive' : 'neutral',
+        weight: 4,
+        contribution: metrics.passedRuleOf40 ? 2 : 0,
+        explanation: metrics.passedRuleOf40
+          ? `Rule of 40: ${metrics.ruleOf40Score.toFixed(1)} >= 40, premium SaaS (+2x)`
+          : `Rule of 40: ${metrics.ruleOf40Score.toFixed(1)} < 40 (Growth + Margin)`,
+      },
+    };
+  }
+
+  private getCurrentMonth(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  private async saveValuationSnapshot(snapshot: ValuationSnapshot): Promise<void> {
+    try {
+      await this.firestoreService.saveValuationSnapshot(snapshot);
+      this.logger.log(`Saved valuation snapshot for month: ${snapshot.month}`);
+    } catch (error) {
+      this.logger.error(`Error saving valuation snapshot: ${error.message}`);
+    }
   }
 }

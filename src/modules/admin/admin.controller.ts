@@ -65,6 +65,11 @@ import {
   GetChurnQueryDto,
   GetProfitQueryDto,
 } from './dto/admin-finance.dto.js';
+import {
+  BusinessValuationResponseDto,
+  ValuationHistoryResponseDto,
+  GetValuationHistoryQueryDto,
+} from './dto/admin-valuation.dto.js';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -940,5 +945,48 @@ export class AdminController {
   async getFinancialDashboard(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} requesting financial dashboard`);
     return this.adminService.getFinancialDashboard();
+  }
+
+  // ==================== Business Valuation ====================
+
+  @Get('valuation')
+  @ApiOperation({
+    summary: 'Get business valuation',
+    description: 'Returns comprehensive business valuation using Revenue Multiple methodology with dynamic multiplier based on SaaS metrics (Growth Rate, Churn, NRR, Profit Margin, Rule of 40).',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Business valuation retrieved successfully',
+    type: BusinessValuationResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getBusinessValuation(@AdminUser() admin: AdminUserData): Promise<BusinessValuationResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting business valuation`);
+    const data = await this.adminService.getBusinessValuation();
+    return {
+      success: true,
+      data,
+    };
+  }
+
+  @Get('valuation/history')
+  @ApiOperation({
+    summary: 'Get valuation history',
+    description: 'Returns historical business valuations for trend analysis.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Valuation history retrieved successfully',
+    type: ValuationHistoryResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getValuationHistory(
+    @Query() query: GetValuationHistoryQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<ValuationHistoryResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting valuation history`);
+    return this.adminService.getValuationHistory(query.months || 12);
   }
 }
