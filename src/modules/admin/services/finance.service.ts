@@ -814,13 +814,14 @@ export class FinanceService {
       baseMultiple += 2;
     }
 
-    // Límites: mínimo 2x, máximo 15x
-    baseMultiple = Math.max(2, Math.min(15, baseMultiple));
-
+    // Límites por escenario según estándares de industria:
+    // - Conservador: 2x - 12x (empresas privadas promedio)
+    // - Medio: 2x - 15x (empresas privadas top-tier)
+    // - Optimista: 2x - 20x (comparable a empresas públicas SaaS)
     return {
-      low: Math.round(baseMultiple * 0.7 * 10) / 10, // -30%
-      mid: Math.round(baseMultiple * 10) / 10,
-      high: Math.round(baseMultiple * 1.4 * 10) / 10, // +40%
+      low: Math.round(Math.max(2, Math.min(12, baseMultiple * 0.7)) * 10) / 10,
+      mid: Math.round(Math.max(2, Math.min(15, baseMultiple)) * 10) / 10,
+      high: Math.round(Math.max(2, Math.min(20, baseMultiple * 1.4)) * 10) / 10,
     };
   }
 
