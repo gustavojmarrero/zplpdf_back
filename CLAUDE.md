@@ -6,6 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ZPLPDF is a NestJS backend API for converting ZPL (Zebra Programming Language) files to PDF/PNG/JPEG. It uses Google Cloud Run for deployment with Firestore for data persistence and Cloud Storage for file storage.
 
+## Full Stack Development
+
+El proyecto ZPLPDF consiste en dos repositorios que deben correr simultáneamente:
+
+| Componente | Directorio | Puerto | Comando |
+|------------|------------|--------|---------|
+| **Backend (NestJS)** | `/Users/gustavomarrero/Documents/node/zplpdf` | 8080 | `npm run start:dev` |
+| **Frontend (Next.js)** | `/Users/gustavomarrero/Documents/Next/zplpdf` | 3000 | `npm run dev` |
+
+### Iniciar ambos servidores
+
+```bash
+# Terminal 1 - Backend (desde /Documents/node/zplpdf)
+npm run start:dev
+
+# Terminal 2 - Frontend (desde /Documents/Next/zplpdf)
+npm run dev
+```
+
+### URLs de desarrollo
+
+- **Frontend:** http://localhost:3000
+- **Backend API:** http://localhost:8080
+- **Swagger Docs:** http://localhost:8080/docs
+
 ## Common Commands
 
 **IMPORTANTE:** El servidor SIEMPRE debe correr en el puerto 8080 (compatibilidad con Cloud Run).
