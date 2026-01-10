@@ -311,7 +311,7 @@ export class AdminService {
   }
 
   async getConversions(query: GetConversionsQueryDto): Promise<AdminConversionsResponseDto> {
-    this.logger.log('Fetching conversions stats');
+    this.logger.log(`Fetching conversions stats${query.plan ? ` for plan: ${query.plan}` : ''}`);
 
     try {
       const startDate = query.startDate ? new Date(query.startDate) : undefined;
@@ -331,13 +331,44 @@ export class AdminService {
         failures: item.failures,
       }));
 
+      // If filtering by plan, recalculate summary from byPlan data
+      let summary = conversionStats.summary;
+      let filteredTopUsers = topUsers;
+
+      if (query.plan && conversionStats.byPlan[query.plan]) {
+        const planData = conversionStats.byPlan[query.plan];
+        const totalPdfs = planData.pdfs;
+        const totalLabels = planData.labels;
+
+        // Calculate success/failure ratio for the plan based on global ratio
+        const globalTotal = conversionStats.summary.successCount + conversionStats.summary.failureCount;
+        const globalSuccessRate = globalTotal > 0
+          ? conversionStats.summary.successCount / globalTotal
+          : 1;
+
+        // Estimate success/failure counts for this plan based on global rate
+        const estimatedSuccessCount = Math.round(totalPdfs * globalSuccessRate);
+        const estimatedFailureCount = totalPdfs - estimatedSuccessCount;
+
+        summary = {
+          totalPdfs,
+          totalLabels,
+          successCount: estimatedSuccessCount,
+          failureCount: estimatedFailureCount,
+          avgLabelsPerPdf: totalPdfs > 0 ? Math.round((totalLabels / totalPdfs) * 10) / 10 : 0,
+        };
+
+        // Filter topUsers by plan
+        filteredTopUsers = topUsers.filter((user) => user.plan === query.plan);
+      }
+
       return {
         success: true,
         data: {
-          summary: conversionStats.summary,
+          summary,
           trend: formattedTrend,
           byPlan: conversionStats.byPlan as any,
-          topUsers,
+          topUsers: filteredTopUsers,
         },
       };
     } catch (error) {

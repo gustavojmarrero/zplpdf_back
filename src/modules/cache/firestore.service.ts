@@ -2259,6 +2259,7 @@ export class FirestoreService {
       const byPlan: Record<string, { pdfs: number; labels: number }> = {
         free: { pdfs: 0, labels: 0 },
         pro: { pdfs: 0, labels: 0 },
+        promax: { pdfs: 0, labels: 0 },
         enterprise: { pdfs: 0, labels: 0 },
       };
 
