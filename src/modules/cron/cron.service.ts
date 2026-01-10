@@ -49,6 +49,11 @@ export interface MigrateSubscriptionPeriodsResult {
   executedAt: Date;
 }
 
+export interface ResetUSCountriesResult {
+  updated: number;
+  executedAt: Date;
+}
+
 @Injectable()
 export class CronService {
   private readonly logger = new Logger(CronService.name);
@@ -376,6 +381,65 @@ export class CronService {
       };
     } catch (error) {
       this.logger.error(`Error in migration: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Reset users with country "US" to "unknown"
+   * One-time migration to fix incorrectly assigned US countries
+   * Issue #69: https://github.com/gustavojmarrero/zplpdf_front/issues/69
+   *
+   * These users were incorrectly detected as US because:
+   * - 49 users have city "Ashburn" (AWS/Cloudflare datacenter in Virginia)
+   * - 107 users have no city (detected via server IP, not user IP)
+   */
+  async resetUSCountries(): Promise<ResetUSCountriesResult> {
+    this.logger.log('Starting US countries reset migration...');
+
+    let updated = 0;
+
+    try {
+      // Get all users with country "US" that have Ashburn or no city
+      const allUsers = await this.firestoreService.getAllUsers();
+      const usUsers = allUsers.filter(
+        u => u.country === 'US' && (!u.city || u.city === 'Ashburn'),
+      );
+
+      this.logger.log(`Found ${usUsers.length} US users with Ashburn or no city (to be reset)`);
+
+      // Log city distribution for documentation
+      const cityStats = new Map<string, number>();
+      for (const user of usUsers) {
+        const city = user.city || 'sin ciudad';
+        cityStats.set(city, (cityStats.get(city) || 0) + 1);
+      }
+      this.logger.log(`City distribution: ${JSON.stringify(Object.fromEntries(cityStats))}`);
+
+      for (const user of usUsers) {
+        try {
+          await this.firestoreService.updateUser(user.id, {
+            country: 'unknown',
+            city: null,
+            countrySource: null,
+            countryDetectedAt: null,
+          });
+
+          this.logger.log(`✅ Reset country for user ${user.email}: US → unknown`);
+          updated++;
+        } catch (error) {
+          this.logger.error(`❌ Error resetting country for ${user.email}: ${error.message}`);
+        }
+      }
+
+      this.logger.log(`US countries reset completed: ${updated} users updated`);
+
+      return {
+        updated,
+        executedAt: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Error in US countries reset: ${error.message}`);
       throw error;
     }
   }

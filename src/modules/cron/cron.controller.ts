@@ -9,6 +9,7 @@ import {
   UpdateGoalsResult,
   CheckInactiveUsersResult,
   MigrateSubscriptionPeriodsResult,
+  ResetUSCountriesResult,
 } from './cron.service.js';
 import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 
@@ -230,5 +231,36 @@ export class CronController {
   })
   async migrateSubscriptionPeriods(): Promise<MigrateSubscriptionPeriodsResult> {
     return this.cronService.migrateSubscriptionPeriods();
+  }
+
+  @Post('reset-us-countries')
+  @UseGuards(CronAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset users with country US to unknown (one-time)',
+    description:
+      'Fixes users incorrectly assigned to "US" by changing their country to "unknown". Issue #69.',
+  })
+  @ApiHeader({
+    name: 'X-Cron-Secret',
+    description: 'Secret key for cron authentication',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Migration completed',
+    schema: {
+      properties: {
+        updated: { type: 'number', example: 156 },
+        executedAt: { type: 'string', format: 'date-time' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid cron secret',
+  })
+  async resetUSCountries(): Promise<ResetUSCountriesResult> {
+    return this.cronService.resetUSCountries();
   }
 }
