@@ -3619,11 +3619,30 @@ export class FirestoreService {
         .where('status', '==', 'succeeded')
         .get();
 
+      // Obtener userIds únicos de las transacciones
+      const userIds = [...new Set(snapshot.docs.map((doc) => doc.data().userId).filter(Boolean))];
+
+      // Obtener usuarios en batches de 30 (límite de Firestore para 'in')
+      const userCountryMap = new Map<string, string>();
+      for (let i = 0; i < userIds.length; i += 30) {
+        const batch = userIds.slice(i, i + 30);
+        const usersSnapshot = await this.firestore
+          .collection(this.usersCollection)
+          .where('uid', 'in', batch)
+          .get();
+
+        for (const userDoc of usersSnapshot.docs) {
+          const userData = userDoc.data();
+          userCountryMap.set(userData.uid, userData.country || 'unknown');
+        }
+      }
+
       const countryMap = new Map<string, { revenue: number; revenueMxn: number; transactions: number }>();
 
       for (const doc of snapshot.docs) {
         const data = doc.data();
-        const country = data.billingCountry || 'unknown';
+        // Usar el país del usuario, no el billingCountry de Stripe
+        const country = userCountryMap.get(data.userId) || data.billingCountry || 'unknown';
 
         if (!countryMap.has(country)) {
           countryMap.set(country, { revenue: 0, revenueMxn: 0, transactions: 0 });

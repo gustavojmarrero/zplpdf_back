@@ -273,10 +273,19 @@ export class GeoService {
    * Identifica países con mayor potencial
    */
   async getCountriesWithPotential(): Promise<CountryPotential[]> {
-    const [distribution, conversionRates] = await Promise.all([
+    // Obtener MRR mensual (últimos 30 días)
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+
+    const [distribution, conversionRates, revenueData] = await Promise.all([
       this.getUserDistributionByCountry(),
       this.getConversionRatesByCountry(),
+      this.getRevenueByCountry(startDate, endDate),
     ]);
+
+    // Crear mapa de revenue por país para búsqueda rápida
+    const revenueByCountry = new Map(revenueData.map((r) => [r.country, r]));
 
     // Calcular métricas promedio para comparación
     const avgConversionRate =
@@ -289,6 +298,7 @@ export class GeoService {
     for (const country of distribution) {
       const conversionData = conversionRates.find((c) => c.country === country.country);
       const conversionRate = conversionData?.conversionRate || 0;
+      const countryRevenue = revenueByCountry.get(country.country);
 
       // Calcular score basado en:
       // - Cantidad de usuarios (25%)
@@ -299,10 +309,17 @@ export class GeoService {
 
       // Potencial de crecimiento: países con muchos free users y baja conversión
       const freeUsers = country.byPlan.free;
-      const totalPaid = country.byPlan.pro + country.byPlan.enterprise;
+      const paidUsers = country.byPlan.pro + country.byPlan.enterprise;
       const growthPotential = freeUsers > 0 && conversionRate < avgConversionRate ? 40 : 20;
 
       const score = Math.round(userScore + conversionScore + growthPotential);
+
+      // Calcular MRR mensual por usuario (en MXN)
+      // Se divide entre TODOS los usuarios para ver el valor promedio por usuario en la región
+      const revenuePerUser =
+        countryRevenue && country.userCount > 0
+          ? countryRevenue.revenueMxn / country.userCount
+          : 0;
 
       // Generar recomendación
       let recommendation: string;
@@ -323,8 +340,8 @@ export class GeoService {
         metrics: {
           userCount: country.userCount,
           conversionRate,
-          revenuePerUser: totalPaid > 0 ? 0 : 0, // Se podría calcular con datos de revenue
-          growthRate: 0, // Se podría calcular comparando períodos
+          revenuePerUser,
+          growthRate: 0, // TODO: calcular comparando períodos
         },
         recommendation,
       });
