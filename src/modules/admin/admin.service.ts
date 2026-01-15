@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import { Storage } from '@google-cloud/storage';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { BillingService } from '../billing/billing.service.js';
+import { toISOString, ensureISOString } from '../../utils/date.util.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { LabelaryAnalyticsService } from '../zpl/services/labelary-analytics.service.js';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
@@ -397,9 +398,7 @@ export class AdminService {
         id: conversion.id,
         userId: conversion.userId,
         userEmail: conversion.userEmail,
-        createdAt: conversion.createdAt instanceof Date
-          ? conversion.createdAt.toISOString()
-          : new Date(conversion.createdAt).toISOString(),
+        createdAt: toISOString(conversion.createdAt),
         labelCount: conversion.labelCount,
         labelSize: conversion.labelSize,
         status: conversion.status,
@@ -659,9 +658,7 @@ export class AdminService {
         userEmail: change.userEmail,
         previousPlan: change.previousPlan,
         newPlan: change.newPlan,
-        changedAt: change.changedAt instanceof Date
-          ? change.changedAt.toISOString()
-          : new Date(change.changedAt).toISOString(),
+        changedAt: toISOString(change.changedAt),
         reason: change.reason,
         changedBy: change.changedBy,
       }));
@@ -714,12 +711,8 @@ export class AdminService {
         email: p.email,
         name: p.name,
         plan: p.plan,
-        billingPeriodStart: p.billingPeriodStart instanceof Date
-          ? p.billingPeriodStart.toISOString()
-          : new Date(p.billingPeriodStart).toISOString(),
-        billingPeriodEnd: p.billingPeriodEnd instanceof Date
-          ? p.billingPeriodEnd.toISOString()
-          : new Date(p.billingPeriodEnd).toISOString(),
+        billingPeriodStart: toISOString(p.billingPeriodStart),
+        billingPeriodEnd: toISOString(p.billingPeriodEnd),
         planLimit: p.planLimit,
         pdfsUsed: p.pdfsUsed,
         daysElapsed: p.daysElapsed,
@@ -832,7 +825,7 @@ export class AdminService {
         },
         usageHistory,
         subscription,
-        createdAt: user.createdAt instanceof Date ? user.createdAt.toISOString() : new Date(user.createdAt).toISOString(),
+        createdAt: toISOString(user.createdAt),
         lastActiveAt,
       },
     };
@@ -1333,7 +1326,7 @@ export class AdminService {
           id: f.id,
           jobId: f.jobId,
           userEmail: f.userEmail,
-          createdAt: f.createdAt instanceof Date ? f.createdAt.toISOString() : f.createdAt,
+          createdAt: ensureISOString(f.createdAt),
           labelSize: f.labelSize,
           labelCount: f.labelCount,
           fileSize: f.fileSize,
@@ -1380,7 +1373,7 @@ export class AdminService {
           labelCount: file.labelCount,
           fileSize: file.fileSize,
           result: file.result,
-          createdAt: file.createdAt instanceof Date ? file.createdAt.toISOString() : file.createdAt,
+          createdAt: ensureISOString(file.createdAt),
         },
       },
     };

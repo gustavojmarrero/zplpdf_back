@@ -68,6 +68,13 @@ interface ZplPreviewItemDto {
   qty: number;
 }
 
+interface PreparedZplBlocks {
+  uniqueBlocks: ParsedZplBlock[];
+  originalSequence: number[];
+  chunkRanges: ChunkRange[];
+  totalChunks: number;
+}
+
 @Injectable()
 export class ZplService {
   private readonly logger = new Logger(ZplService.name);
@@ -77,6 +84,25 @@ export class ZplService {
   private readonly bucket: string;
   private readonly storageBasePath: string;
   private readonly URL_EXPIRATION_TIME = 15 * 60 * 1000; // 15 minutos en milisegundos
+
+  // Mapas de conversión para tamaños de etiqueta
+  private readonly LABEL_SIZE_NORMALIZE_MAP: Record<string, string> = {
+    'small': '2x1',
+    '2x1': '2x1',
+    '2x4': '2x4',
+    '4x2': '4x2',
+    'large': '4x6',
+    '4x6': '4x6',
+  };
+
+  private readonly LABEL_SIZE_ENUM_MAP: Record<string, LabelSize> = {
+    'small': LabelSize.TWO_BY_ONE,
+    '2x1': LabelSize.TWO_BY_ONE,
+    '2x4': LabelSize.TWO_BY_FOUR,
+    '4x2': LabelSize.FOUR_BY_TWO,
+    'large': LabelSize.FOUR_BY_SIX,
+    '4x6': LabelSize.FOUR_BY_SIX,
+  };
 
   constructor(
     private configService: ConfigService,
@@ -709,6 +735,43 @@ export class ZplService {
   }
 
   /**
+   * Prepara los bloques ZPL para conversión (validación, deduplicación, chunking)
+   * @param zplRaw Contenido ZPL crudo
+   * @param jobId ID del trabajo para actualizar progreso
+   * @returns Bloques únicos, secuencia original y rangos de chunks
+   */
+  private prepareZplBlocks(zplRaw: string, jobId: string): PreparedZplBlocks {
+    if (!zplRaw) {
+      throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
+    }
+
+    // Fase 1: Validación (5%)
+    this.updateProgress(jobId, 5, 'validating');
+
+    // 1. Extraer y normalizar bloques ZPL
+    const parsedBlocks = this.splitAndExtractCopies(zplRaw);
+    if (parsedBlocks.length === 0) {
+      throw new HttpException(
+        'No valid ZPL blocks found',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    // 2. Identificar bloques únicos y su secuencia original
+    const { uniqueBlocks, originalSequence } = this.identifyUniqueBlocks(parsedBlocks);
+
+    // 3. Dividir bloques únicos en chunks de 50 (límite de Labelary)
+    const chunkRanges = this.calculateChunkRanges(uniqueBlocks.length);
+
+    return {
+      uniqueBlocks,
+      originalSequence,
+      chunkRanges,
+      totalChunks: chunkRanges.length,
+    };
+  }
+
+  /**
    * Convierte ZPL a PDF
    * @param zplRaw Contenido ZPL
    * @param labelSize Tamaño de etiqueta
@@ -725,30 +788,10 @@ export class ZplService {
     userPlan: UserPlan,
   ): Promise<Buffer> {
     try {
-      if (!zplRaw) {
-        throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
-      }
+      // Preparar bloques ZPL (validación, deduplicación, chunking)
+      const { uniqueBlocks, originalSequence, chunkRanges, totalChunks } = this.prepareZplBlocks(zplRaw, jobId);
 
-      // Fase 1: Validación (5%)
-      this.updateProgress(jobId, 5, 'validating');
-
-      // 1. Extraer y normalizar bloques ZPL
-      const parsedBlocks = this.splitAndExtractCopies(zplRaw);
-      if (parsedBlocks.length === 0) {
-        throw new HttpException(
-          'No valid ZPL blocks found',
-          HttpStatus.BAD_REQUEST
-        );
-      }
-
-      // 2. Identificar bloques únicos y su secuencia original
-      const { uniqueBlocks, originalSequence } = this.identifyUniqueBlocks(parsedBlocks);
-
-      // 3. Dividir bloques únicos en chunks de 50 (límite de Labelary)
-      const chunkRanges = this.calculateChunkRanges(uniqueBlocks.length);
-      const totalChunks = chunkRanges.length;
-
-      // 4. Convertir cada chunk de bloques únicos a PDF
+      // Convertir cada chunk de bloques únicos a PDF
       const chunkPdfs: Buffer[] = [];
       for (let i = 0; i < chunkRanges.length; i++) {
         const range = chunkRanges[i];
@@ -808,30 +851,10 @@ export class ZplService {
     userPlan: UserPlan,
   ): Promise<Buffer> {
     try {
-      if (!zplRaw) {
-        throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
-      }
+      // Preparar bloques ZPL (validación, deduplicación, chunking)
+      const { uniqueBlocks, originalSequence, chunkRanges, totalChunks } = this.prepareZplBlocks(zplRaw, jobId);
 
-      // Fase 1: Validación (5%)
-      this.updateProgress(jobId, 5, 'validating');
-
-      // 1. Extraer y normalizar bloques ZPL
-      const parsedBlocks = this.splitAndExtractCopies(zplRaw);
-      if (parsedBlocks.length === 0) {
-        throw new HttpException(
-          'No valid ZPL blocks found',
-          HttpStatus.BAD_REQUEST
-        );
-      }
-
-      // 2. Identificar bloques únicos y su secuencia original
-      const { uniqueBlocks, originalSequence } = this.identifyUniqueBlocks(parsedBlocks);
-
-      // 3. Dividir en chunks de 50 (mismo que PDF)
-      const chunkRanges = this.calculateChunkRanges(uniqueBlocks.length);
-      const totalChunks = chunkRanges.length;
-
-      // 4. Obtener PDFs por chunks y convertir a imágenes
+      // Obtener PDFs por chunks y convertir a imágenes
       const allUniqueImages: Buffer[] = [];
       for (let i = 0; i < chunkRanges.length; i++) {
         const range = chunkRanges[i];
@@ -1307,25 +1330,7 @@ export class ZplService {
     }
 
     // Para usuarios Free, usar formato estándar zplpdf_size_timestamp
-    let size: string;
-    switch (labelSize.toLowerCase()) {
-      case 'small':
-      case '2x1':
-        size = '2x1';
-        break;
-      case '2x4':
-        size = '2x4';
-        break;
-      case '4x2':
-        size = '4x2';
-        break;
-      case 'large':
-      case '4x6':
-        size = '4x6';
-        break;
-      default:
-        size = labelSize;
-    }
+    const size = this.LABEL_SIZE_NORMALIZE_MAP[labelSize.toLowerCase()] ?? labelSize;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14);
     const formatSuffix = outputFormat !== OutputFormat.PDF ? `_${outputFormat}` : '';
     return {
@@ -1369,20 +1374,7 @@ export class ZplService {
    * @returns LabelSize enum value
    */
   private getLabelSize(labelSize: string): LabelSize {
-    switch (labelSize.toLowerCase()) {
-      case 'small':
-      case '2x1':
-        return LabelSize.TWO_BY_ONE;
-      case '2x4':
-        return LabelSize.TWO_BY_FOUR;
-      case '4x2':
-        return LabelSize.FOUR_BY_TWO;
-      case 'large':
-      case '4x6':
-        return LabelSize.FOUR_BY_SIX;
-      default:
-        return LabelSize.TWO_BY_ONE;
-    }
+    return this.LABEL_SIZE_ENUM_MAP[labelSize.toLowerCase()] ?? LabelSize.TWO_BY_ONE;
   }
 
   /**

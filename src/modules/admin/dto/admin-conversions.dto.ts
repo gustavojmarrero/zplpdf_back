@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsString, IsDateString, IsEnum, IsInt, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PaginationDto } from '../../../common/dto/pagination.dto.js';
 
 export class GetConversionsQueryDto {
   @ApiPropertyOptional({ enum: ['day', 'week', 'month'], default: 'week' })
@@ -176,20 +177,6 @@ class ConversionItemDto {
 
   @ApiPropertyOptional({ description: 'File URL if available' })
   fileUrl?: string;
-}
-
-class PaginationDto {
-  @ApiProperty()
-  page: number;
-
-  @ApiProperty()
-  limit: number;
-
-  @ApiProperty()
-  total: number;
-
-  @ApiProperty()
-  totalPages: number;
 }
 
 class ConversionsListDataDto {

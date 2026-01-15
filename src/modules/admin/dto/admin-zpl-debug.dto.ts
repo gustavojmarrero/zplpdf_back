@@ -10,6 +10,7 @@ import {
   Max,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PaginationDto } from '../../../common/dto/pagination.dto.js';
 
 export class GetZplDebugFilesQueryDto {
   @ApiProperty({ description: 'User email to search for' })
@@ -86,20 +87,6 @@ class ZplDebugFileDto {
     description: 'Output format requested',
   })
   outputFormat: string;
-}
-
-class PaginationDto {
-  @ApiProperty()
-  page: number;
-
-  @ApiProperty()
-  limit: number;
-
-  @ApiProperty()
-  total: number;
-
-  @ApiProperty()
-  totalPages: number;
 }
 
 class ZplDebugFilesDataDto {
