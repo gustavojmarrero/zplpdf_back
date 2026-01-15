@@ -6,12 +6,14 @@ import { AuthModule } from '../auth/auth.module.js';
 import { BillingModule } from '../billing/billing.module.js';
 import { PeriodModule } from '../../common/services/period.module.js';
 import { ZplModule } from '../zpl/zpl.module.js';
+import { StorageModule } from '../storage/storage.module.js';
 // Finance services
 import { ExchangeRateService } from './services/exchange-rate.service.js';
 import { FinanceService } from './services/finance.service.js';
 import { ExpenseService } from './services/expense.service.js';
 import { GeoService } from './services/geo.service.js';
 import { GoalsService } from './services/goals.service.js';
+import { GoogleAuthProvider } from '../../config/google-auth.provider.js';
 
 @Module({
   imports: [
@@ -20,6 +22,7 @@ import { GoalsService } from './services/goals.service.js';
     BillingModule,
     PeriodModule,
     forwardRef(() => ZplModule),
+    StorageModule,
   ],
   controllers: [AdminController],
   providers: [
@@ -29,6 +32,7 @@ import { GoalsService } from './services/goals.service.js';
     ExpenseService,
     GeoService,
     GoalsService,
+    GoogleAuthProvider,
   ],
   exports: [
     AdminService,

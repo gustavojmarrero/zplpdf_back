@@ -159,6 +159,40 @@ Key variables (see `.env.example`):
 - `ADMIN_EMAILS` - Comma-separated admin emails
 - `CRON_SECRET_KEY` - Secret for scheduled job authentication
 
+## Firestore Indexes
+
+Cuando una query de Firestore usa múltiples campos (ej: `where` + `orderBy`), se requiere un **índice compuesto**.
+
+### Crear índice compuesto
+
+```bash
+# Formato general
+gcloud firestore indexes composite create \
+  --project=zplpdf-guatever \
+  --collection-group=COLLECTION_NAME \
+  --field-config=field-path=FIELD1,order=ascending \
+  --field-config=field-path=FIELD2,order=descending
+
+# Ejemplo: índice para zpl_debug_files (userEmail + createdAt)
+gcloud firestore indexes composite create \
+  --project=zplpdf-guatever \
+  --collection-group=zpl_debug_files \
+  --field-config=field-path=userEmail,order=ascending \
+  --field-config=field-path=createdAt,order=descending
+```
+
+### Ver índices existentes
+
+```bash
+gcloud firestore indexes composite list --project=zplpdf-guatever
+```
+
+### Desde la consola
+
+Si el error incluye un enlace de Firebase Console, puedes crear el índice directamente desde ahí.
+
+**Nota:** Los índices pueden tardar 1-5 minutos en crearse.
+
 ## Code Conventions
 
 - ESM modules (`"type": "module"` in package.json)
