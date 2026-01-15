@@ -70,6 +70,11 @@ import {
   ValuationHistoryResponseDto,
   GetValuationHistoryQueryDto,
 } from './dto/admin-valuation.dto.js';
+import {
+  GetZplDebugFilesQueryDto,
+  AdminZplDebugFilesResponseDto,
+  AdminZplDebugFileDownloadResponseDto,
+} from './dto/admin-zpl-debug.dto.js';
 
 @ApiTags('admin')
 @ApiBearerAuth()
@@ -988,5 +993,53 @@ export class AdminController {
   ): Promise<ValuationHistoryResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting valuation history`);
     return this.adminService.getValuationHistory(query.months || 12);
+  }
+
+  // ==================== ZPL Debug Files ====================
+
+  @Get('zpl-debug')
+  @ApiOperation({
+    summary: 'List ZPL debug files by user email',
+    description: 'Returns a paginated list of ZPL files stored for debugging purposes, filtered by user email.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'ZPL debug files retrieved successfully',
+    type: AdminZplDebugFilesResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async getZplDebugFiles(
+    @Query() query: GetZplDebugFilesQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminZplDebugFilesResponseDto> {
+    this.logger.log(`Admin ${admin.email} requesting ZPL debug files for ${query.email}`);
+    return this.adminService.getZplDebugFiles(query);
+  }
+
+  @Get('zpl-debug/:jobId/download')
+  @ApiOperation({
+    summary: 'Download a specific ZPL debug file',
+    description: 'Returns a signed URL to download the original ZPL file for a specific conversion job.',
+  })
+  @ApiParam({
+    name: 'jobId',
+    description: 'The job ID of the conversion',
+    type: String,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Download URL generated successfully',
+    type: AdminZplDebugFileDownloadResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'ZPL file not found' })
+  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
+  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  async downloadZplDebugFile(
+    @Param('jobId') jobId: string,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminZplDebugFileDownloadResponseDto> {
+    this.logger.log(`Admin ${admin.email} downloading ZPL debug file: ${jobId}`);
+    return this.adminService.getZplDebugFileDownload(jobId);
   }
 }

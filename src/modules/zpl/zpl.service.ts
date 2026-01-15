@@ -142,6 +142,48 @@ export class ZplService {
   }
 
   /**
+   * Guarda el archivo ZPL original para debugging (asíncrono, no bloquea conversión)
+   */
+  private async saveZplForDebug(
+    zplContent: string,
+    jobId: string,
+    userId: string,
+    userEmail: string,
+    labelSize: string,
+    labelCount: number,
+    outputFormat: OutputFormat,
+  ): Promise<void> {
+    try {
+      const dateStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const storagePath = `debug-zpl/${userId}/${dateStr}/${jobId}.zpl`;
+      const fileSize = Buffer.byteLength(zplContent, 'utf8');
+
+      // Guardar archivo en GCS
+      await this.storage
+        .bucket(this.bucket)
+        .file(storagePath)
+        .save(zplContent, { contentType: 'text/plain' });
+
+      // Guardar metadata en Firestore
+      await this.firestoreService.saveZplDebugFile({
+        userId,
+        userEmail,
+        jobId,
+        storagePath,
+        labelSize,
+        labelCount,
+        fileSize,
+        outputFormat,
+      });
+
+      this.logger.debug(`ZPL saved for debugging: ${storagePath}`);
+    } catch (error) {
+      this.logger.warn(`Failed to save ZPL for debug: ${error.message}`);
+      // No lanzar error - esto es opcional y no debe afectar la conversión
+    }
+  }
+
+  /**
    * Inicia un proceso de conversion ZPL
    * @param zplContent Contenido ZPL a convertir
    * @param labelSize Tamano de la etiqueta
@@ -248,6 +290,17 @@ export class ZplService {
         this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodId, userPlan as 'free' | 'pro' | 'enterprise');
       }, 100);
 
+      // Guardar ZPL para debugging de forma asíncrona (no bloquea)
+      this.saveZplForDebug(
+        zplContent,
+        jobId,
+        userId,
+        user?.email || 'unknown',
+        labelSize,
+        labelCount,
+        outputFormat,
+      ).catch(err => this.logger.warn(`Failed to save ZPL for debug: ${err.message}`));
+
       return jobId;
     } catch (error) {
       this.logger.error(`Error al iniciar conversion ZPL: ${error.message}`);
@@ -292,6 +345,9 @@ export class ZplService {
           periodId,
           userPlan,
         );
+        // Update ZPL debug result
+        this.firestoreService.updateZplDebugResult(jobId, 'success')
+          .catch(err => this.logger.warn(`Failed to update ZPL debug result: ${err.message}`));
       } else if (job && job.status === 'failed') {
         // Record failed conversion
         await this.usersService.recordConversion(
@@ -305,6 +361,9 @@ export class ZplService {
           periodId,
           userPlan,
         );
+        // Update ZPL debug result
+        this.firestoreService.updateZplDebugResult(jobId, 'error', job?.error)
+          .catch(err => this.logger.warn(`Failed to update ZPL debug result: ${err.message}`));
       }
     } catch (error) {
       this.logger.error(`Error in processZplConversionWithUser: ${error.message}`);
@@ -321,6 +380,9 @@ export class ZplService {
           periodId,
           userPlan,
         );
+        // Update ZPL debug result
+        this.firestoreService.updateZplDebugResult(jobId, 'error', error.message)
+          .catch(err => this.logger.warn(`Failed to update ZPL debug result: ${err.message}`));
       } catch (recordError) {
         this.logger.error(`Error recording failed conversion: ${recordError.message}`);
       }

@@ -185,6 +185,26 @@ export interface ConversionStatus {
   chunksTotal?: number;
 }
 
+// ============== ZPL Debug Files ==============
+
+export interface ZplDebugFileInput {
+  userId: string;
+  userEmail: string;
+  jobId: string;
+  storagePath: string;
+  labelSize: string;
+  labelCount: number;
+  fileSize: number;
+  outputFormat: 'pdf' | 'png' | 'jpeg';
+}
+
+export interface ZplDebugFile extends ZplDebugFileInput {
+  id: string;
+  createdAt: Date;
+  result: 'pending' | 'success' | 'error';
+  errorCode?: string;
+}
+
 @Injectable()
 export class FirestoreService {
   private firestore: Firestore;
@@ -5787,6 +5807,185 @@ export class FirestoreService {
     } catch (error) {
       this.logger.error(`Error getting valuation history: ${error.message}`);
       return [];
+    }
+  }
+
+  // ============== ZPL Debug Files ==============
+
+  private readonly zplDebugCollection = 'zpl_debug_files';
+
+  async saveZplDebugFile(data: {
+    userId: string;
+    userEmail: string;
+    jobId: string;
+    storagePath: string;
+    labelSize: string;
+    labelCount: number;
+    fileSize: number;
+    outputFormat: string;
+  }): Promise<void> {
+    try {
+      await this.firestore.collection(this.zplDebugCollection).doc(data.jobId).set({
+        ...data,
+        createdAt: new Date(),
+        result: 'pending',
+      });
+      this.logger.debug(`ZPL debug file saved: ${data.jobId}`);
+    } catch (error) {
+      this.logger.error(`Error saving ZPL debug file: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async updateZplDebugResult(
+    jobId: string,
+    result: 'success' | 'error',
+    errorCode?: string,
+  ): Promise<void> {
+    try {
+      const updateData: Record<string, any> = { result };
+      if (errorCode) updateData.errorCode = errorCode;
+
+      await this.firestore
+        .collection(this.zplDebugCollection)
+        .doc(jobId)
+        .update(updateData);
+    } catch (error) {
+      this.logger.warn(`Error updating ZPL debug result: ${error.message}`);
+    }
+  }
+
+  async getZplDebugFilesByEmail(
+    email: string,
+    options: {
+      page?: number;
+      limit?: number;
+      startDate?: Date;
+      endDate?: Date;
+      result?: 'success' | 'error';
+    } = {},
+  ): Promise<{
+    files: Array<{
+      id: string;
+      userId: string;
+      userEmail: string;
+      jobId: string;
+      storagePath: string;
+      labelSize: string;
+      labelCount: number;
+      fileSize: number;
+      outputFormat: string;
+      createdAt: Date;
+      result: 'pending' | 'success' | 'error';
+      errorCode?: string;
+    }>;
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }> {
+    const page = options.page || 1;
+    const limit = options.limit || 20;
+
+    try {
+      let query: FirebaseFirestore.Query = this.firestore
+        .collection(this.zplDebugCollection)
+        .where('userEmail', '==', email);
+
+      if (options.result) {
+        query = query.where('result', '==', options.result);
+      }
+
+      if (options.startDate) {
+        query = query.where('createdAt', '>=', options.startDate);
+      }
+
+      if (options.endDate) {
+        query = query.where('createdAt', '<=', options.endDate);
+      }
+
+      // Count total
+      const countSnapshot = await query.count().get();
+      const total = countSnapshot.data().count;
+
+      // Get paginated results
+      const offset = (page - 1) * limit;
+      const snapshot = await query
+        .orderBy('createdAt', 'desc')
+        .offset(offset)
+        .limit(limit)
+        .get();
+
+      const files = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          userId: data.userId,
+          userEmail: data.userEmail,
+          jobId: data.jobId,
+          storagePath: data.storagePath,
+          labelSize: data.labelSize,
+          labelCount: data.labelCount,
+          fileSize: data.fileSize,
+          outputFormat: data.outputFormat,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          result: data.result,
+          errorCode: data.errorCode,
+        };
+      });
+
+      return {
+        files,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error getting ZPL debug files: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getZplDebugFileByJobId(jobId: string): Promise<{
+    id: string;
+    userId: string;
+    userEmail: string;
+    jobId: string;
+    storagePath: string;
+    labelSize: string;
+    labelCount: number;
+    fileSize: number;
+    outputFormat: string;
+    createdAt: Date;
+    result: 'pending' | 'success' | 'error';
+    errorCode?: string;
+  } | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.zplDebugCollection)
+        .doc(jobId)
+        .get();
+
+      if (!doc.exists) return null;
+
+      const data = doc.data();
+      return {
+        id: doc.id,
+        userId: data.userId,
+        userEmail: data.userEmail,
+        jobId: data.jobId,
+        storagePath: data.storagePath,
+        labelSize: data.labelSize,
+        labelCount: data.labelCount,
+        fileSize: data.fileSize,
+        outputFormat: data.outputFormat,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        result: data.result,
+        errorCode: data.errorCode,
+      };
+    } catch (error) {
+      this.logger.error(`Error getting ZPL debug file: ${error.message}`);
+      throw error;
     }
   }
 }

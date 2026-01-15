@@ -1,6 +1,7 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, Inject, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
+import { Storage } from '@google-cloud/storage';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { BillingService } from '../billing/billing.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
@@ -59,6 +60,7 @@ export class AdminService {
     private readonly expenseService: ExpenseService,
     private readonly geoService: GeoService,
     private readonly goalsService: GoalsService,
+    @Inject('GOOGLE_AUTH_OPTIONS') @Optional() private googleAuthOptions: any,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (stripeSecretKey) {
@@ -1301,6 +1303,86 @@ export class AdminService {
     return {
       success: true,
       data: { history },
+    };
+  }
+
+  // ==================== ZPL Debug Files ====================
+
+  async getZplDebugFiles(query: {
+    email: string;
+    page?: number;
+    limit?: number;
+    startDate?: string;
+    endDate?: string;
+    result?: 'success' | 'error';
+  }) {
+    this.logger.log(`Fetching ZPL debug files for email: ${query.email}`);
+
+    const result = await this.firestoreService.getZplDebugFilesByEmail(query.email, {
+      page: query.page,
+      limit: query.limit,
+      startDate: query.startDate ? new Date(query.startDate) : undefined,
+      endDate: query.endDate ? new Date(query.endDate) : undefined,
+      result: query.result,
+    });
+
+    return {
+      success: true,
+      data: {
+        files: result.files.map((f) => ({
+          id: f.id,
+          jobId: f.jobId,
+          userEmail: f.userEmail,
+          createdAt: f.createdAt instanceof Date ? f.createdAt.toISOString() : f.createdAt,
+          labelSize: f.labelSize,
+          labelCount: f.labelCount,
+          fileSize: f.fileSize,
+          result: f.result,
+          errorCode: f.errorCode,
+          outputFormat: f.outputFormat,
+        })),
+        pagination: result.pagination,
+      },
+    };
+  }
+
+  async getZplDebugFileDownload(jobId: string) {
+    const file = await this.firestoreService.getZplDebugFileByJobId(jobId);
+
+    if (!file) {
+      throw new NotFoundException(`ZPL debug file not found for job: ${jobId}`);
+    }
+
+    // Generar URL firmada
+    const storage = new Storage(this.googleAuthOptions || {});
+    const bucket = this.configService.get<string>('GCP_STORAGE_BUCKET') || 'zplpdf-app-files';
+
+    const [url] = await storage
+      .bucket(bucket)
+      .file(file.storagePath)
+      .getSignedUrl({
+        version: 'v4',
+        action: 'read',
+        expires: Date.now() + 15 * 60 * 1000, // 15 minutos
+        responseDisposition: `attachment; filename="${jobId}.zpl"`,
+      });
+
+    return {
+      success: true,
+      data: {
+        downloadUrl: url,
+        filename: `${jobId}.zpl`,
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        metadata: {
+          jobId: file.jobId,
+          userEmail: file.userEmail,
+          labelSize: file.labelSize,
+          labelCount: file.labelCount,
+          fileSize: file.fileSize,
+          result: file.result,
+          createdAt: file.createdAt instanceof Date ? file.createdAt.toISOString() : file.createdAt,
+        },
+      },
     };
   }
 }
