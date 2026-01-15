@@ -201,3 +201,20 @@ Si el error incluye un enlace de Firebase Console, puedes crear el índice direc
 - Firestore timestamps stored as ISO strings
 - Timezone: GMT-6 (Mérida, México) for daily metrics
 - Error codes defined in `common/constants/error-codes.ts`
+
+## Agent Documentation
+
+> Este proyecto tiene documentación detallada para agentes de IA en `.agent-docs/`
+
+### Quick Reference
+
+| Archivo | Contenido |
+|---------|-----------|
+| `.agent-docs/NAVIGATION.md` | Dónde encontrar cosas, mapa del proyecto |
+| `.agent-docs/PATTERNS.md` | Patrones de código reutilizables |
+| `.agent-docs/ENDPOINTS.md` | Todos los endpoints API documentados |
+| `.agent-docs/SCHEMAS.md` | Modelos de Firestore y colecciones |
+| `.agent-docs/QUICK-TASKS.md` | Guías paso a paso para tareas comunes |
+| `.agent-docs/VALIDATION.md` | Reporte de validación de la documentación |
+
+Para información detallada sobre cualquier aspecto del proyecto, consulta los archivos en `.agent-docs/`
