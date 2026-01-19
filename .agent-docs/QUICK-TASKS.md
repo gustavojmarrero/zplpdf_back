@@ -413,3 +413,129 @@ gcloud firestore indexes composite create \
 ```
 
 Or click the link in the error message to create via Firebase Console.
+
+---
+
+## Impersonar Usuario para Pruebas
+
+Permite iniciar sesión como cualquier usuario registrado para probar la aplicación desde su perspectiva.
+
+### Paso 1: Obtener el UID del Usuario
+
+Desde Firebase Console:
+1. Ir a https://console.firebase.google.com/project/intranet-guatever/authentication/users
+2. Buscar el usuario por email
+3. Copiar su **UID**
+
+O consultar Firestore:
+```bash
+# Buscar usuario en la colección 'users'
+```
+
+### Paso 2: Generar Custom Token
+
+Ejecutar desde el directorio del backend:
+
+```bash
+node --experimental-vm-modules -e "
+import admin from 'firebase-admin';
+import { readFileSync } from 'fs';
+
+const creds = JSON.parse(readFileSync('./firebase-credentials.json', 'utf8'));
+admin.initializeApp({ credential: admin.credential.cert(creds) });
+
+const uid = 'UID_DEL_USUARIO_AQUI';
+const token = await admin.auth().createCustomToken(uid);
+console.log('Custom Token:');
+console.log(token);
+"
+```
+
+**Nota:** El token expira en 1 hora.
+
+### Paso 3: Usar el Token en el Frontend
+
+#### Opción A: Desde la Consola del Navegador (DevTools)
+
+1. Abrir http://localhost:3000
+2. Abrir DevTools (F12) → Console
+3. Ejecutar:
+
+```javascript
+(async () => {
+  const chunk = window.webpackChunk_N_E;
+  let firebaseAuth = null;
+  let firebaseApp = null;
+
+  chunk.push([['temp_' + Date.now()], {}, (require) => {
+    try {
+      firebaseAuth = require("(app-pages-browser)/./node_modules/@firebase/auth/dist/esm/index.js");
+      firebaseApp = require("(app-pages-browser)/./node_modules/@firebase/app/dist/esm/index.esm.js");
+    } catch (e) {}
+  }]);
+
+  if (firebaseAuth && firebaseApp) {
+    const app = firebaseApp.getApps()[0] || firebaseApp.getApp();
+    const auth = firebaseAuth.getAuth(app);
+    const token = 'PEGAR_TOKEN_AQUI';
+    const result = await firebaseAuth.signInWithCustomToken(auth, token);
+    console.log('Logged in as:', result.user.uid);
+    location.reload();
+  }
+})();
+```
+
+4. La página se recargará con el nuevo usuario
+
+#### Opción B: Usando Claude in Chrome (MCP)
+
+Si tienes el MCP de Chrome configurado, Claude puede ejecutar el proceso automáticamente:
+
+1. Proporcionar el UID del usuario
+2. Claude genera el token y lo inyecta en el navegador
+3. Se recarga la página automáticamente
+
+### Ejemplo Completo
+
+```bash
+# 1. Generar token para usuario específico
+node --experimental-vm-modules -e "
+import admin from 'firebase-admin';
+import { readFileSync } from 'fs';
+
+const creds = JSON.parse(readFileSync('./firebase-credentials.json', 'utf8'));
+admin.initializeApp({ credential: admin.credential.cert(creds) });
+
+const uid = 'iitZttsKz8YHLRejioeIn9E8AT42';  // UID de Pablo
+const token = await admin.auth().createCustomToken(uid);
+console.log(token);
+"
+```
+
+### Volver a tu Usuario Original
+
+Simplemente cierra sesión desde la UI o ejecuta:
+
+```javascript
+(async () => {
+  const chunk = window.webpackChunk_N_E;
+  let firebaseAuth, firebaseApp;
+
+  chunk.push([['temp'], {}, (require) => {
+    firebaseAuth = require("(app-pages-browser)/./node_modules/@firebase/auth/dist/esm/index.js");
+    firebaseApp = require("(app-pages-browser)/./node_modules/@firebase/app/dist/esm/index.esm.js");
+  }]);
+
+  const app = firebaseApp.getApps()[0];
+  const auth = firebaseAuth.getAuth(app);
+  await firebaseAuth.signOut(auth);
+  location.reload();
+})();
+```
+
+### Notas de Seguridad
+
+- Solo usar en ambiente de **desarrollo local**
+- El archivo `firebase-credentials.json` contiene credenciales sensibles
+- Nunca commitear tokens generados
+- Los tokens expiran en 1 hora
