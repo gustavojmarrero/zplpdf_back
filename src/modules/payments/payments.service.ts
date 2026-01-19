@@ -549,8 +549,8 @@ export class PaymentsService {
         `handleSubscriptionUpdated(${user.id})`,
       );
       this.logger.log(`Subscription updated for user ${user.id}: active (${plan})`);
-    } else if (['canceled', 'unpaid', 'past_due'].includes(subscription.status)) {
-      // Capture previous plan before downgrade
+    } else if (['canceled', 'unpaid'].includes(subscription.status)) {
+      // Subscription terminated - downgrade to free and clear subscription ID
       const previousPlan = user.plan || 'pro';
 
       await this.withRetry(
@@ -571,6 +571,17 @@ export class PaymentsService {
           language: this.detectLanguageFromCountry(user.country),
         }, previousPlan, subscription.status)
         .catch((err) => this.logger.error(`Failed to queue subscription downgraded email: ${err.message}`));
+    } else if (subscription.status === 'past_due') {
+      // Payment pending - keep subscriptionId to allow status queries
+      // Don't downgrade immediately, give user time to pay
+      // The handlePaymentFailed method already sends notification emails
+      await this.withRetry(
+        () => this.firestoreService.updateUser(user.id, {
+          stripeSubscriptionId: subscription.id,
+        }),
+        `handleSubscriptionUpdated(${user.id})`,
+      );
+      this.logger.log(`Subscription past_due for user ${user.id} - keeping subscription active for recovery`);
     }
   }
 
