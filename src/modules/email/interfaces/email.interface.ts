@@ -14,11 +14,14 @@ export type ConversionEmailType = 'limit_80_percent' | 'limit_100_percent' | 'co
 // Retention emails (for PRO users)
 export type RetentionEmailType = 'pro_inactive_7_days' | 'pro_inactive_14_days' | 'pro_inactive_30_days' | 'pro_power_user';
 
+// Payment notification emails
+export type PaymentEmailType = 'payment_failed' | 'subscription_downgraded';
+
 // Reactivation emails (for inactive FREE users)
 export type ReactivationEmailType = 'free_never_used_7d' | 'free_never_used_14d' | 'free_tried_abandoned' | 'free_dormant_30d' | 'free_abandoned_60d';
 
 // All email types
-export type EmailType = OnboardingEmailType | ConversionEmailType | RetentionEmailType | ReactivationEmailType;
+export type EmailType = OnboardingEmailType | ConversionEmailType | RetentionEmailType | ReactivationEmailType | PaymentEmailType;
 
 export type EmailStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
 

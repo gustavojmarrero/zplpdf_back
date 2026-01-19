@@ -1,10 +1,11 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { CheckoutResponseDto, PortalResponseDto } from './dto/create-checkout.dto.js';
 import { GA4Service } from '../analytics/ga4.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
+import { EmailService } from '../email/email.service.js';
 import type { StripeTransaction, SubscriptionEvent } from '../../common/interfaces/finance.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
 
@@ -49,6 +50,8 @@ export class PaymentsService {
     private readonly firestoreService: FirestoreService,
     private readonly ga4Service: GA4Service,
     private readonly exchangeRateService: ExchangeRateService,
+    @Inject(forwardRef(() => EmailService))
+    private readonly emailService: EmailService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     const nodeEnv = this.configService.get<string>('NODE_ENV');
@@ -547,6 +550,9 @@ export class PaymentsService {
       );
       this.logger.log(`Subscription updated for user ${user.id}: active (${plan})`);
     } else if (['canceled', 'unpaid', 'past_due'].includes(subscription.status)) {
+      // Capture previous plan before downgrade
+      const previousPlan = user.plan || 'pro';
+
       await this.withRetry(
         () => this.firestoreService.updateUser(user.id, {
           plan: 'free',
@@ -555,6 +561,16 @@ export class PaymentsService {
         `handleSubscriptionUpdated(${user.id})`,
       );
       this.logger.log(`Subscription updated for user ${user.id}: ${subscription.status}`);
+
+      // Send downgrade notification email
+      this.emailService
+        .queueSubscriptionDowngradedEmail({
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          language: this.detectLanguageFromCountry(user.country),
+        }, previousPlan, subscription.status)
+        .catch((err) => this.logger.error(`Failed to queue subscription downgraded email: ${err.message}`));
     }
   }
 
@@ -580,6 +596,16 @@ export class PaymentsService {
     );
 
     this.logger.log(`User ${user.id} downgraded to Free plan (was ${canceledPlan})`);
+
+    // Send downgrade notification email
+    this.emailService
+      .queueSubscriptionDowngradedEmail({
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        language: this.detectLanguageFromCountry(user.country),
+      }, canceledPlan, 'canceled')
+      .catch((err) => this.logger.error(`Failed to queue subscription downgraded email: ${err.message}`));
 
     // Save subscription event for churn tracking
     const subscriptionEvent: SubscriptionEvent = {
@@ -614,11 +640,19 @@ export class PaymentsService {
     // Log the failed payment
     this.logger.warn(`Payment failed for user ${user.id}, invoice: ${invoice.id}`);
 
-    // If this is not the first attempt and subscription is past_due, notify
+    // If this is not the first attempt, send payment failed notification
     const attemptCount = invoice.attempt_count || 1;
     if (attemptCount >= 2) {
       this.logger.warn(`Multiple payment failures (${attemptCount}) for user ${user.id}`);
-      // TODO: Implement email notification to user about failed payment
+      // Send payment failed notification email
+      this.emailService
+        .queuePaymentFailedEmail({
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          language: this.detectLanguageFromCountry(user.country),
+        }, attemptCount)
+        .catch((err) => this.logger.error(`Failed to queue payment failed email: ${err.message}`));
     }
 
     // Note: Don't immediately downgrade - Stripe will retry and send subscription.updated
@@ -748,5 +782,21 @@ export class PaymentsService {
       await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
       this.logger.log(`Saved subscription event: renewed for user ${user.id} (${plan})`);
     }
+  }
+
+  /**
+   * Detect email language from country code
+   */
+  private detectLanguageFromCountry(country?: string): string {
+    if (!country) return 'en';
+
+    const spanishCountries = [
+      'MX', 'ES', 'AR', 'CO', 'PE', 'CL', 'VE', 'EC', 'GT', 'CU',
+      'BO', 'DO', 'HN', 'SV', 'NI', 'CR', 'PA', 'UY', 'PR',
+    ];
+
+    if (spanishCountries.includes(country)) return 'es';
+
+    return 'en';
   }
 }

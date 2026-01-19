@@ -1,4 +1,6 @@
 import { Injectable, Logger, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { FirebaseAdminService } from '../auth/firebase-admin.service.js';
 import { PeriodCalculatorService, PeriodInfo } from '../../common/services/period-calculator.service.js';
@@ -26,6 +28,7 @@ export interface CheckCanConvertResult {
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
+  private stripe: Stripe | null = null;
 
   constructor(
     private readonly firestoreService: FirestoreService,
@@ -35,7 +38,14 @@ export class UsersService {
     @Inject(forwardRef(() => EmailService))
     private readonly emailService: EmailService,
     private readonly storageService: StorageService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    // Initialize Stripe for subscription status checks
+    const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+    if (stripeSecretKey) {
+      this.stripe = new Stripe(stripeSecretKey);
+    }
+  }
 
   async syncUser(
     firebaseUser: FirebaseUser,
@@ -209,6 +219,18 @@ export class UsersService {
     // Admin sin simulación = ilimitado
     const isAdminUnlimited = user.role === 'admin' && !this.isSimulationActive(user);
 
+    // Get Stripe subscription status if user has a subscription
+    let subscriptionStatus: string | null = null;
+    if (user.stripeSubscriptionId && this.stripe) {
+      try {
+        const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+        subscriptionStatus = subscription.status; // 'active' | 'past_due' | 'unpaid' | 'canceled' | etc
+      } catch (error) {
+        // Subscription might not exist (e.g., test/live mode mismatch)
+        this.logger.warn(`Could not fetch subscription ${user.stripeSubscriptionId}: ${error.message}`);
+      }
+    }
+
     return {
       plan: effectivePlan,
       limits: {
@@ -224,6 +246,7 @@ export class UsersService {
         labelCount: usage.labelCount,
       },
       periodEndsAt: usage.periodEnd,
+      subscriptionStatus,
       // Campos adicionales para admins
       ...(user.role === 'admin' && {
         isAdmin: true,

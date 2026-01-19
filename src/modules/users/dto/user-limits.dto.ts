@@ -41,4 +41,11 @@ export class UserLimitsDto {
 
   @ApiProperty({ description: 'Period end date' })
   periodEndsAt: Date;
+
+  @ApiProperty({
+    description: 'Stripe subscription status (active, past_due, unpaid, canceled, etc)',
+    required: false,
+    nullable: true,
+  })
+  subscriptionStatus?: string | null;
 }

@@ -163,6 +163,21 @@ const TEMPLATE_METADATA: Record<EmailType, {
     triggerDays: 60,
     variables: ['userName', 'appUrl'],
   },
+  // Payment notification emails
+  payment_failed: {
+    templateType: 'conversion',
+    name: 'Payment Failed',
+    description: 'Notification when payment attempt fails',
+    triggerDays: 0,
+    variables: ['displayName', 'attemptCount', 'nextRetryDate', 'portalUrl'],
+  },
+  subscription_downgraded: {
+    templateType: 'conversion',
+    name: 'Subscription Downgraded',
+    description: 'Notification when subscription is downgraded to free',
+    triggerDays: 0,
+    variables: ['displayName', 'previousPlan', 'reason', 'newLimits', 'pricingUrl'],
+  },
 };
 
 // Placeholder data to generate templates

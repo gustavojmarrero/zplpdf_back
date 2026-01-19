@@ -21,6 +21,11 @@ interface TemplateData {
   daysSinceRegistration?: number;
   pdfsAvailable?: number;
   labelCount?: number;
+  // Payment notification fields
+  attemptCount?: number;
+  nextRetryDate?: string;
+  previousPlan?: string;
+  reason?: string;
 }
 
 // Subject lines for each email type and variant
@@ -278,6 +283,34 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       es: 'Mucho ha cambiado en ZPLPDF',
       zh: 'ZPLPDF有很多变化',
       pt: 'Muita coisa mudou no ZPLPDF',
+    },
+  },
+  payment_failed: {
+    A: {
+      en: '⚠️ Payment failed - Action required',
+      es: '⚠️ Pago fallido - Acción requerida',
+      zh: '⚠️ 付款失败 - 需要采取行动',
+      pt: '⚠️ Pagamento falhou - Ação necessária',
+    },
+    B: {
+      en: 'Your ZPLPDF subscription needs attention',
+      es: 'Tu suscripción a ZPLPDF necesita atención',
+      zh: '您的ZPLPDF订阅需要关注',
+      pt: 'Sua assinatura ZPLPDF precisa de atenção',
+    },
+  },
+  subscription_downgraded: {
+    A: {
+      en: '📋 Your ZPLPDF plan has changed',
+      es: '📋 Tu plan de ZPLPDF ha cambiado',
+      zh: '📋 您的ZPLPDF计划已更改',
+      pt: '📋 Seu plano ZPLPDF foi alterado',
+    },
+    B: {
+      en: 'Important update about your ZPLPDF account',
+      es: 'Actualización importante sobre tu cuenta ZPLPDF',
+      zh: '关于您ZPLPDF账户的重要更新',
+      pt: 'Atualização importante sobre sua conta ZPLPDF',
     },
   },
 };
@@ -2794,6 +2827,355 @@ function getFreeAbandoned60dContent(variant: AbVariant, lang: EmailLanguage, dat
   return content[variant][lang];
 }
 
+// ============== Payment Notification Emails ==============
+
+function getPaymentFailedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const portalUrl = 'https://www.zplpdf.com/dashboard/billing';
+  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const attemptCount = data.attemptCount || 1;
+  const nextRetryDate = data.nextRetryDate || '';
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⚠️ Payment Failed - Action Required</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, we were unable to process your payment for your ZPLPDF subscription.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          This is payment attempt <strong>${attemptCount}</strong>. ${nextRetryDate ? `We'll try again on <strong>${nextRetryDate}</strong>.` : ''}
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          To avoid losing your PRO features, please update your payment method:
+        </p>
+        ${ctaButton('UPDATE PAYMENT METHOD →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          If you believe this is an error or need assistance, please reply to this email.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⚠️ Pago Fallido - Acción Requerida</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, no pudimos procesar tu pago para tu suscripción de ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Este es el intento de pago <strong>${attemptCount}</strong>. ${nextRetryDate ? `Intentaremos de nuevo el <strong>${nextRetryDate}</strong>.` : ''}
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Para evitar perder tus funciones PRO, por favor actualiza tu método de pago:
+        </p>
+        ${ctaButton('ACTUALIZAR MÉTODO DE PAGO →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Si crees que esto es un error o necesitas ayuda, responde a este correo.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⚠️ 付款失败 - 需要采取行动</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，我们无法处理您的ZPLPDF订阅付款。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          这是第 <strong>${attemptCount}</strong> 次付款尝试。${nextRetryDate ? `我们将在 <strong>${nextRetryDate}</strong> 再次尝试。` : ''}
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          为避免失去您的PRO功能，请更新您的付款方式：
+        </p>
+        ${ctaButton('更新付款方式 →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          如果您认为这是一个错误或需要帮助，请回复此邮件。
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">⚠️ Pagamento Falhou - Ação Necessária</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, não conseguimos processar seu pagamento para sua assinatura ZPLPDF.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Esta é a tentativa de pagamento <strong>${attemptCount}</strong>. ${nextRetryDate ? `Tentaremos novamente em <strong>${nextRetryDate}</strong>.` : ''}
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Para evitar perder seus recursos PRO, por favor atualize seu método de pagamento:
+        </p>
+        ${ctaButton('ATUALIZAR MÉTODO DE PAGAMENTO →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Se você acredita que isso é um erro ou precisa de ajuda, responda a este e-mail.
+        </p>
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Your ZPLPDF Subscription Needs Attention</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, there was an issue with your recent payment.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>What happened?</strong> Your payment couldn't be processed (attempt ${attemptCount}).
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>What's next?</strong> Update your payment details to keep your PRO features active.
+        </p>
+        ${ctaButton('FIX PAYMENT →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Questions? Just reply to this email - we're here to help.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Tu Suscripción ZPLPDF Necesita Atención</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, hubo un problema con tu pago reciente.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>¿Qué pasó?</strong> Tu pago no pudo ser procesado (intento ${attemptCount}).
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>¿Qué sigue?</strong> Actualiza tus datos de pago para mantener tus funciones PRO activas.
+        </p>
+        ${ctaButton('CORREGIR PAGO →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          ¿Preguntas? Solo responde a este correo - estamos aquí para ayudarte.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">您的ZPLPDF订阅需要关注</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，您最近的付款出现了问题。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>发生了什么？</strong> 您的付款无法处理（第${attemptCount}次尝试）。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>下一步是什么？</strong> 更新您的付款信息以保持PRO功能活跃。
+        </p>
+        ${ctaButton('修复付款 →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          有问题？只需回复此邮件 - 我们随时为您提供帮助。
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Sua Assinatura ZPLPDF Precisa de Atenção</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, houve um problema com seu pagamento recente.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>O que aconteceu?</strong> Seu pagamento não pôde ser processado (tentativa ${attemptCount}).
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Próximo passo?</strong> Atualize seus dados de pagamento para manter seus recursos PRO ativos.
+        </p>
+        ${ctaButton('CORRIGIR PAGAMENTO →', portalUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Dúvidas? Apenas responda a este e-mail - estamos aqui para ajudar.
+        </p>
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
+function getSubscriptionDowngradedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+  const pricingUrl = 'https://www.zplpdf.com/pricing';
+  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const previousPlan = data.previousPlan || 'PRO';
+  const reason = data.reason || 'canceled';
+
+  const reasonText = {
+    canceled: {
+      en: 'Your subscription was canceled',
+      es: 'Tu suscripción fue cancelada',
+      zh: '您的订阅已取消',
+      pt: 'Sua assinatura foi cancelada',
+    },
+    unpaid: {
+      en: 'Your subscription payment could not be processed',
+      es: 'No se pudo procesar el pago de tu suscripción',
+      zh: '您的订阅付款无法处理',
+      pt: 'O pagamento da sua assinatura não pôde ser processado',
+    },
+    past_due: {
+      en: 'Your subscription payment is overdue',
+      es: 'El pago de tu suscripción está vencido',
+      zh: '您的订阅付款已逾期',
+      pt: 'O pagamento da sua assinatura está atrasado',
+    },
+  };
+
+  const reasonMessage = reasonText[reason as keyof typeof reasonText] || reasonText.canceled;
+
+  const content = {
+    A: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">📋 Your ZPLPDF Plan Has Changed</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, ${reasonMessage.en.toLowerCase()}.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Your account has been changed from <strong>${previousPlan}</strong> to the <strong>FREE</strong> plan.
+        </p>
+        <p style="margin: 0 0 8px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Your new limits:</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>100 labels per PDF</li>
+          <li>25 PDFs per month</li>
+          <li>No image export</li>
+          <li>No batch processing</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          You can upgrade again anytime to restore your previous features:
+        </p>
+        ${ctaButton('VIEW PLANS →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Your conversion history and account data are safe. You can access them anytime.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">📋 Tu Plan ZPLPDF Ha Cambiado</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, ${reasonMessage.es.toLowerCase()}.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Tu cuenta ha sido cambiada de <strong>${previousPlan}</strong> al plan <strong>GRATUITO</strong>.
+        </p>
+        <p style="margin: 0 0 8px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Tus nuevos límites:</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>100 etiquetas por PDF</li>
+          <li>25 PDFs por mes</li>
+          <li>Sin exportación de imágenes</li>
+          <li>Sin procesamiento por lotes</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Puedes volver a actualizar en cualquier momento para restaurar tus funciones anteriores:
+        </p>
+        ${ctaButton('VER PLANES →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Tu historial de conversiones y datos de cuenta están seguros. Puedes acceder a ellos en cualquier momento.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">📋 您的ZPLPDF计划已更改</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，${reasonMessage.zh}。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您的账户已从 <strong>${previousPlan}</strong> 更改为 <strong>免费</strong> 计划。
+        </p>
+        <p style="margin: 0 0 8px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>您的新限制：</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>每个PDF 100个标签</li>
+          <li>每月25个PDF</li>
+          <li>无图像导出</li>
+          <li>无批量处理</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您可以随时再次升级以恢复您以前的功能：
+        </p>
+        ${ctaButton('查看计划 →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          您的转换历史和账户数据是安全的。您可以随时访问它们。
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">📋 Seu Plano ZPLPDF Mudou</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, ${reasonMessage.pt.toLowerCase()}.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Sua conta foi alterada de <strong>${previousPlan}</strong> para o plano <strong>GRATUITO</strong>.
+        </p>
+        <p style="margin: 0 0 8px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Seus novos limites:</strong>
+        </p>
+        <ul style="margin: 0 0 16px; padding-left: 20px; color: #374151; font-size: 16px; line-height: 1.8;">
+          <li>100 etiquetas por PDF</li>
+          <li>25 PDFs por mês</li>
+          <li>Sem exportação de imagens</li>
+          <li>Sem processamento em lote</li>
+        </ul>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Você pode fazer upgrade novamente a qualquer momento para restaurar seus recursos anteriores:
+        </p>
+        ${ctaButton('VER PLANOS →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Seu histórico de conversões e dados da conta estão seguros. Você pode acessá-los a qualquer momento.
+        </p>
+      `,
+    },
+    B: {
+      en: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Important Update About Your ZPLPDF Account</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hi ${name}, we wanted to let you know about a change to your account.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Your ${previousPlan} subscription has ended, and your account is now on the FREE plan.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Good news:</strong> You can still use ZPLPDF with the free plan limits. And when you're ready to upgrade again, all your data will be waiting.
+        </p>
+        ${ctaButton('SUBSCRIBE AGAIN →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Need help? Reply to this email anytime.
+        </p>
+      `,
+      es: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Actualización Importante Sobre Tu Cuenta ZPLPDF</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Hola ${name}, queríamos informarte sobre un cambio en tu cuenta.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Tu suscripción ${previousPlan} ha terminado, y tu cuenta ahora está en el plan GRATUITO.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Buenas noticias:</strong> Aún puedes usar ZPLPDF con los límites del plan gratuito. Y cuando estés listo para actualizar de nuevo, todos tus datos estarán esperándote.
+        </p>
+        ${ctaButton('SUSCRIBIRSE DE NUEVO →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          ¿Necesitas ayuda? Responde a este correo cuando quieras.
+        </p>
+      `,
+      zh: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">关于您ZPLPDF账户的重要更新</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          ${name}，我们想通知您账户的一个变更。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          您的${previousPlan}订阅已结束，您的账户现在是免费计划。
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>好消息：</strong> 您仍然可以在免费计划限制内使用ZPLPDF。当您准备再次升级时，所有数据都将等待着您。
+        </p>
+        ${ctaButton('再次订阅 →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          需要帮助？随时回复此邮件。
+        </p>
+      `,
+      pt: `
+        <h2 style="margin: 0 0 16px; color: #111827; font-size: 24px;">Atualização Importante Sobre Sua Conta ZPLPDF</h2>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Oi ${name}, queríamos informá-lo sobre uma mudança em sua conta.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          Sua assinatura ${previousPlan} terminou, e sua conta agora está no plano GRATUITO.
+        </p>
+        <p style="margin: 0 0 16px; color: #374151; font-size: 16px; line-height: 1.6;">
+          <strong>Boas notícias:</strong> Você ainda pode usar o ZPLPDF com os limites do plano gratuito. E quando estiver pronto para fazer upgrade novamente, todos os seus dados estarão esperando.
+        </p>
+        ${ctaButton('ASSINAR NOVAMENTE →', pricingUrl)}
+        <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
+          Precisa de ajuda? Responda a este e-mail quando quiser.
+        </p>
+      `,
+    },
+  };
+
+  return content[variant][lang];
+}
+
 // Text version of emails (stripped HTML)
 function stripHtml(html: string): string {
   return html
@@ -2875,6 +3257,13 @@ export function getEmailTemplate(
       break;
     case 'free_abandoned_60d':
       content = getFreeAbandoned60dContent(variant, language, data);
+      break;
+    // Payment notification emails
+    case 'payment_failed':
+      content = getPaymentFailedContent(variant, language, data);
+      break;
+    case 'subscription_downgraded':
+      content = getSubscriptionDowngradedContent(variant, language, data);
       break;
     default:
       throw new Error(`Unknown email type: ${emailType}`);

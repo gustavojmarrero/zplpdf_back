@@ -86,6 +86,119 @@ export class EmailService {
   }
 
   /**
+   * Queue a payment failed email for a user
+   * Called from PaymentsService.handlePaymentFailed() when payment retries fail
+   */
+  async queuePaymentFailedEmail(user: {
+    id: string;
+    email: string;
+    displayName?: string;
+    language?: string;
+  }, attemptCount: number): Promise<string | null> {
+    if (!this.isEnabled) {
+      this.logger.debug('Email service disabled, skipping payment failed email');
+      return null;
+    }
+
+    try {
+      // Check if template is enabled
+      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('payment_failed');
+      if (!isTemplateEnabled) {
+        this.logger.debug('Template payment_failed is disabled, skipping');
+        return null;
+      }
+
+      // Select A/B variant
+      const variant = this.selectAbVariant(user.id);
+      const language = (user.language as EmailLanguage) || 'en';
+
+      // Calculate next retry date (Stripe typically retries after 3-5 days)
+      const nextRetryDate = new Date();
+      nextRetryDate.setDate(nextRetryDate.getDate() + 3);
+
+      // Queue the email
+      const emailId = await this.firestoreService.createEmailQueue({
+        userId: user.id,
+        userEmail: user.email,
+        emailType: 'payment_failed',
+        abVariant: variant,
+        language,
+        scheduledFor: new Date(),
+        metadata: {
+          displayName: user.displayName || 'there',
+          attemptCount,
+          nextRetryDate: nextRetryDate.toISOString().split('T')[0],
+        },
+      });
+
+      this.logger.log(`Payment failed email queued for user ${user.id} (attempt ${attemptCount}, variant ${variant})`);
+      return emailId;
+    } catch (error) {
+      this.logger.error(`Failed to queue payment failed email for ${user.id}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Queue a subscription downgraded email for a user
+   * Called when subscription is canceled, unpaid, or past_due
+   */
+  async queueSubscriptionDowngradedEmail(user: {
+    id: string;
+    email: string;
+    displayName?: string;
+    language?: string;
+  }, previousPlan: string, reason: string): Promise<string | null> {
+    if (!this.isEnabled) {
+      this.logger.debug('Email service disabled, skipping subscription downgraded email');
+      return null;
+    }
+
+    try {
+      // Check if template is enabled
+      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('subscription_downgraded');
+      if (!isTemplateEnabled) {
+        this.logger.debug('Template subscription_downgraded is disabled, skipping');
+        return null;
+      }
+
+      // Select A/B variant
+      const variant = this.selectAbVariant(user.id);
+      const language = (user.language as EmailLanguage) || 'en';
+
+      // Get free plan limits for the email
+      const newLimits = {
+        maxLabelsPerPdf: 100,
+        maxPdfsPerMonth: 25,
+        canDownloadImages: false,
+        batchAllowed: false,
+      };
+
+      // Queue the email
+      const emailId = await this.firestoreService.createEmailQueue({
+        userId: user.id,
+        userEmail: user.email,
+        emailType: 'subscription_downgraded',
+        abVariant: variant,
+        language,
+        scheduledFor: new Date(),
+        metadata: {
+          displayName: user.displayName || 'there',
+          previousPlan: previousPlan.toUpperCase(),
+          reason,
+          newLimits: JSON.stringify(newLimits),
+        },
+      });
+
+      this.logger.log(`Subscription downgraded email queued for user ${user.id} (was ${previousPlan}, reason: ${reason})`);
+      return emailId;
+    } catch (error) {
+      this.logger.error(`Failed to queue subscription downgraded email for ${user.id}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Select A/B variant deterministically based on userId
    * Uses simple hash to ensure same user always gets same variant
    */
