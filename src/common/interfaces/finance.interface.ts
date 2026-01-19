@@ -69,6 +69,10 @@ export interface Expense {
   recurrenceType?: RecurrenceType;
   nextGenerationDate?: Date; // Siguiente fecha de auto-generación
   parentExpenseId?: string; // ID del gasto recurrente padre (para auto-generados)
+  // Campos de suscripción del servicio contratado
+  subscriptionStartDate?: Date; // Cuándo inició la suscripción
+  subscriptionEndDate?: Date; // Cuándo termina/vence
+  autoRenewal?: boolean; // ¿Se renueva automáticamente?
   // Metadata
   createdBy: string; // Admin email
   createdAt: Date;

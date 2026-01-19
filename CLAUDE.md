@@ -15,6 +15,22 @@ El proyecto ZPLPDF consiste en dos repositorios que deben correr simultáneament
 | **Backend (NestJS)** | `/Users/gustavomarrero/Documents/node/zplpdf` | 8080 | `npm run start:dev` |
 | **Frontend (Next.js)** | `/Users/gustavomarrero/Documents/Next/zplpdf` | 3000 | `npm run dev` |
 
+### ⚠️ Política de cambios en Frontend
+
+**IMPORTANTE:** Desde este repositorio (backend) NO se debe editar código del frontend directamente.
+
+Cuando se requieran cambios en el frontend:
+1. **Crear un issue** en el repositorio `gustavojmarrero/zplpdf_front`
+2. Documentar claramente los cambios necesarios en el issue
+3. Incluir: tipos a modificar, componentes afectados, y UI sugerida si aplica
+
+```bash
+# Ejemplo: crear issue para el frontend
+gh issue create --repo gustavojmarrero/zplpdf_front \
+  --title "feat(component): descripción del cambio" \
+  --body "Detalles del cambio requerido..."
+```
+
 ### Iniciar ambos servidores
 
 ```bash

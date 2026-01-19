@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsNumber, IsEnum, IsDateString, IsIn, IsObject, ValidateNested, Min, Max } from 'class-validator';
+import { IsOptional, IsString, IsNumber, IsEnum, IsDateString, IsIn, IsObject, ValidateNested, Min, Max, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 
 // ==================== Revenue ====================
@@ -104,6 +104,21 @@ export class CreateExpenseDto {
   @IsOptional()
   @IsDateString()
   date?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha de inicio de la suscripción del servicio' })
+  @IsOptional()
+  @IsDateString()
+  subscriptionStartDate?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha de fin/vencimiento de la suscripción' })
+  @IsOptional()
+  @IsDateString()
+  subscriptionEndDate?: string;
+
+  @ApiPropertyOptional({ description: 'Si la suscripción se renueva automáticamente' })
+  @IsOptional()
+  @IsBoolean()
+  autoRenewal?: boolean;
 }
 
 export class UpdateExpenseDto {
@@ -137,6 +152,21 @@ export class UpdateExpenseDto {
   @IsOptional()
   @IsEnum(['monthly', 'annual'])
   recurrenceType?: 'monthly' | 'annual';
+
+  @ApiPropertyOptional({ description: 'Fecha de inicio de la suscripción del servicio' })
+  @IsOptional()
+  @IsDateString()
+  subscriptionStartDate?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha de fin/vencimiento de la suscripción' })
+  @IsOptional()
+  @IsDateString()
+  subscriptionEndDate?: string;
+
+  @ApiPropertyOptional({ description: 'Si la suscripción se renueva automáticamente' })
+  @IsOptional()
+  @IsBoolean()
+  autoRenewal?: boolean;
 }
 
 export class GetExpensesQueryDto {
