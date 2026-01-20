@@ -16,7 +16,11 @@ export interface CreateExpenseDto {
   description: string;
   vendor?: string;
   recurrenceType?: RecurrenceType;
-  date?: Date;
+  date?: Date | string;
+  // Campos de suscripción del servicio contratado
+  subscriptionStartDate?: string;
+  subscriptionEndDate?: string;
+  autoRenewal?: boolean;
 }
 
 export interface UpdateExpenseDto {
@@ -26,6 +30,10 @@ export interface UpdateExpenseDto {
   description?: string;
   vendor?: string;
   recurrenceType?: RecurrenceType;
+  // Campos de suscripción del servicio contratado
+  subscriptionStartDate?: string;
+  subscriptionEndDate?: string;
+  autoRenewal?: boolean;
 }
 
 export interface ExpenseFilters {
@@ -79,7 +87,7 @@ export class ExpenseService {
     }
 
     const expenseId = this.generateExpenseId();
-    const now = data.date || new Date();
+    const now = data.date ? new Date(data.date) : new Date();
 
     // Calcular próxima fecha de generación para gastos recurrentes
     let nextGenerationDate: Date | undefined;
@@ -104,6 +112,10 @@ export class ExpenseService {
       ...(data.vendor && { vendor: data.vendor }),
       ...(data.recurrenceType && { recurrenceType: data.recurrenceType }),
       ...(nextGenerationDate && { nextGenerationDate }),
+      // Campos de suscripción
+      ...(data.subscriptionStartDate && { subscriptionStartDate: new Date(data.subscriptionStartDate) }),
+      ...(data.subscriptionEndDate && { subscriptionEndDate: new Date(data.subscriptionEndDate) }),
+      ...(data.autoRenewal !== undefined && { autoRenewal: data.autoRenewal }),
     };
 
     await this.firestoreService.saveExpense(expense);
@@ -149,11 +161,18 @@ export class ExpenseService {
       }
     }
 
+    // Extraer campos de suscripción para procesarlos por separado
+    const { subscriptionStartDate, subscriptionEndDate, autoRenewal, ...restData } = data;
+
     const updateData: Partial<Expense> = {
-      ...data,
+      ...restData,
       amountMxn,
       exchangeRate,
       updatedAt: new Date(),
+      // Campos de suscripción (convertir fechas a Date si vienen)
+      ...(subscriptionStartDate && { subscriptionStartDate: new Date(subscriptionStartDate) }),
+      ...(subscriptionEndDate && { subscriptionEndDate: new Date(subscriptionEndDate) }),
+      ...(autoRenewal !== undefined && { autoRenewal }),
     };
 
     await this.firestoreService.updateExpense(id, updateData);
