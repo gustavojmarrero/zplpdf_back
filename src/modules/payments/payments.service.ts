@@ -189,6 +189,48 @@ export class PaymentsService {
       }
     }
 
+    // VALIDATION: Check for any active subscription by customer ID (defense in depth)
+    // This catches cases where user.stripeSubscriptionId is null but Stripe has active subs
+    if (user?.stripeCustomerId) {
+      try {
+        const activeSubscriptions = await this.stripe.subscriptions.list({
+          customer: user.stripeCustomerId,
+          status: 'active',
+          limit: 5,
+        });
+
+        if (activeSubscriptions.data.length > 0) {
+          const activeSub = activeSubscriptions.data[0];
+          const activePriceId = activeSub.items.data[0]?.price?.id;
+          const activePlan = activePriceId ? this.getPlanFromPriceId(activePriceId) : 'pro';
+
+          // If user trying to buy the same plan they already have active in Stripe
+          if (activePlan === plan) {
+            this.logger.warn(
+              `User ${userId} has active Stripe subscription ${activeSub.id} (${activePlan}) ` +
+              `but tried to create checkout for ${plan}. Blocking duplicate.`,
+            );
+            throw new BadRequestException(
+              `You already have an active ${plan.toUpperCase()} subscription (${activeSub.id}). ` +
+              `Manage it from your account settings.`,
+            );
+          }
+
+          // Log warning for mismatched subscriptions
+          if (activeSubscriptions.data.length > 1) {
+            this.logger.warn(
+              `User ${userId} has ${activeSubscriptions.data.length} active subscriptions in Stripe: ` +
+              activeSubscriptions.data.map(s => s.id).join(', '),
+            );
+          }
+        }
+      } catch (error) {
+        if (error instanceof BadRequestException) throw error;
+        this.logger.error(`Failed to list subscriptions for customer ${user.stripeCustomerId}: ${error.message}`);
+        // Don't block checkout if we can't verify - log and continue
+      }
+    }
+
     let customerId = user?.stripeCustomerId;
 
     // Verify customer exists in current Stripe mode (test/live)
@@ -591,6 +633,36 @@ export class PaymentsService {
 
     if (!user) {
       this.logger.error(`No user found for customer: ${customerId}`);
+      return;
+    }
+
+    // FIX: Only process if the deleted subscription matches the user's current subscription
+    // This prevents orphan/duplicate subscription deletions from affecting the user's active plan
+    if (user.stripeSubscriptionId && user.stripeSubscriptionId !== subscription.id) {
+      this.logger.warn(
+        `Ignoring subscription.deleted for ${subscription.id} - ` +
+        `user ${user.id} has different active subscription: ${user.stripeSubscriptionId}`,
+      );
+
+      // Save event for tracking but DO NOT modify the user's plan
+      const orphanEvent: SubscriptionEvent = {
+        id: this.generateSubscriptionEventId(),
+        userId: user.id,
+        userEmail: user.email,
+        eventType: 'canceled_orphan',
+        plan: 'pro', // Unknown, but log something
+        previousPlan: user.plan || 'free',
+        currency: 'usd',
+        mrr: 0,
+        mrrMxn: 0,
+        stripeSubscriptionId: subscription.id,
+        cancellationReason: subscription.cancellation_details?.reason || 'orphan_subscription',
+        country: user.country,
+        createdAt: new Date(),
+      };
+
+      await this.firestoreService.saveSubscriptionEvent(orphanEvent);
+      this.logger.log(`Saved orphan subscription event for ${subscription.id} (user has ${user.stripeSubscriptionId})`);
       return;
     }
 

@@ -148,6 +148,7 @@ export type SubscriptionEventType =
   | 'started'
   | 'renewed'
   | 'canceled'
+  | 'canceled_orphan' // Subscription deleted but user has a different active subscription
   | 'churned'
   | 'reactivated';
 
