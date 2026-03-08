@@ -1553,6 +1553,34 @@ export class ZplService {
     }
   }
 
+  // ============== PUBLIC FONT PREVIEW ==============
+
+  /**
+   * Generates a single PNG preview from ZPL content (public, no auth required).
+   * Caller must validate that zplContent contains exactly one label.
+   */
+  async getPublicFontPreview(
+    zplContent: string,
+    labelSize: LabelSize,
+  ): Promise<{ image: string }> {
+    try {
+      const buffer = await this.getSingleLabelaryPngImage(zplContent, labelSize);
+
+      return {
+        image: `data:image/png;base64,${buffer.toString('base64')}`,
+      };
+    } catch (error: any) {
+      this.logger.error(`Public font preview error: ${error.message}`);
+      throw new HttpException(
+        {
+          error: ErrorCodes.SERVER_ERROR,
+          message: 'Error generating font preview',
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
   // ============== BATCH PROCESSING ==============
 
   /**
