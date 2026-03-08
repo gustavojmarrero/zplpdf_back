@@ -14,6 +14,7 @@ import {
   HttpException,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { v4 as uuidv4 } from 'uuid';
 import { ZplService } from './zpl.service.js';
 import { ConvertZplDto } from './dto/convert-zpl.dto.js';
@@ -42,6 +43,7 @@ import {
   BatchDownloadResponseDto,
 } from './dto/batch.dto.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
+import { FontPreviewPublicDto } from './dto/font-preview-public.dto.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -659,6 +661,58 @@ export class ZplController {
         summary: result.summary,
       },
     };
+  }
+
+  // ============== PUBLIC FONT PREVIEW ENDPOINT ==============
+
+  @Post('font-preview')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ 'public-preview': {} })
+  @ApiOperation({
+    summary: 'Public font preview (no auth required)',
+    description: 'Generates a single PNG preview from ZPL content. Rate limited to 5 requests per minute per IP. No authentication required.',
+  })
+  @ApiBody({ type: FontPreviewPublicDto })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Preview generated successfully',
+    schema: {
+      properties: {
+        image: {
+          type: 'string',
+          description: 'PNG image as base64 data URI',
+          example: 'data:image/png;base64,...',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Invalid ZPL content',
+  })
+  @ApiResponse({
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    description: 'Rate limit exceeded (5 req/min)',
+  })
+  async fontPreview(
+    @Body() dto: FontPreviewPublicDto,
+  ): Promise<{ image: string }> {
+    this.validateZplContent(dto.zplContent);
+
+    // Enforce single label for public endpoint
+    const xaCount = (dto.zplContent.match(/\^XA/g) || []).length;
+    if (xaCount !== 1) {
+      throw new HttpException(
+        {
+          error: ErrorCodes.INVALID_ZPL,
+          message: 'Only a single label (one ^XA..^XZ block) is allowed',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const labelSize = dto.labelSize || LabelSize.FOUR_BY_SIX;
+    return this.zplService.getPublicFontPreview(dto.zplContent, labelSize);
   }
 
   // ============== BATCH PROCESSING ENDPOINTS ==============
