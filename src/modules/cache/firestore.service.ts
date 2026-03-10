@@ -209,6 +209,7 @@ export interface ZplDebugFile extends ZplDebugFileInput {
 export class FirestoreService {
   private firestore: Firestore;
   private readonly logger = new Logger(FirestoreService.name);
+
   private readonly collectionName = 'zpl-conversions';
   private readonly usersCollection = 'users';
   private readonly usageCollection = 'usage';
@@ -254,6 +255,7 @@ export class FirestoreService {
       firestoreOptions.projectId = credentials.project_id;
     }
 
+    firestoreOptions.ignoreUndefinedProperties = true;
     this.firestore = new Firestore(firestoreOptions);
 
     // Log para diagnóstico
