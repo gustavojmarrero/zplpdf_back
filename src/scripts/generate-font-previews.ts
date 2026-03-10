@@ -34,13 +34,8 @@ function buildZpl(fontCode: string): string {
 }
 
 async function cropAndPad(pngBuffer: Buffer): Promise<Buffer> {
-  // Trim whitespace around the rendered text
-  const trimmed = sharp(pngBuffer).trim({ threshold: 10 });
-  const trimmedBuffer = await trimmed.toBuffer();
-  const { width, height } = await sharp(trimmedBuffer).metadata();
-
-  // Add consistent padding on a white background
-  return sharp(trimmedBuffer)
+  return sharp(pngBuffer)
+    .trim({ threshold: 10 })
     .extend({
       top: CROP_PADDING,
       bottom: CROP_PADDING,
