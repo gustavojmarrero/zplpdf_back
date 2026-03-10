@@ -10,6 +10,7 @@ import axios from 'axios';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
+import sharp from 'sharp';
 
 dotenv.config({ path: ['.env.local', '.env'] });
 
@@ -21,14 +22,34 @@ if (!process.env.GOOGLE_CREDENTIALS && fs.existsSync(credentialsPath)) {
 
 const ZPL_FONTS = ['0', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'P', 'Q', 'R', 'S', 'T', 'U', 'V'] as const;
 
-const LABEL_SIZE = '4x6';
+const LABEL_SIZE = '4x2';
 const SAMPLE_TEXT = 'ABCDabcd 12345';
 const GCS_BUCKET_OVERRIDE = 'zplpdf-public-assets';
 const GCS_FOLDER = 'font-previews';
 const RATE_LIMIT_DELAY_MS = 1100;
+const CROP_PADDING = 20;
 
 function buildZpl(fontCode: string): string {
   return `^XA^A${fontCode}N,50,50^FO20,20^FD${SAMPLE_TEXT}^FS^XZ`;
+}
+
+async function cropAndPad(pngBuffer: Buffer): Promise<Buffer> {
+  // Trim whitespace around the rendered text
+  const trimmed = sharp(pngBuffer).trim({ threshold: 10 });
+  const trimmedBuffer = await trimmed.toBuffer();
+  const { width, height } = await sharp(trimmedBuffer).metadata();
+
+  // Add consistent padding on a white background
+  return sharp(trimmedBuffer)
+    .extend({
+      top: CROP_PADDING,
+      bottom: CROP_PADDING,
+      left: CROP_PADDING,
+      right: CROP_PADDING,
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    })
+    .png()
+    .toBuffer();
 }
 
 function sleep(ms: number): Promise<void> {
@@ -96,7 +117,9 @@ async function main() {
         timeout: 30000,
       });
 
-      const pngBuffer = Buffer.from(response.data);
+      const rawBuffer = Buffer.from(response.data);
+      const pngBuffer = await cropAndPad(rawBuffer);
+      console.log(`  -> Cropped to final size`);
 
       // Upload to GCS (bucket-level access controls public visibility)
       const file = bucket.file(fileName);
