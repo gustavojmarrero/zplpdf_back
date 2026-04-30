@@ -667,7 +667,7 @@ export class ZplController {
 
   @Post('font-preview')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ 'public-preview': {} })
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @ApiOperation({
     summary: 'Public font preview (no auth required)',
     description: 'Generates a single PNG preview from ZPL content. Rate limited to 5 requests per minute per IP. No authentication required.',

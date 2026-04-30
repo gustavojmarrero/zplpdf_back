@@ -26,17 +26,13 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
       load: [appConfig],
       envFilePath: ['.env.local', '.env'],
     }),
-    // Rate limiting: default 100 req/min, public-preview 5 req/min
+    // Rate limiting: 100 req/min por defecto. Endpoints especificos
+    // overridean limit/ttl con @Throttle inline.
     ThrottlerModule.forRoot([
       {
         name: 'default',
-        ttl: 60000, // 1 minuto
-        limit: 100, // 100 requests
-      },
-      {
-        name: 'public-preview',
-        ttl: 60000, // 1 minuto
-        limit: 5, // 5 requests
+        ttl: 60000,
+        limit: 100,
       },
     ]),
     AuthModule,
