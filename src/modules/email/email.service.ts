@@ -814,8 +814,9 @@ export class EmailService {
         return null;
       }
 
-      // Get usage data for pdfCount and period dates
-      const usage = await this.firestoreService.getOrCreateUsage(userId);
+      // Get usage data for pdfCount and period dates (período actual del usuario)
+      const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
+      const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
       const limit = user.planLimits?.maxPdfsPerMonth || 25;
       const pdfsUsed = usage.pdfCount || 0;
 
@@ -1017,8 +1018,8 @@ export class EmailService {
         return { scheduled: 0, skipped: 0, executedAt: new Date() };
       }
 
-      // Get power users from previous month (top 10% of users)
-      const powerUsersResponse = await this.firestoreService.getProPowerUsers({
+      // Get power users using each user's billing period (top 10%)
+      const powerUsersResponse = await this.getPowerUsersWithPeriod({
         minPercentile: 90,
         limit: 50,
       });

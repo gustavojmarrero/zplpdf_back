@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Firestore } from '@google-cloud/firestore';
+import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType } from '../../common/interfaces/user.interface.js';
@@ -16,6 +16,7 @@ import type {
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
 import { ErrorIdGenerator } from '../../common/utils/error-id-generator.js';
+import { calculateCurrentPeriod } from '../../common/services/period-calculator.util.js';
 import type {
   EmailLanguage,
   FreeInactiveUser,
@@ -438,12 +439,14 @@ export class FirestoreService {
 
   // ============== Usage ==============
 
+  /** @deprecated Formato legacy `_YYYYMM` (mes calendario). Usar `PeriodCalculatorService` + `getOrCreateUsageWithPeriod`. */
   private generateUsageId(userId: string, date: Date = new Date()): string {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     return `${userId}_${year}${month}`;
   }
 
+  /** @deprecated Formato legacy `_YYYYMM`. Usar `getOrCreateUsageWithPeriod`. */
   private createNewUsagePeriod(userId: string): Usage {
     const now = new Date();
     const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -459,6 +462,7 @@ export class FirestoreService {
     };
   }
 
+  /** @deprecated Sin call sites tras la migración. Usar `getOrCreateUsageWithPeriod(userId, periodInfo)` con `PeriodCalculatorService`. */
   async getOrCreateUsage(userId: string): Promise<Usage> {
     try {
       const usageId = this.generateUsageId(userId);
@@ -491,6 +495,7 @@ export class FirestoreService {
     }
   }
 
+  /** @deprecated Sin call sites tras la migración. Usar `incrementUsageWithPeriod`. */
   async incrementUsage(
     userId: string,
     pdfCount: number,
@@ -508,10 +513,10 @@ export class FirestoreService {
         newUsage.labelCount = labelCount;
         await docRef.set(newUsage);
       } else {
-        // Increment existing counts
+        // Atomic increment to avoid race conditions
         await docRef.update({
-          pdfCount: (doc.data().pdfCount || 0) + pdfCount,
-          labelCount: (doc.data().labelCount || 0) + labelCount,
+          pdfCount: FieldValue.increment(pdfCount),
+          labelCount: FieldValue.increment(labelCount),
         });
       }
 
@@ -522,6 +527,7 @@ export class FirestoreService {
     }
   }
 
+  /** @deprecated Reemplazado por `CronService.resetExpiredUsage` que usa el flujo `_YYYYMMDD`. */
   async resetExpiredUsage(): Promise<number> {
     try {
       const now = new Date();
@@ -645,17 +651,13 @@ export class FirestoreService {
   ): Promise<void> {
     try {
       const docRef = this.firestore.collection(this.usageCollection).doc(periodId);
-      const doc = await docRef.get();
-
-      if (doc.exists) {
-        await docRef.update({
-          pdfCount: (doc.data().pdfCount || 0) + pdfCount,
-          labelCount: (doc.data().labelCount || 0) + labelCount,
-        });
-        this.logger.log(`Uso incrementado para usuario: ${userId} (${periodId})`);
-      } else {
-        this.logger.warn(`Documento de uso no encontrado: ${periodId}`);
-      }
+      // Incremento atómico — evita race conditions bajo concurrencia.
+      // getOrCreateUsageWithPeriod garantiza la creación del doc antes de llegar aquí.
+      await docRef.update({
+        pdfCount: FieldValue.increment(pdfCount),
+        labelCount: FieldValue.increment(labelCount),
+      });
+      this.logger.log(`Uso incrementado para usuario: ${userId} (${periodId})`);
     } catch (error) {
       this.logger.error(`Error al incrementar uso con período: ${error.message}`);
       throw error;
@@ -1765,11 +1767,26 @@ export class FirestoreService {
           const userData = doc.data();
           const userId = doc.id;
 
-          // Get current usage (will be recalculated in AdminService)
+          // Get current usage for the user's actual billing period
           let usage = { pdfCount: 0, labelCount: 0 };
           try {
-            const usageDoc = await this.getOrCreateUsage(userId);
-            usage = { pdfCount: usageDoc.pdfCount, labelCount: usageDoc.labelCount };
+            const createdAt = userData.createdAt?.toDate?.() || (userData.createdAt ? new Date(userData.createdAt) : null);
+            if (createdAt) {
+              const sps = userData.subscriptionPeriodStart?.toDate?.()
+                || (userData.subscriptionPeriodStart ? new Date(userData.subscriptionPeriodStart) : undefined);
+              const spe = userData.subscriptionPeriodEnd?.toDate?.()
+                || (userData.subscriptionPeriodEnd ? new Date(userData.subscriptionPeriodEnd) : undefined);
+              const periodInfo = calculateCurrentPeriod({
+                id: userId,
+                plan: (userData.plan as PlanType) || 'free',
+                createdAt,
+                subscriptionPeriodStart: sps,
+                subscriptionPeriodEnd: spe,
+              });
+              const usageMap = await this.batchGetUsage([periodInfo.periodId]);
+              const u = usageMap.get(periodInfo.periodId);
+              if (u) usage = { pdfCount: u.pdfCount || 0, labelCount: u.labelCount || 0 };
+            }
           } catch {
             // Ignore usage errors
           }
@@ -1871,6 +1888,84 @@ export class FirestoreService {
     }
   }
 
+  /**
+   * Lee el doc de usage del período ACTUAL para cada usuario activo (no-admin)
+   * usando PeriodCalculator. Devuelve una sola entrada por usuario.
+   *
+   * Reemplaza al patrón anterior de barrer toda la colección usage, que
+   * incluía periodos vencidos y duplicaba usuarios con docs históricos.
+   */
+  private async getCurrentPeriodUsageEntries(): Promise<Array<{
+    userId: string;
+    plan: PlanType;
+    user: any;
+    pdfCount: number;
+    labelCount: number;
+    periodStart: Date;
+    periodEnd: Date;
+  }>> {
+    const now = new Date();
+    const usersSnapshot = await this.firestore.collection(this.usersCollection).get();
+
+    const candidates: Array<{
+      userId: string;
+      plan: PlanType;
+      user: any;
+      periodId: string;
+      periodStart: Date;
+      periodEnd: Date;
+    }> = [];
+
+    for (const userDoc of usersSnapshot.docs) {
+      const u = userDoc.data();
+      if (u.role === 'admin') continue;
+
+      const plan = (u.plan as PlanType) || 'free';
+      const createdAt = u.createdAt?.toDate?.() || (u.createdAt ? new Date(u.createdAt) : null);
+      if (!createdAt) continue;
+
+      const subscriptionPeriodStart = u.subscriptionPeriodStart?.toDate?.()
+        || (u.subscriptionPeriodStart ? new Date(u.subscriptionPeriodStart) : undefined);
+      const subscriptionPeriodEnd = u.subscriptionPeriodEnd?.toDate?.()
+        || (u.subscriptionPeriodEnd ? new Date(u.subscriptionPeriodEnd) : undefined);
+
+      const periodInfo = calculateCurrentPeriod(
+        {
+          id: userDoc.id,
+          plan,
+          createdAt,
+          subscriptionPeriodStart,
+          subscriptionPeriodEnd,
+        },
+        now,
+      );
+
+      candidates.push({
+        userId: userDoc.id,
+        plan,
+        user: u,
+        periodId: periodInfo.periodId,
+        periodStart: periodInfo.periodStart,
+        periodEnd: periodInfo.periodEnd,
+      });
+    }
+
+    const usageMap = await this.batchGetUsage(candidates.map((c) => c.periodId));
+
+    return candidates.map((c) => {
+      const usage = usageMap.get(c.periodId);
+      return {
+        userId: c.userId,
+        plan: c.plan,
+        user: c.user,
+        pdfCount: usage?.pdfCount || 0,
+        labelCount: usage?.labelCount || 0,
+        periodStart: c.periodStart,
+        periodEnd: c.periodEnd,
+      };
+    });
+  }
+
   async getUsersNearLimit(threshold: number = 80): Promise<Array<{
     id: string;
     email: string;
@@ -1881,69 +1976,30 @@ export class FirestoreService {
     periodEnd: Date;
   }>> {
     try {
-      // Get all current usage documents
-      const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
+      const entries = await this.getCurrentPeriodUsageEntries();
 
-      // Batch read: obtener todos los usuarios únicos en una sola consulta
-      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
-      const userDataMap: Record<string, any> = {};
-
-      if (userIds.length > 0) {
-        const userRefs = userIds.map((id) =>
-          this.firestore.collection(this.usersCollection).doc(id),
-        );
-        const userDocs = await this.firestore.getAll(...userRefs);
-        userDocs.forEach((doc) => {
-          if (doc.exists) {
-            userDataMap[doc.id] = doc.data();
-          }
-        });
-      }
-
-      const usersNearLimit: Array<{
-        id: string;
-        email: string;
-        plan: PlanType;
-        pdfCount: number;
-        pdfLimit: number;
-        percentUsed: number;
-        periodEnd: Date;
-      }> = [];
-
-      // Procesar sin consultas adicionales
-      for (const doc of usageSnapshot.docs) {
-        const usageData = doc.data();
-        const userId = usageData.userId;
-        const userData = userDataMap[userId];
-
-        if (!userData) continue;
-
-        // Exclude admin users from metrics
-        if (userData.role === 'admin') continue;
-
-        const plan = userData.plan as PlanType;
-        const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
-        const pdfLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
-
-        const percentUsed = (usageData.pdfCount / pdfLimit) * 100;
-
-        if (percentUsed >= threshold) {
-          usersNearLimit.push({
-            id: userId,
-            email: userData.email,
-            plan,
-            pdfCount: usageData.pdfCount,
+      const usersNearLimit = entries
+        .map((e) => {
+          const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
+          const pdfLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
+          const percentUsed = (e.pdfCount / pdfLimit) * 100;
+          return {
+            id: e.userId,
+            email: e.user.email,
+            plan: e.plan,
+            pdfCount: e.pdfCount,
             pdfLimit,
             percentUsed: Math.round(percentUsed),
-            periodEnd: usageData.periodEnd?.toDate?.() || usageData.periodEnd,
-          });
-        }
-      }
+            periodEnd: e.periodEnd,
+            _rawPct: percentUsed,
+          };
+        })
+        .filter((r) => r._rawPct >= threshold)
+        .sort((a, b) => b._rawPct - a._rawPct)
+        .slice(0, 20)
+        .map(({ _rawPct, ...rest }) => rest);
 
-      // Sort by percentUsed descending
-      usersNearLimit.sort((a, b) => b.percentUsed - a.percentUsed);
-
-      return usersNearLimit.slice(0, 20); // Return top 20
+      return usersNearLimit;
     } catch (error) {
       this.logger.error(`Error al obtener usuarios cerca del límite: ${error.message}`);
       throw error;
@@ -1960,76 +2016,33 @@ export class FirestoreService {
     periodEnd: Date;
   }>> {
     try {
-      // Get all current usage documents
-      const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
+      const entries = await this.getCurrentPeriodUsageEntries();
 
-      // Batch read: get all unique users in a single query
-      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
-      const userDataMap: Record<string, any> = {};
-
-      if (userIds.length > 0) {
-        const userRefs = userIds.map((id) =>
-          this.firestore.collection(this.usersCollection).doc(id),
-        );
-        const userDocs = await this.firestore.getAll(...userRefs);
-        userDocs.forEach((doc) => {
-          if (doc.exists) {
-            userDataMap[doc.id] = doc.data();
-          }
-        });
-      }
-
-      const usersNearLabelLimit: Array<{
-        id: string;
-        email: string;
-        plan: PlanType;
-        labelCount: number;
-        labelLimit: number;
-        percentUsed: number;
-        periodEnd: Date;
-      }> = [];
-
-      // Process without additional queries
-      for (const doc of usageSnapshot.docs) {
-        const usageData = doc.data();
-        const userId = usageData.userId;
-        const userData = userDataMap[userId];
-
-        if (!userData) continue;
-
-        // Exclude admin users from metrics
-        if (userData.role === 'admin') continue;
-
-        const plan = userData.plan as PlanType;
-        const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
-
-        // Calculate monthly label limit as maxPdfsPerMonth * maxLabelsPerPdf
-        const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
-        const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[plan].maxLabelsPerPdf;
-        const labelLimit = maxPdfs * maxLabelsPerPdf;
-
-        // Skip enterprise users (unlimited)
-        if (plan === 'enterprise') continue;
-
-        const percentUsed = (usageData.labelCount / labelLimit) * 100;
-
-        if (percentUsed >= threshold) {
-          usersNearLabelLimit.push({
-            id: userId,
-            email: userData.email,
-            plan,
-            labelCount: usageData.labelCount,
+      const usersNearLabelLimit = entries
+        .filter((e) => e.plan !== 'enterprise')
+        .map((e) => {
+          const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
+          const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
+          const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[e.plan].maxLabelsPerPdf;
+          const labelLimit = maxPdfs * maxLabelsPerPdf;
+          const percentUsed = (e.labelCount / labelLimit) * 100;
+          return {
+            id: e.userId,
+            email: e.user.email,
+            plan: e.plan,
+            labelCount: e.labelCount,
             labelLimit,
             percentUsed: Math.round(percentUsed),
-            periodEnd: usageData.periodEnd?.toDate?.() || usageData.periodEnd,
-          });
-        }
-      }
+            periodEnd: e.periodEnd,
+            _rawPct: percentUsed,
+          };
+        })
+        .filter((r) => r._rawPct >= threshold)
+        .sort((a, b) => b._rawPct - a._rawPct)
+        .slice(0, 20)
+        .map(({ _rawPct, ...rest }) => rest);
 
-      // Sort by percentUsed descending
-      usersNearLabelLimit.sort((a, b) => b.percentUsed - a.percentUsed);
-
-      return usersNearLabelLimit.slice(0, 20); // Return top 20
+      return usersNearLabelLimit;
     } catch (error) {
       this.logger.error(`Error al obtener usuarios cerca del límite de etiquetas: ${error.message}`);
       throw error;
@@ -2043,24 +2056,7 @@ export class FirestoreService {
     '75-100': number;
   }> {
     try {
-      // Get all current usage documents
-      const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
-
-      // Batch read: get all unique users in a single query
-      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
-      const userDataMap: Record<string, any> = {};
-
-      if (userIds.length > 0) {
-        const userRefs = userIds.map((id) =>
-          this.firestore.collection(this.usersCollection).doc(id),
-        );
-        const userDocs = await this.firestore.getAll(...userRefs);
-        userDocs.forEach((doc) => {
-          if (doc.exists) {
-            userDataMap[doc.id] = doc.data();
-          }
-        });
-      }
+      const entries = await this.getCurrentPeriodUsageEntries();
 
       const distribution = {
         '0-25': 0,
@@ -2069,28 +2065,15 @@ export class FirestoreService {
         '75-100': 0,
       };
 
-      // Process and categorize users
-      for (const doc of usageSnapshot.docs) {
-        const usageData = doc.data();
-        const userId = usageData.userId;
-        const userData = userDataMap[userId];
+      for (const e of entries) {
+        if (e.plan === 'enterprise') continue;
 
-        if (!userData) continue;
-
-        // Exclude admin users from metrics
-        if (userData.role === 'admin') continue;
-
-        const plan = userData.plan as PlanType;
-
-        // Skip enterprise users (unlimited)
-        if (plan === 'enterprise') continue;
-
-        const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
-        const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
-        const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[plan].maxLabelsPerPdf;
+        const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
+        const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
+        const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[e.plan].maxLabelsPerPdf;
         const labelLimit = maxPdfs * maxLabelsPerPdf;
 
-        const percentUsed = (usageData.labelCount / labelLimit) * 100;
+        const percentUsed = (e.labelCount / labelLimit) * 100;
 
         if (percentUsed <= 25) {
           distribution['0-25']++;
@@ -2126,101 +2109,42 @@ export class FirestoreService {
   }>> {
     try {
       const now = new Date();
+      const entries = await this.getCurrentPeriodUsageEntries();
 
-      // Get all current usage documents
-      const usageSnapshot = await this.firestore.collection(this.usageCollection).get();
+      const projections = entries
+        .filter((e) => e.pdfCount > 0)
+        .map((e) => {
+          const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
+          const planLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
 
-      // Batch read: get all unique users in a single query
-      const userIds = usageSnapshot.docs.map((doc) => doc.data().userId).filter(Boolean);
-      const userDataMap: Record<string, any> = {};
+          const daysElapsed = Math.max(
+            1,
+            Math.ceil((now.getTime() - e.periodStart.getTime()) / (1000 * 60 * 60 * 24)),
+          );
+          const dailyRate = e.pdfCount / daysElapsed;
+          const projectedDaysToExhaust = dailyRate > 0 ? Math.round((planLimit / dailyRate) * 10) / 10 : 999;
 
-      if (userIds.length > 0) {
-        const userRefs = userIds.map((id) =>
-          this.firestore.collection(this.usersCollection).doc(id),
-        );
-        const userDocs = await this.firestore.getAll(...userRefs);
-        userDocs.forEach((doc) => {
-          if (doc.exists) {
-            userDataMap[doc.id] = doc.data();
-          }
+          let status: 'critical' | 'risk' | 'normal';
+          if (projectedDaysToExhaust < 15) status = 'critical';
+          else if (projectedDaysToExhaust < 24) status = 'risk';
+          else status = 'normal';
+
+          return {
+            id: e.userId,
+            email: e.user.email || 'unknown',
+            name: e.user.displayName || '',
+            plan: e.plan,
+            billingPeriodStart: e.periodStart,
+            billingPeriodEnd: e.periodEnd,
+            planLimit,
+            pdfsUsed: e.pdfCount,
+            daysElapsed,
+            dailyRate: Math.round(dailyRate * 100) / 100,
+            projectedDaysToExhaust,
+            status,
+          };
         });
-      }
 
-      const projections: Array<{
-        id: string;
-        email: string;
-        name: string;
-        plan: PlanType;
-        billingPeriodStart: Date;
-        billingPeriodEnd: Date;
-        planLimit: number;
-        pdfsUsed: number;
-        daysElapsed: number;
-        dailyRate: number;
-        projectedDaysToExhaust: number;
-        status: 'critical' | 'risk' | 'normal';
-      }> = [];
-
-      for (const doc of usageSnapshot.docs) {
-        const usageData = doc.data();
-        const userId = usageData.userId;
-        const userData = userDataMap[userId];
-
-        if (!userData) continue;
-
-        // Exclude admin users from metrics
-        if (userData.role === 'admin') continue;
-
-        const pdfsUsed = usageData.pdfCount || 0;
-
-        // Only include users with activity (pdfsUsed > 0)
-        if (pdfsUsed === 0) continue;
-
-        const plan = userData.plan as PlanType;
-        const planLimits = userData.planLimits || DEFAULT_PLAN_LIMITS[plan];
-        const planLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[plan].maxPdfsPerMonth;
-
-        // Get period dates
-        const periodStart = usageData.periodStart?.toDate?.() || new Date(usageData.periodStart);
-        const periodEnd = usageData.periodEnd?.toDate?.() || new Date(usageData.periodEnd);
-
-        // Calculate days elapsed (minimum 1 to avoid division by zero)
-        const daysElapsed = Math.max(1, Math.ceil((now.getTime() - periodStart.getTime()) / (1000 * 60 * 60 * 24)));
-
-        // Calculate daily rate
-        const dailyRate = pdfsUsed / daysElapsed;
-
-        // Calculate projected days to exhaust plan
-        // If dailyRate is 0, set to Infinity (will never exhaust)
-        const projectedDaysToExhaust = dailyRate > 0 ? Math.round((planLimit / dailyRate) * 10) / 10 : 999;
-
-        // Determine status based on projected days
-        let status: 'critical' | 'risk' | 'normal';
-        if (projectedDaysToExhaust < 15) {
-          status = 'critical';
-        } else if (projectedDaysToExhaust < 24) {
-          status = 'risk';
-        } else {
-          status = 'normal';
-        }
-
-        projections.push({
-          id: userId,
-          email: userData.email || 'unknown',
-          name: userData.displayName || '',
-          plan,
-          billingPeriodStart: periodStart,
-          billingPeriodEnd: periodEnd,
-          planLimit,
-          pdfsUsed,
-          daysElapsed,
-          dailyRate: Math.round(dailyRate * 100) / 100,
-          projectedDaysToExhaust,
-          status,
-        });
-      }
-
-      // Sort by projectedDaysToExhaust ascending (most critical first)
       projections.sort((a, b) => a.projectedDaysToExhaust - b.projectedDaysToExhaust);
 
       return projections;
@@ -4899,17 +4823,37 @@ export class FirestoreService {
         filteredUsers.push({ userId, userData, daysInactive, lastActivityAt });
       }
 
-      // PHASE 3: OPTIMIZATION - Batch read all usage documents in one query
-      const usageRefs = filteredUsers.map(({ userId }) =>
-        this.firestore.collection(this.usageCollection).doc(this.generateUsageId(userId)),
+      // PHASE 3: OPTIMIZATION - Batch read all usage documents for current period in one query
+      const periodIdByUser = new Map<string, string>();
+      for (const { userId, userData } of filteredUsers) {
+        const createdAt = userData.createdAt?.toDate?.() || (userData.createdAt ? new Date(userData.createdAt) : null);
+        if (!createdAt) continue;
+        const sps = userData.subscriptionPeriodStart?.toDate?.()
+          || (userData.subscriptionPeriodStart ? new Date(userData.subscriptionPeriodStart) : undefined);
+        const spe = userData.subscriptionPeriodEnd?.toDate?.()
+          || (userData.subscriptionPeriodEnd ? new Date(userData.subscriptionPeriodEnd) : undefined);
+        const periodInfo = calculateCurrentPeriod({
+          id: userId,
+          plan: (userData.plan as PlanType) || 'free',
+          createdAt,
+          subscriptionPeriodStart: sps,
+          subscriptionPeriodEnd: spe,
+        });
+        periodIdByUser.set(userId, periodInfo.periodId);
+      }
+      const usageRefs = [...periodIdByUser.values()].map((id) =>
+        this.firestore.collection(this.usageCollection).doc(id),
       );
       const usageDocs = usageRefs.length > 0 ? await this.firestore.getAll(...usageRefs) : [];
-      const usageMap = new Map<string, FirebaseFirestore.DocumentData>();
-      usageDocs.forEach((doc, index) => {
-        if (doc.exists) {
-          usageMap.set(filteredUsers[index].userId, doc.data()!);
-        }
+      const usageByPeriodId = new Map<string, FirebaseFirestore.DocumentData>();
+      usageDocs.forEach((doc) => {
+        if (doc.exists) usageByPeriodId.set(doc.id, doc.data()!);
       });
+      const usageMap = new Map<string, FirebaseFirestore.DocumentData>();
+      for (const [userId, periodId] of periodIdByUser.entries()) {
+        const data = usageByPeriodId.get(periodId);
+        if (data) usageMap.set(userId, data);
+      }
 
       // PHASE 4: OPTIMIZATION - Parallel email queries instead of sequential
       const emailPromises = filteredUsers.map(({ userId }) =>
@@ -4980,13 +4924,13 @@ export class FirestoreService {
   }
 
   /**
-   * Get PRO power users (users with high PDF count in a given month)
-   * Used for testimonial requests and recognition
-   * Returns structured response with users, summary, and pagination
+   * @deprecated Reemplazada por EmailService.getPowerUsersWithPeriod, que usa el período
+   * de facturación de cada usuario (esquema `_YYYYMMDD`) en vez del mes calendario legacy
+   * (`_YYYYMM`). Conservada como stub para evitar romper integraciones externas.
    */
   async getProPowerUsers(params: {
-    minPercentile?: number; // Minimum percentile (e.g., 90 for top 10%)
-    month?: string; // Format: YYYY-MM (defaults to previous month)
+    minPercentile?: number;
+    month?: string;
     page?: number;
     limit?: number;
   }): Promise<{
@@ -5017,137 +4961,21 @@ export class FirestoreService {
       totalPages: number;
     };
   }> {
-    const { minPercentile = 90, month, page = 1, limit = 50 } = params;
-
-    // Default to previous month
-    const targetDate = month
-      ? new Date(`${month}-01`)
-      : new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
-    // Format: YYYYMM (without hyphen) to match generateUsageId() format
-    const targetMonth = `${targetDate.getFullYear()}${String(targetDate.getMonth() + 1).padStart(2, '0')}`;
-
-    // Initialize summary
-    const summary = {
-      total: 0,
-      topPerformers: 0,
-      avgMonthlyPdfs: 0,
-      byPlan: { free: 0, pro: 0, promax: 0, enterprise: 0 },
+    this.logger.warn(
+      'getProPowerUsers (calendar-month, _YYYYMM) is deprecated. ' +
+      'Caller should use EmailService.getPowerUsersWithPeriod instead.',
+    );
+    const { page = 1, limit = 50 } = params;
+    return {
+      users: [],
+      summary: {
+        total: 0,
+        topPerformers: 0,
+        avgMonthlyPdfs: 0,
+        byPlan: { free: 0, pro: 0, promax: 0, enterprise: 0 },
+      },
+      pagination: { page, limit, total: 0, totalPages: 0 },
     };
-
-    try {
-      // Get all users with any plan for summary
-      const usersSnapshot = await this.firestore
-        .collection(this.usersCollection)
-        .get();
-
-      const allUsersWithUsage: Array<{
-        userId: string;
-        userEmail: string;
-        displayName?: string;
-        language: EmailLanguage;
-        pdfsThisMonth: number;
-        labelsThisMonth: number;
-        monthsAsPro: number;
-        plan: string;
-      }> = [];
-
-      let totalPdfs = 0;
-      let usersWithUsage = 0;
-
-      // OPTIMIZATION: Batch read all usage documents in one query instead of N queries
-      const usageRefs = usersSnapshot.docs.map(doc =>
-        this.firestore.collection(this.usageCollection).doc(`${doc.id}_${targetMonth}`),
-      );
-
-      // Batch read: 1 query for all usage docs instead of N individual queries
-      const usageDocs = usageRefs.length > 0 ? await this.firestore.getAll(...usageRefs) : [];
-
-      // Create Map for O(1) lookup
-      const usageMap = new Map<string, FirebaseFirestore.DocumentData>();
-      usageDocs.forEach((doc, index) => {
-        if (doc.exists) {
-          usageMap.set(usersSnapshot.docs[index].id, doc.data()!);
-        }
-      });
-
-      // Now iterate without additional queries
-      for (const doc of usersSnapshot.docs) {
-        const userData = doc.data();
-        const userId = doc.id;
-
-        // Get usage from Map (O(1) lookup, no query)
-        const usageData = usageMap.get(userId) || null;
-        const pdfCount = usageData?.pdfCount || 0;
-
-        if (pdfCount > 0) {
-          usersWithUsage++;
-          totalPdfs += pdfCount;
-
-          // Count by plan
-          const plan = userData.plan || 'free';
-          if (plan === 'free') summary.byPlan.free++;
-          else if (plan === 'pro') summary.byPlan.pro++;
-          else if (plan === 'promax') summary.byPlan.promax++;
-          else if (plan === 'enterprise') summary.byPlan.enterprise++;
-
-          // Calculate months as PRO
-          const createdAt = userData.createdAt?.toDate?.() || userData.createdAt || new Date();
-          const monthsAsPro = Math.floor((new Date().getTime() - createdAt.getTime()) / (30 * 24 * 60 * 60 * 1000));
-
-          allUsersWithUsage.push({
-            userId,
-            userEmail: userData.email,
-            displayName: userData.displayName,
-            language: this.detectLanguageFromCountry(userData.country),
-            pdfsThisMonth: pdfCount,
-            labelsThisMonth: usageData?.labelCount || 0,
-            monthsAsPro: Math.max(1, monthsAsPro),
-            plan,
-          });
-        }
-      }
-
-      // Sort by PDF count (highest first)
-      allUsersWithUsage.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
-
-      // Calculate percentile threshold
-      const percentileIndex = Math.floor(allUsersWithUsage.length * (1 - minPercentile / 100));
-      const percentileThreshold = allUsersWithUsage[percentileIndex]?.pdfsThisMonth || 0;
-
-      // Filter to power users (above percentile threshold)
-      const powerUsers = allUsersWithUsage.filter(u => u.pdfsThisMonth >= percentileThreshold);
-
-      // Update summary
-      summary.total = powerUsers.length;
-      summary.topPerformers = Math.min(10, powerUsers.length); // Top 10 performers
-      summary.avgMonthlyPdfs = usersWithUsage > 0 ? Math.round(totalPdfs / usersWithUsage) : 0;
-
-      // Apply pagination
-      const totalPages = Math.ceil(powerUsers.length / limit);
-      const startIndex = (page - 1) * limit;
-      const paginatedUsers = powerUsers.slice(startIndex, startIndex + limit);
-
-      // Remove plan field from output
-      const users = paginatedUsers.map(({ plan, ...user }) => user);
-
-      return {
-        users,
-        summary,
-        pagination: {
-          page,
-          limit,
-          total: powerUsers.length,
-          totalPages,
-        },
-      };
-    } catch (error) {
-      this.logger.error(`Error getting PRO power users: ${error.message}`);
-      return {
-        users: [],
-        summary,
-        pagination: { page, limit, total: 0, totalPages: 0 },
-      };
-    }
   }
 
   /**

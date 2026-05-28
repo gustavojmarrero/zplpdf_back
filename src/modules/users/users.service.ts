@@ -492,8 +492,9 @@ export class UsersService {
       const user = await this.firestoreService.getUserById(userId);
       if (!user) return;
 
-      // Get usage data for pdfCount and period dates
-      const usage = await this.firestoreService.getOrCreateUsage(userId);
+      // Get usage data for pdfCount and period dates (período actual del usuario)
+      const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
+      const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
       const pdfCount = usage.pdfCount || 0;
       const limit = user.planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
       const percentage = (pdfCount / limit) * 100;
