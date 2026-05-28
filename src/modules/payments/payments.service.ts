@@ -203,9 +203,13 @@ export class PaymentsService {
             );
           }
 
-          this.logger.warn(
-            `User ${userId} has existing ${currentPlan} subscription ${user.stripeSubscriptionId}, ` +
-            `attempting to create checkout for ${plan}`,
+          // Any other case with an active subscription (downgrade, lateral move, or
+          // an unrecognized current plan) must NOT create a second checkout, or Stripe
+          // would create a duplicate subscription and the webhook would orphan the old
+          // one. Block and direct the user to the customer portal to change/cancel first.
+          throw new BadRequestException(
+            `You already have an active subscription${currentPlan ? ` (${currentPlan.toUpperCase()})` : ''}. ` +
+            `To downgrade or change your plan, manage it from your account settings (customer portal).`,
           );
         }
       } catch (error) {
@@ -244,13 +248,28 @@ export class PaymentsService {
             );
           }
 
-          // Log warning for mismatched subscriptions
+          // An active subscription exists for a DIFFERENT plan. Creating a new checkout
+          // would produce a duplicate subscription, so block here too. Upgrades must go
+          // through the upgrade endpoint; downgrades/lateral moves via the customer portal.
+          if (activePlan && PLAN_ORDER[plan] > PLAN_ORDER[activePlan]) {
+            throw new BadRequestException(
+              `Use the upgrade endpoint to upgrade from ${activePlan.toUpperCase()} to ${plan.toUpperCase()}.`,
+            );
+          }
           if (activeSubscriptions.data.length > 1) {
             this.logger.warn(
               `User ${userId} has ${activeSubscriptions.data.length} active subscriptions in Stripe: ` +
               activeSubscriptions.data.map(s => s.id).join(', '),
             );
           }
+          this.logger.warn(
+            `User ${userId} has active Stripe subscription ${activeSub.id} (${activePlan ?? 'unknown'}) ` +
+            `but tried to create checkout for ${plan}. Blocking to avoid duplicate.`,
+          );
+          throw new BadRequestException(
+            `You already have an active subscription${activePlan ? ` (${activePlan.toUpperCase()})` : ''} (${activeSub.id}). ` +
+            `To downgrade or change your plan, manage it from your account settings (customer portal).`,
+          );
         }
       } catch (error) {
         if (error instanceof BadRequestException) throw error;

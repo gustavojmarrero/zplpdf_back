@@ -3600,7 +3600,8 @@ export class FirestoreService {
 
       return usersByCountry.map((countryData) => {
         const freeUsers = countryData.byPlan.free;
-        const proUsers = countryData.byPlan.pro + countryData.byPlan.enterprise;
+        // "proUsers" = todos los usuarios de pago (Lite incluido tras el lanzamiento de Lite)
+        const proUsers = countryData.byPlan.lite + countryData.byPlan.pro + countryData.byPlan.promax + countryData.byPlan.enterprise;
         const conversionRate = freeUsers + proUsers > 0 ? (proUsers / (freeUsers + proUsers)) * 100 : 0;
 
         return {

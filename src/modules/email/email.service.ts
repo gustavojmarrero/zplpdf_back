@@ -1218,7 +1218,7 @@ export class EmailService {
       const userPeriods = allUsers.map((user) => {
         const periodInfo = this.periodCalculatorService.calculateCurrentPeriod({
           id: user.id,
-          plan: user.plan as 'free' | 'pro' | 'promax' | 'enterprise',
+          plan: user.plan as 'free' | 'lite' | 'pro' | 'promax' | 'enterprise',
           createdAt: user.createdAt,
           subscriptionPeriodStart: user.subscriptionPeriodStart,
           subscriptionPeriodEnd: user.subscriptionPeriodEnd,

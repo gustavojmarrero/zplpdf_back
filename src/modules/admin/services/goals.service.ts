@@ -405,8 +405,8 @@ export class GoalsService {
       }
     }
 
-    // Total de suscriptores de pago (pro + promax + enterprise)
-    const totalProSubscribers = usersByPlan.pro + usersByPlan.promax + usersByPlan.enterprise;
+    // Total de suscriptores de pago (lite + pro + promax + enterprise)
+    const totalProSubscribers = usersByPlan.lite + usersByPlan.pro + usersByPlan.promax + usersByPlan.enterprise;
 
     // Mapear métricas disponibles
     for (const key of metricKeys) {
