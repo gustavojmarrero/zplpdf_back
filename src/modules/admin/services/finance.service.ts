@@ -360,6 +360,7 @@ export class FinanceService {
     let totalMonths = 0;
     let userCount = 0;
     const byPlan = {
+      lite: { ltv: 0, avgMonths: 0, count: 0 },
       pro: { ltv: 0, avgMonths: 0, count: 0 },
       promax: { ltv: 0, avgMonths: 0, count: 0 },
       enterprise: { ltv: 0, avgMonths: 0, count: 0 },
@@ -372,7 +373,7 @@ export class FinanceService {
         totalMonths += data.months;
         userCount++;
 
-        if (data.plan === 'pro' || data.plan === 'promax' || data.plan === 'enterprise') {
+        if (data.plan === 'lite' || data.plan === 'pro' || data.plan === 'promax' || data.plan === 'enterprise') {
           byPlan[data.plan].ltv += userLtv;
           byPlan[data.plan].avgMonths += data.months;
           byPlan[data.plan].count++;
@@ -384,7 +385,7 @@ export class FinanceService {
     const avgMonths = userCount > 0 ? totalMonths / userCount : 0;
 
     // Calcular promedios por plan
-    for (const plan of ['pro', 'promax', 'enterprise'] as const) {
+    for (const plan of ['lite', 'pro', 'promax', 'enterprise'] as const) {
       if (byPlan[plan].count > 0) {
         byPlan[plan].ltv = byPlan[plan].ltv / byPlan[plan].count;
         byPlan[plan].avgMonths = byPlan[plan].avgMonths / byPlan[plan].count;
@@ -407,6 +408,10 @@ export class FinanceService {
       totalCustomers,
       avgMonthlyRevenue: Math.round(avgMonthlyRevenue * 100) / 100,
       byPlan: {
+        lite: {
+          ltv: byPlan.lite.ltv / exchangeRate,
+          avgMonths: Math.round(byPlan.lite.avgMonths * 10) / 10,
+        },
         pro: {
           ltv: byPlan.pro.ltv / exchangeRate,
           avgMonths: Math.round(byPlan.pro.avgMonths * 10) / 10,

@@ -41,10 +41,10 @@ class PlanChangeItemDto {
   @ApiProperty({ description: 'User email' })
   userEmail: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'], description: 'Previous plan' })
+  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'], description: 'Previous plan' })
   previousPlan: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'], description: 'New plan' })
+  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'], description: 'New plan' })
   newPlan: string;
 
   @ApiProperty({ description: 'When the change occurred' })

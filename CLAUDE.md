@@ -129,11 +129,19 @@ src/
 
 ### Plan System
 
-| Plan       | Labels/PDF | PDFs/Month | Image Export | Batch |
-|------------|------------|------------|--------------|-------|
-| free       | 100        | 25         | No           | No    |
-| pro        | 500        | 500        | Yes          | 10    |
-| enterprise | Unlimited  | Unlimited  | Yes          | 50    |
+| Plan       | Labels/PDF | PDFs/Month | Image Export | Batch | Historial | Prioridad | Nombre original |
+|------------|------------|------------|--------------|-------|-----------|-----------|-----------------|
+| free       | 75         | 10         | No           | No    | No        | No        | No              |
+| lite       | 100        | 25         | No           | No    | No        | No        | No              |
+| pro        | 500        | 500        | Yes          | 10    | Sí        | Sí        | Sí              |
+| promax     | 1000       | 1000       | Yes          | 10    | Sí        | Sí        | Sí              |
+| enterprise | Unlimited  | Unlimited  | Yes          | 50    | Sí        | Sí        | Sí              |
+
+> **Lite = "Free actual pagado":** más cuota que Free, pero SIN features premium (imágenes, batch, historial, prioridad, nombre de archivo original). Pro sigue siendo el upgrade que desbloquea productividad.
+>
+> Las features premium se controlan con la capa explícita `PLAN_FEATURES` (en `src/common/interfaces/user.interface.ts`), NO con comparaciones tipo `plan !== 'free'`. Las imágenes se gobiernan por `DEFAULT_PLAN_LIMITS[plan].canDownloadImages`. La jerarquía para upgrades/downgrades vive en `PLAN_ORDER`.
+>
+> **Stripe:** Lite es un plan de pago. Requiere las env vars `STRIPE_LITE_PRICE_ID` y `STRIPE_LITE_PRICE_ID_MXN` (producto a crear en el dashboard de Stripe). `getPlanFromPriceId()` NO hace fallback a Pro ante un price ID desconocido: registra error crítico y aborta para no regalar plan.
 
 ### API Endpoints
 

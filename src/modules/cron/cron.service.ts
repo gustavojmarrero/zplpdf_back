@@ -317,11 +317,11 @@ export class CronService {
     let errors = 0;
 
     try {
-      // Get all PRO users
+      // Get all paid users with Stripe billing periods (Lite/Pro/Pro Max)
       const allUsers = await this.firestoreService.getAllUsers();
-      const proUsers = allUsers.filter(u => u.plan === 'pro' || u.plan === 'promax');
+      const proUsers = allUsers.filter(u => u.plan === 'lite' || u.plan === 'pro' || u.plan === 'promax');
 
-      this.logger.log(`Found ${proUsers.length} PRO/Promax users`);
+      this.logger.log(`Found ${proUsers.length} Lite/Pro/Pro Max users`);
 
       for (const user of proUsers) {
         // Skip users without subscription ID

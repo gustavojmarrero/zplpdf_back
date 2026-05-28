@@ -8,8 +8,11 @@ import { ExchangeRateService } from '../admin/services/exchange-rate.service.js'
 import { EmailService } from '../email/email.service.js';
 import type { StripeTransaction, SubscriptionEvent } from '../../common/interfaces/finance.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
+import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
 
-type PaidPlanType = 'pro' | 'promax' | 'enterprise';
+type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
+/** Planes de pago vendibles por checkout/upgrade (excluye enterprise, que es manual). */
+type SellablePlan = 'lite' | 'pro' | 'promax';
 
 @Injectable()
 export class PaymentsService {
@@ -19,6 +22,8 @@ export class PaymentsService {
   private proPriceIdMxn: string;
   private promaxPriceId: string;
   private promaxPriceIdMxn: string;
+  private litePriceId: string;
+  private litePriceIdMxn: string;
   private readonly MAX_RETRIES = 3;
 
   /**
@@ -77,6 +82,8 @@ export class PaymentsService {
     this.proPriceIdMxn = this.configService.get<string>('STRIPE_PRO_PRICE_ID_MXN');
     this.promaxPriceId = this.configService.get<string>('STRIPE_PROMAX_PRICE_ID');
     this.promaxPriceIdMxn = this.configService.get<string>('STRIPE_PROMAX_PRICE_ID_MXN');
+    this.litePriceId = this.configService.get<string>('STRIPE_LITE_PRICE_ID');
+    this.litePriceIdMxn = this.configService.get<string>('STRIPE_LITE_PRICE_ID_MXN');
 
     // Validate price IDs are configured
     if (!this.proPriceId) {
@@ -91,30 +98,49 @@ export class PaymentsService {
     if (!this.promaxPriceIdMxn) {
       this.logger.warn('STRIPE_PROMAX_PRICE_ID_MXN not configured');
     }
+    if (!this.litePriceId) {
+      this.logger.warn('STRIPE_LITE_PRICE_ID not configured');
+    }
+    if (!this.litePriceIdMxn) {
+      this.logger.warn('STRIPE_LITE_PRICE_ID_MXN not configured');
+    }
   }
 
   /**
-   * Get plan type from Stripe price ID
+   * Get plan type from Stripe price ID.
+   *
+   * Devuelve `null` si el price ID no está mapeado a ningún plan. NO hace fallback
+   * a 'pro': un price ID desconocido es casi siempre un error de configuración
+   * (ej. STRIPE_LITE_PRICE_ID sin definir), y asignar Pro por defecto regalaría
+   * un plan superior. Los callers deben tratar `null` como condición de error.
    */
-  private getPlanFromPriceId(priceId: string): PaidPlanType {
+  private getPlanFromPriceId(priceId: string): PaidPlanType | null {
     if (priceId === this.proPriceId || priceId === this.proPriceIdMxn) {
       return 'pro';
     }
     if (priceId === this.promaxPriceId || priceId === this.promaxPriceIdMxn) {
       return 'promax';
     }
-    // Default to pro for unknown prices (backwards compatibility)
-    this.logger.warn(`Unknown price ID: ${priceId}, defaulting to pro`);
-    return 'pro';
+    if (priceId === this.litePriceId || priceId === this.litePriceIdMxn) {
+      return 'lite';
+    }
+    this.logger.error(
+      `CRITICAL: Unknown Stripe price ID '${priceId}' — not mapped to any plan. ` +
+      `Check STRIPE_LITE/PRO/PROMAX_PRICE_ID[_MXN] configuration. Plan NOT assigned.`,
+    );
+    return null;
   }
 
   /**
    * Get price ID for a plan and country
    */
-  private getPriceIdForPlan(plan: 'pro' | 'promax', country?: string): string {
+  private getPriceIdForPlan(plan: SellablePlan, country?: string): string {
     const isMexico = country === 'MX';
     if (plan === 'promax') {
       return isMexico ? this.promaxPriceIdMxn : this.promaxPriceId;
+    }
+    if (plan === 'lite') {
+      return isMexico ? this.litePriceIdMxn : this.litePriceId;
     }
     return isMexico ? this.proPriceIdMxn : this.proPriceId;
   }
@@ -125,7 +151,7 @@ export class PaymentsService {
     successUrl: string,
     cancelUrl: string,
     country?: string,
-    plan: 'pro' | 'promax' = 'pro',
+    plan: SellablePlan = 'pro',
   ): Promise<CheckoutResponseDto> {
     if (!this.stripe) {
       throw new BadRequestException('Payment system not configured');
@@ -159,7 +185,7 @@ export class PaymentsService {
         if (['active', 'trialing', 'past_due'].includes(existingSubscription.status)) {
           // Get the current plan from the subscription
           const currentPriceId = existingSubscription.items.data[0]?.price?.id;
-          const currentPlan = currentPriceId ? this.getPlanFromPriceId(currentPriceId) : 'pro';
+          const currentPlan = currentPriceId ? this.getPlanFromPriceId(currentPriceId) : null;
 
           // If trying to buy the same plan, reject
           if (currentPlan === plan) {
@@ -168,16 +194,22 @@ export class PaymentsService {
             );
           }
 
-          // If upgrading from pro to promax, redirect to upgrade endpoint
-          if (currentPlan === 'pro' && plan === 'promax') {
+          // If moving UP between paid plans (lite→pro, lite→promax, pro→promax),
+          // redirect to the upgrade endpoint to modify the existing subscription
+          // with proration instead of creating a duplicate subscription.
+          if (currentPlan && PLAN_ORDER[plan] > PLAN_ORDER[currentPlan]) {
             throw new BadRequestException(
-              'Use the upgrade endpoint to upgrade from PRO to PRO MAX.',
+              `Use the upgrade endpoint to upgrade from ${currentPlan.toUpperCase()} to ${plan.toUpperCase()}.`,
             );
           }
 
-          this.logger.warn(
-            `User ${userId} has existing ${currentPlan} subscription ${user.stripeSubscriptionId}, ` +
-            `attempting to create checkout for ${plan}`,
+          // Any other case with an active subscription (downgrade, lateral move, or
+          // an unrecognized current plan) must NOT create a second checkout, or Stripe
+          // would create a duplicate subscription and the webhook would orphan the old
+          // one. Block and direct the user to the customer portal to change/cancel first.
+          throw new BadRequestException(
+            `You already have an active subscription${currentPlan ? ` (${currentPlan.toUpperCase()})` : ''}. ` +
+            `To downgrade or change your plan, manage it from your account settings (customer portal).`,
           );
         }
       } catch (error) {
@@ -202,7 +234,7 @@ export class PaymentsService {
         if (activeSubscriptions.data.length > 0) {
           const activeSub = activeSubscriptions.data[0];
           const activePriceId = activeSub.items.data[0]?.price?.id;
-          const activePlan = activePriceId ? this.getPlanFromPriceId(activePriceId) : 'pro';
+          const activePlan = activePriceId ? this.getPlanFromPriceId(activePriceId) : null;
 
           // If user trying to buy the same plan they already have active in Stripe
           if (activePlan === plan) {
@@ -216,13 +248,28 @@ export class PaymentsService {
             );
           }
 
-          // Log warning for mismatched subscriptions
+          // An active subscription exists for a DIFFERENT plan. Creating a new checkout
+          // would produce a duplicate subscription, so block here too. Upgrades must go
+          // through the upgrade endpoint; downgrades/lateral moves via the customer portal.
+          if (activePlan && PLAN_ORDER[plan] > PLAN_ORDER[activePlan]) {
+            throw new BadRequestException(
+              `Use the upgrade endpoint to upgrade from ${activePlan.toUpperCase()} to ${plan.toUpperCase()}.`,
+            );
+          }
           if (activeSubscriptions.data.length > 1) {
             this.logger.warn(
               `User ${userId} has ${activeSubscriptions.data.length} active subscriptions in Stripe: ` +
               activeSubscriptions.data.map(s => s.id).join(', '),
             );
           }
+          this.logger.warn(
+            `User ${userId} has active Stripe subscription ${activeSub.id} (${activePlan ?? 'unknown'}) ` +
+            `but tried to create checkout for ${plan}. Blocking to avoid duplicate.`,
+          );
+          throw new BadRequestException(
+            `You already have an active subscription${activePlan ? ` (${activePlan.toUpperCase()})` : ''} (${activeSub.id}). ` +
+            `To downgrade or change your plan, manage it from your account settings (customer portal).`,
+          );
         }
       } catch (error) {
         if (error instanceof BadRequestException) throw error;
@@ -316,7 +363,7 @@ export class PaymentsService {
    */
   async upgradeSubscription(
     userId: string,
-    targetPlan: 'promax',
+    targetPlan: 'pro' | 'promax',
   ): Promise<{ success: boolean; message: string }> {
     if (!this.stripe) {
       throw new BadRequestException('Payment system not configured');
@@ -332,8 +379,11 @@ export class PaymentsService {
       throw new BadRequestException('No active subscription to upgrade. Please subscribe first.');
     }
 
-    if (user.plan !== 'pro') {
-      throw new BadRequestException(`Cannot upgrade from ${user.plan} plan. Only PRO users can upgrade to PRO MAX.`);
+    // Solo se permite subir a un plan ESTRICTAMENTE superior (lite→pro, lite→promax, pro→promax).
+    if (PLAN_ORDER[targetPlan] <= PLAN_ORDER[user.plan]) {
+      throw new BadRequestException(
+        `Cannot upgrade from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}.`,
+      );
     }
 
     // Get current subscription to find the item ID
@@ -352,7 +402,7 @@ export class PaymentsService {
     const newPriceId = this.getPriceIdForPlan(targetPlan, user.country);
 
     if (!newPriceId) {
-      throw new BadRequestException('PRO MAX price not configured');
+      throw new BadRequestException(`${targetPlan.toUpperCase()} price not configured`);
     }
 
     // Update subscription with proration
@@ -368,14 +418,14 @@ export class PaymentsService {
 
     // Update user plan in Firestore
     await this.firestoreService.updateUser(userId, {
-      plan: 'promax',
+      plan: targetPlan,
     });
 
-    this.logger.log(`User ${userId} upgraded from PRO to PRO MAX`);
+    this.logger.log(`User ${userId} upgraded from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}`);
 
     return {
       success: true,
-      message: 'Successfully upgraded to PRO MAX. Proration has been applied.',
+      message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
     };
   }
 
@@ -414,7 +464,7 @@ export class PaymentsService {
     const amount = session.amount_total || 0;
 
     // Get plan and period from subscription
-    let plan: PaidPlanType = 'pro';
+    let plan: PaidPlanType | null = null;
     let subscriptionPeriodStart: Date | undefined;
     let subscriptionPeriodEnd: Date | undefined;
     try {
@@ -430,6 +480,17 @@ export class PaymentsService {
       if (periodEnd) subscriptionPeriodEnd = new Date(periodEnd * 1000);
     } catch (error) {
       this.logger.warn(`Failed to get subscription details: ${error.message}`);
+    }
+
+    // Si no se pudo resolver el plan desde el price ID, NO asignar uno por defecto:
+    // hacerlo regalaría un plan (potencialmente superior) por mala configuración.
+    // Abortamos y registramos error crítico; Stripe reintentará el webhook.
+    if (!plan) {
+      this.logger.error(
+        `CRITICAL: No se pudo determinar el plan para checkout de user ${userId} ` +
+        `(session ${session.id}, sub ${subscriptionId}). Plan NO asignado. Revisar STRIPE_*_PRICE_ID.`,
+      );
+      throw new Error(`Cannot resolve plan for checkout session ${session.id}`);
     }
 
     // Calculate MXN amount for transactions
@@ -528,6 +589,7 @@ export class PaymentsService {
 
     // Track purchase in GA4 (server-side)
     const planNames: Record<PaidPlanType, string> = {
+      lite: 'Plan Lite',
       pro: 'Plan Pro',
       promax: 'Plan Pro Max',
       enterprise: 'Plan Enterprise',
@@ -567,7 +629,17 @@ export class PaymentsService {
 
     // Get plan from subscription price
     const priceId = subscription.items.data[0]?.price?.id;
-    const plan = priceId ? this.getPlanFromPriceId(priceId) : 'pro';
+    const plan = priceId ? this.getPlanFromPriceId(priceId) : null;
+
+    // Si la suscripción está activa pero no podemos resolver el plan, no tocamos
+    // el plan del usuario (evita asignar uno incorrecto por mala configuración).
+    if (subscription.status === 'active' && !plan) {
+      this.logger.error(
+        `CRITICAL: No se pudo determinar el plan para subscription.updated de user ${user.id} ` +
+        `(sub ${subscription.id}). Plan NO actualizado. Revisar STRIPE_*_PRICE_ID.`,
+      );
+      return;
+    }
 
     // Check subscription status with retry
     // Type cast for Stripe API compatibility
@@ -667,7 +739,7 @@ export class PaymentsService {
     }
 
     // Get the plan that was canceled (from user's current plan before downgrade)
-    const canceledPlan = (user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
+    const canceledPlan = (user.plan === 'lite' || user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
 
     // Downgrade to free plan with retry
     await this.withRetry(
@@ -765,8 +837,10 @@ export class PaymentsService {
       return;
     }
 
-    // Get plan and period from invoice subscription
-    let plan: PaidPlanType = (user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
+    // Get plan and period from invoice subscription.
+    // Fallback al plan actual del usuario si no se puede resolver desde el price ID
+    // (no degradamos ni regalamos plan por un price desconocido).
+    let plan: PaidPlanType = (user.plan === 'lite' || user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
     let subscriptionPeriodStart: Date | undefined;
     let subscriptionPeriodEnd: Date | undefined;
     const subscriptionId = (invoice as { subscription?: string | null }).subscription as string;
@@ -775,7 +849,10 @@ export class PaymentsService {
         const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
         const priceId = subscription.items.data[0]?.price?.id;
         if (priceId) {
-          plan = this.getPlanFromPriceId(priceId);
+          const resolvedPlan = this.getPlanFromPriceId(priceId);
+          if (resolvedPlan) {
+            plan = resolvedPlan;
+          }
         }
         // Extract new billing period dates (type cast for Stripe API compatibility)
         const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;

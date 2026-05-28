@@ -7,7 +7,7 @@ import { BillingService } from '../billing/billing.service.js';
 import { toISOString, ensureISOString } from '../../utils/date.util.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { LabelaryAnalyticsService } from '../zpl/services/labelary-analytics.service.js';
-import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
+import { DEFAULT_PLAN_LIMITS, PLAN_ORDER } from '../../common/interfaces/user.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
 import type { AdminUserData } from '../../common/decorators/admin-user.decorator.js';
 import type { AdminMetricsResponseDto } from './dto/admin-metrics.dto.js';
@@ -929,8 +929,7 @@ export class AdminService {
   }
 
   private isPlanDowngrade(currentPlan: PlanType, newPlan: string): boolean {
-    const planOrder: Record<string, number> = { free: 0, pro: 1, enterprise: 2 };
-    return planOrder[newPlan] < planOrder[currentPlan];
+    return (PLAN_ORDER[newPlan as PlanType] ?? 0) < (PLAN_ORDER[currentPlan] ?? 0);
   }
 
   // ==================== Simulación de Plan (Admin) ====================

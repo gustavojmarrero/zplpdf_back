@@ -6,7 +6,7 @@ import { LabelSize } from '../enums/label-size.enum.js';
 
 export type QueuePriority = 'high' | 'normal';
 export type QueueItemStatus = 'queued' | 'processing' | 'completed' | 'failed';
-export type UserPlan = 'free' | 'pro' | 'enterprise';
+export type UserPlan = 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
 
 export interface QueueItem {
   id: string;

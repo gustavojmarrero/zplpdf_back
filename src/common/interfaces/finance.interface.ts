@@ -36,7 +36,7 @@ export interface StripeTransaction {
   amountMxn: number; // Convertido a MXN para comparaciones
   exchangeRate: number; // Tipo de cambio usado
   type: TransactionType;
-  plan: 'pro' | 'promax' | 'enterprise';
+  plan: 'lite' | 'pro' | 'promax' | 'enterprise';
   stripeCustomerId: string;
   stripeSubscriptionId?: string;
   stripeInvoiceId?: string;
@@ -157,8 +157,8 @@ export interface SubscriptionEvent {
   userId: string;
   userEmail: string;
   eventType: SubscriptionEventType;
-  plan: 'pro' | 'promax' | 'enterprise';
-  previousPlan?: 'free' | 'pro' | 'promax' | 'enterprise';
+  plan: 'lite' | 'pro' | 'promax' | 'enterprise';
+  previousPlan?: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
   currency: 'usd' | 'mxn';
   mrr: number; // MRR en la moneda original
   mrrMxn: number; // MRR convertido a MXN
@@ -215,6 +215,7 @@ export interface LTVData {
   totalCustomers: number;
   avgMonthlyRevenue: number;
   byPlan: {
+    lite: { ltv: number; avgMonths: number };
     pro: { ltv: number; avgMonths: number };
     promax: { ltv: number; avgMonths: number };
     enterprise: { ltv: number; avgMonths: number };
