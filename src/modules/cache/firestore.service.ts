@@ -631,9 +631,25 @@ export class FirestoreService {
         labelCount: 0,
       };
 
-      await docRef.set(newUsage);
-      this.logger.log(`Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`);
-      return newUsage;
+      // create() es atómico: falla con ALREADY_EXISTS si el doc apareció entre
+      // el get() y ahora (ej. un incrementUsageWithPeriod concurrente lo creó).
+      // Eso evita que un set() con contadores en 0 pise uso ya registrado.
+      try {
+        await docRef.create(newUsage);
+        this.logger.log(`Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`);
+        return newUsage;
+      } catch (createError) {
+        if (createError?.code === 6 /* ALREADY_EXISTS */) {
+          const existing = await docRef.get();
+          const data = existing.data();
+          return {
+            ...data,
+            periodStart: data.periodStart?.toDate?.() || data.periodStart,
+            periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
+          } as Usage;
+        }
+        throw createError;
+      }
     } catch (error) {
       this.logger.error(`Error al obtener/crear uso con período: ${error.message}`);
       throw error;
