@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
-import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
+import { DEFAULT_PLAN_LIMITS, PLAN_ORDER } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType } from '../../common/interfaces/user.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
@@ -39,11 +39,7 @@ export interface DailyStats {
   errorCount: number;
   successCount: number;
   failureCount: number;
-  conversionsByPlan: {
-    free: { pdfs: number; labels: number };
-    pro: { pdfs: number; labels: number };
-    enterprise: { pdfs: number; labels: number };
-  };
+  conversionsByPlan: Record<PlanType, { pdfs: number; labels: number }>;
 }
 
 export interface GlobalTotals {
@@ -800,7 +796,7 @@ export class FirestoreService {
    */
   async incrementDailyStats(
     userId: string,
-    userPlan: 'free' | 'pro' | 'enterprise',
+    userPlan: PlanType,
     pdfCount: number,
     labelCount: number,
     status: 'completed' | 'failed',
@@ -842,7 +838,9 @@ export class FirestoreService {
             failureCount: status === 'failed' ? 1 : 0,
             conversionsByPlan: {
               free: { pdfs: 0, labels: 0 },
+              lite: { pdfs: 0, labels: 0 },
               pro: { pdfs: 0, labels: 0 },
+              promax: { pdfs: 0, labels: 0 },
               enterprise: { pdfs: 0, labels: 0 },
             },
           };
@@ -903,7 +901,9 @@ export class FirestoreService {
             failureCount: 0,
             conversionsByPlan: {
               free: { pdfs: 0, labels: 0 },
+              lite: { pdfs: 0, labels: 0 },
               pro: { pdfs: 0, labels: 0 },
+              promax: { pdfs: 0, labels: 0 },
               enterprise: { pdfs: 0, labels: 0 },
             },
           };
@@ -1553,9 +1553,8 @@ export class FirestoreService {
         if (params.reason) {
           reason = params.reason;
         } else {
-          const planOrder: Record<string, number> = { free: 0, pro: 1, enterprise: 2 };
-          const prevOrder = planOrder[params.previousPlan] ?? 0;
-          const newOrder = planOrder[params.newPlan] ?? 0;
+          const prevOrder = PLAN_ORDER[params.previousPlan as PlanType] ?? 0;
+          const newOrder = PLAN_ORDER[params.newPlan as PlanType] ?? 0;
           if (newOrder > prevOrder) {
             reason = 'upgrade';
           } else if (newOrder < prevOrder) {
@@ -1609,25 +1608,29 @@ export class FirestoreService {
     }
   }
 
-  async getUsersByPlan(): Promise<{ free: number; pro: number; promax: number; enterprise: number }> {
+  async getUsersByPlan(): Promise<{ free: number; lite: number; pro: number; promax: number; enterprise: number }> {
     try {
       // Count users by plan and subtract admins from each plan
       const [
         freeCount,
+        liteCount,
         proCount,
         promaxCount,
         enterpriseCount,
         freeAdminCount,
+        liteAdminCount,
         proAdminCount,
         promaxAdminCount,
         enterpriseAdminCount,
       ] = await Promise.all([
         this.firestore.collection(this.usersCollection).where('plan', '==', 'free').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'lite').count().get(),
         this.firestore.collection(this.usersCollection).where('plan', '==', 'pro').count().get(),
         this.firestore.collection(this.usersCollection).where('plan', '==', 'promax').count().get(),
         this.firestore.collection(this.usersCollection).where('plan', '==', 'enterprise').count().get(),
         // Count admins by plan to subtract
         this.firestore.collection(this.usersCollection).where('plan', '==', 'free').where('role', '==', 'admin').count().get(),
+        this.firestore.collection(this.usersCollection).where('plan', '==', 'lite').where('role', '==', 'admin').count().get(),
         this.firestore.collection(this.usersCollection).where('plan', '==', 'pro').where('role', '==', 'admin').count().get(),
         this.firestore.collection(this.usersCollection).where('plan', '==', 'promax').where('role', '==', 'admin').count().get(),
         this.firestore.collection(this.usersCollection).where('plan', '==', 'enterprise').where('role', '==', 'admin').count().get(),
@@ -1635,6 +1638,7 @@ export class FirestoreService {
 
       return {
         free: freeCount.data().count - freeAdminCount.data().count,
+        lite: liteCount.data().count - liteAdminCount.data().count,
         pro: proCount.data().count - proAdminCount.data().count,
         promax: promaxCount.data().count - promaxAdminCount.data().count,
         enterprise: enterpriseCount.data().count - enterpriseAdminCount.data().count,
@@ -2232,6 +2236,7 @@ export class FirestoreService {
       let failureCount = 0;
       const byPlan: Record<string, { pdfs: number; labels: number }> = {
         free: { pdfs: 0, labels: 0 },
+        lite: { pdfs: 0, labels: 0 },
         pro: { pdfs: 0, labels: 0 },
         promax: { pdfs: 0, labels: 0 },
         enterprise: { pdfs: 0, labels: 0 },
@@ -2394,25 +2399,31 @@ export class FirestoreService {
 
   async getPlanDistribution(): Promise<{
     distribution: Record<string, { users: number; percentage: number }>;
-    conversionRates: { freeTrialToPro: number; proToEnterprise: number };
+    conversionRates: { freeToPaid: number; freeTrialToPro: number; proToEnterprise: number };
   }> {
     try {
       const byPlan = await this.getUsersByPlan();
-      const total = byPlan.free + byPlan.pro + byPlan.enterprise;
+      const total = byPlan.free + byPlan.lite + byPlan.pro + byPlan.promax + byPlan.enterprise;
+      const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
 
       const distribution = {
-        free: { users: byPlan.free, percentage: total > 0 ? Math.round((byPlan.free / total) * 1000) / 10 : 0 },
-        pro: { users: byPlan.pro, percentage: total > 0 ? Math.round((byPlan.pro / total) * 1000) / 10 : 0 },
-        enterprise: { users: byPlan.enterprise, percentage: total > 0 ? Math.round((byPlan.enterprise / total) * 1000) / 10 : 0 },
+        free: { users: byPlan.free, percentage: pct(byPlan.free) },
+        lite: { users: byPlan.lite, percentage: pct(byPlan.lite) },
+        pro: { users: byPlan.pro, percentage: pct(byPlan.pro) },
+        promax: { users: byPlan.promax, percentage: pct(byPlan.promax) },
+        enterprise: { users: byPlan.enterprise, percentage: pct(byPlan.enterprise) },
       };
 
-      // Calculate conversion rates (simplified - would need historical data for accurate rates)
+      // Calculate conversion rates (simplified - would need historical data for accurate rates).
+      // Paid = lite + pro + promax + enterprise.
+      const paid = byPlan.lite + byPlan.pro + byPlan.promax + byPlan.enterprise;
+      const freeToPaid = byPlan.free + paid > 0 ? Math.round((paid / (byPlan.free + paid)) * 1000) / 10 : 0;
       const freeTrialToPro = byPlan.free > 0 ? Math.round((byPlan.pro / (byPlan.free + byPlan.pro)) * 1000) / 10 : 0;
       const proToEnterprise = byPlan.pro > 0 ? Math.round((byPlan.enterprise / (byPlan.pro + byPlan.enterprise)) * 1000) / 10 : 0;
 
       return {
         distribution,
-        conversionRates: { freeTrialToPro, proToEnterprise },
+        conversionRates: { freeToPaid, freeTrialToPro, proToEnterprise },
       };
     } catch (error) {
       this.logger.error(`Error al obtener distribución de planes: ${error.message}`);
@@ -2421,24 +2432,36 @@ export class FirestoreService {
   }
 
   async getUpgradeOpportunities(): Promise<{
-    freeToProCandidates: number;
+    freeToLiteCandidates: number;
+    liteToProCandidates: number;
     proToEnterpriseCandidates: number;
+    /** @deprecated usar freeToLiteCandidates. Mantenido por compatibilidad: free cerca de límite. */
+    freeToProCandidates: number;
   }> {
     try {
       const usersNearLimit = await this.getUsersNearLimit(70);
 
-      let freeToProCandidates = 0;
+      let freeToLiteCandidates = 0;
+      let liteToProCandidates = 0;
       let proToEnterpriseCandidates = 0;
 
       usersNearLimit.forEach((user) => {
-        if (user.plan === 'free' && user.percentUsed >= 70) {
-          freeToProCandidates++;
-        } else if (user.plan === 'pro' && user.percentUsed >= 70) {
+        if (user.percentUsed < 70) return;
+        if (user.plan === 'free') {
+          freeToLiteCandidates++;
+        } else if (user.plan === 'lite') {
+          liteToProCandidates++;
+        } else if (user.plan === 'pro') {
           proToEnterpriseCandidates++;
         }
       });
 
-      return { freeToProCandidates, proToEnterpriseCandidates };
+      return {
+        freeToLiteCandidates,
+        liteToProCandidates,
+        proToEnterpriseCandidates,
+        freeToProCandidates: freeToLiteCandidates,
+      };
     } catch (error) {
       this.logger.error(`Error al obtener oportunidades de upgrade: ${error.message}`);
       throw error;
@@ -3461,7 +3484,7 @@ export class FirestoreService {
     try {
       const snapshot = await this.firestore
         .collection(this.usersCollection)
-        .where('plan', 'in', ['pro', 'enterprise'])
+        .where('plan', 'in', ['lite', 'pro', 'promax', 'enterprise'])
         .where('stripeSubscriptionId', '!=', null)
         .count()
         .get();
@@ -3498,7 +3521,7 @@ export class FirestoreService {
     Array<{
       country: string;
       total: number;
-      byPlan: { free: number; pro: number; enterprise: number };
+      byPlan: { free: number; lite: number; pro: number; promax: number; enterprise: number };
     }>
   > {
     try {
@@ -3524,7 +3547,7 @@ export class FirestoreService {
 
       const countryMap = new Map<
         string,
-        { total: number; byPlan: { free: number; pro: number; enterprise: number } }
+        { total: number; byPlan: { free: number; lite: number; pro: number; promax: number; enterprise: number } }
       >();
 
       for (const doc of usersSnapshot.docs) {
@@ -3538,13 +3561,13 @@ export class FirestoreService {
         if (!countryMap.has(country)) {
           countryMap.set(country, {
             total: 0,
-            byPlan: { free: 0, pro: 0, enterprise: 0 },
+            byPlan: { free: 0, lite: 0, pro: 0, promax: 0, enterprise: 0 },
           });
         }
 
         const countryData = countryMap.get(country)!;
         countryData.total++;
-        const plan = data.plan as 'free' | 'pro' | 'enterprise';
+        const plan = data.plan as PlanType;
         if (plan && countryData.byPlan[plan] !== undefined) {
           countryData.byPlan[plan]++;
         } else {
@@ -4739,6 +4762,7 @@ export class FirestoreService {
         days30: number;
       };
       byPlan: {
+        lite: number;
         pro: number;
         promax: number;
         enterprise: number;
@@ -4762,14 +4786,14 @@ export class FirestoreService {
     const summary = {
       total: 0,
       byPeriod: { days7: 0, days14: 0, days30: 0 },
-      byPlan: { pro: 0, promax: 0, enterprise: 0 },
+      byPlan: { lite: 0, pro: 0, promax: 0, enterprise: 0 },
     };
 
     try {
-      // Get all PRO/PROMAX/ENTERPRISE users for summary calculation
+      // Get all LITE/PRO/PROMAX/ENTERPRISE users for summary calculation
       const usersSnapshot = await this.firestore
         .collection(this.usersCollection)
-        .where('plan', 'in', ['pro', 'promax', 'enterprise'])
+        .where('plan', 'in', ['lite', 'pro', 'promax', 'enterprise'])
         .get();
 
       const allInactiveUsers: Array<{
@@ -4836,7 +4860,8 @@ export class FirestoreService {
         // Count for summary (all inactive users regardless of min/max filter)
         if (daysInactive >= 7) {
           summary.byPeriod.days7++;
-          if (userData.plan === 'pro') summary.byPlan.pro++;
+          if (userData.plan === 'lite') summary.byPlan.lite++;
+          else if (userData.plan === 'pro') summary.byPlan.pro++;
           else if (userData.plan === 'promax') summary.byPlan.promax++;
           else if (userData.plan === 'enterprise') summary.byPlan.enterprise++;
         }
@@ -4977,6 +5002,7 @@ export class FirestoreService {
       avgMonthlyPdfs: number;
       byPlan: {
         free: number;
+        lite: number;
         pro: number;
         promax: number;
         enterprise: number;
@@ -5000,7 +5026,7 @@ export class FirestoreService {
         total: 0,
         topPerformers: 0,
         avgMonthlyPdfs: 0,
-        byPlan: { free: 0, pro: 0, promax: 0, enterprise: 0 },
+        byPlan: { free: 0, lite: 0, pro: 0, promax: 0, enterprise: 0 },
       },
       pagination: { page, limit, total: 0, totalPages: 0 },
     };

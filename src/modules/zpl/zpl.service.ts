@@ -18,6 +18,8 @@ import type { BatchJob, BatchFileJob, BatchLimits } from './interfaces/batch.int
 import { BATCH_LIMITS } from './interfaces/batch.interface.js';
 import { LabelaryQueueService } from './services/labelary-queue.service.js';
 import type { UserPlan, QueuePositionResponse } from './interfaces/queue.interface.js';
+import { DEFAULT_PLAN_LIMITS, PLAN_FEATURES } from '../../common/interfaces/user.interface.js';
+import type { PlanType } from '../../common/interfaces/user.interface.js';
 
 export enum LabelSize {
   TWO_BY_ONE = '2x1',
@@ -265,9 +267,10 @@ export class ZplService {
       const user = await this.usersService.getUserById(userId);
       const userPlan = user ? this.usersService.getEffectivePlan(user) : 'free';
 
-      // Validate Pro plan for image formats
+      // Validate image formats by capability (canDownloadImages), NOT by plan literal.
+      // Free y Lite no descargan imágenes; Pro/Pro Max/Enterprise sí.
       if (outputFormat !== OutputFormat.PDF) {
-        if (!user || userPlan === 'free') {
+        if (!user || !DEFAULT_PLAN_LIMITS[userPlan].canDownloadImages) {
           throw new HttpException(
             {
               error: ErrorCodes.IMAGE_FORMAT_PRO_ONLY,
@@ -314,7 +317,7 @@ export class ZplService {
       // Encolar el trabajo para procesamiento asincrono
       const periodInfo = canConvert.periodInfo;
       setTimeout(() => {
-        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodInfo, userPlan as 'free' | 'pro' | 'enterprise');
+        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodInfo, userPlan as UserPlan);
       }, 100);
 
       // Guardar ZPL para debugging de forma asíncrona (no bloquea)
@@ -352,7 +355,7 @@ export class ZplService {
     labelCount: number,
     outputFormat: OutputFormat = OutputFormat.PDF,
     periodInfo?: PeriodInfo,
-    userPlan?: 'free' | 'pro' | 'enterprise',
+    userPlan?: UserPlan,
   ): Promise<void> {
     try {
       await this.processZplConversion(zplContent, labelSize, jobId, outputFormat, userId, userPlan);
@@ -431,7 +434,7 @@ export class ZplService {
     jobId: string,
     outputFormat: OutputFormat = OutputFormat.PDF,
     userId?: string,
-    userPlan?: 'free' | 'pro' | 'enterprise',
+    userPlan?: UserPlan,
   ): Promise<void> {
     const job = this.jobs.get(jobId);
     if (!job) {
@@ -1320,8 +1323,9 @@ export class ZplService {
   ): { storageFilename: string; downloadFilename: string } {
     const storageFilename = `label-${jobId}.${fileExtension}`;
 
-    // Para usuarios Pro/Enterprise con nombre original, usar ese nombre
-    if (originalFilename && userPlan && userPlan !== 'free') {
+    // Conservar el nombre original es feature premium: solo Pro/Pro Max/Enterprise.
+    // Free y Lite usan el formato estándar zplpdf_size_timestamp.
+    if (originalFilename && userPlan && PLAN_FEATURES[userPlan as PlanType]?.preservesOriginalFilename) {
       // Remover extensión original (.zpl, .txt, etc) y agregar la nueva
       const baseName = originalFilename.replace(/\.(zpl|txt|ZPL|TXT)$/i, '');
       return {

@@ -12,6 +12,7 @@ import {
 } from '../interfaces/queue.interface.js';
 import { LabelaryAnalyticsService } from './labelary-analytics.service.js';
 import { LabelSize } from '../enums/label-size.enum.js';
+import { PLAN_FEATURES } from '../../../common/interfaces/user.interface.js';
 import { v4 as uuidv4 } from 'uuid';
 
 interface PendingRequest {
@@ -63,7 +64,8 @@ export class LabelaryQueueService {
     labelCount: number,
   ): Promise<Buffer> {
     return new Promise<Buffer>((resolve, reject) => {
-      const priority: QueuePriority = userPlan === 'free' ? 'normal' : 'high';
+      // Prioridad alta es una feature premium: solo Pro/Pro Max/Enterprise. Free y Lite van en 'normal'.
+      const priority: QueuePriority = PLAN_FEATURES[userPlan].hasHighPriority ? 'high' : 'normal';
 
       const item: QueueItem = {
         id: uuidv4(),

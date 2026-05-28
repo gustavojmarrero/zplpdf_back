@@ -15,7 +15,7 @@ class UserNearLimitDto {
   @ApiProperty()
   email: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'] })
   plan: string;
 
   @ApiProperty()
@@ -38,7 +38,7 @@ class UserNearLabelLimitDto {
   @ApiProperty()
   email: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'] })
   plan: string;
 
   @ApiProperty({ description: 'Current label count in period' })
@@ -75,7 +75,7 @@ class UserExceedingFrequentlyDto {
   @ApiProperty()
   email: string;
 
-  @ApiProperty({ enum: ['free', 'pro', 'enterprise'] })
+  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'] })
   plan: string;
 
   @ApiProperty()
@@ -90,13 +90,22 @@ class UserExceedingFrequentlyDto {
 
 class UpgradeOpportunitiesDto {
   @ApiProperty()
-  freeToProCandidates: number;
+  freeToLiteCandidates: number;
+
+  @ApiProperty()
+  liteToProCandidates: number;
 
   @ApiProperty()
   proToEnterpriseCandidates: number;
+
+  @ApiProperty({ deprecated: true, description: 'Alias de freeToLiteCandidates (compatibilidad)' })
+  freeToProCandidates: number;
 }
 
 class ConversionRatesDto {
+  @ApiProperty()
+  freeToPaid: number;
+
   @ApiProperty()
   freeTrialToPro: number;
 
@@ -108,7 +117,9 @@ class PlanUsageDataDto {
   @ApiProperty()
   distribution: {
     free: PlanDistributionItemDto;
+    lite: PlanDistributionItemDto;
     pro: PlanDistributionItemDto;
+    promax: PlanDistributionItemDto;
     enterprise: PlanDistributionItemDto;
   };
 

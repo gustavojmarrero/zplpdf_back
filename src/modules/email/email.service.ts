@@ -808,9 +808,9 @@ export class EmailService {
         return null;
       }
 
-      // Only send if user is actually at/over limit
-      if (user.plan !== 'free') {
-        this.logger.debug(`User ${userId} is not on free plan, skipping blocked email`);
+      // Only send if user is actually at/over limit (Free y Lite tienen cuota mensual baja)
+      if (user.plan !== 'free' && user.plan !== 'lite') {
+        this.logger.debug(`User ${userId} is not on free/lite plan, skipping blocked email`);
         return null;
       }
 
@@ -1207,7 +1207,7 @@ export class EmailService {
       total: 0,
       topPerformers: 0,
       avgMonthlyPdfs: 0,
-      byPlan: { free: 0, pro: 0, promax: 0, enterprise: 0 },
+      byPlan: { free: 0, lite: 0, pro: 0, promax: 0, enterprise: 0 },
     };
 
     try {
@@ -1268,6 +1268,7 @@ export class EmailService {
           // Count by plan
           const plan = user.plan || 'free';
           if (plan === 'free') summary.byPlan.free++;
+          else if (plan === 'lite') summary.byPlan.lite++;
           else if (plan === 'pro') summary.byPlan.pro++;
           else if (plan === 'promax') summary.byPlan.promax++;
           else if (plan === 'enterprise') summary.byPlan.enterprise++;

@@ -4,7 +4,7 @@ import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { FirebaseAdminService } from '../auth/firebase-admin.service.js';
 import { PeriodCalculatorService, PeriodInfo } from '../../common/services/period-calculator.service.js';
-import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
+import { DEFAULT_PLAN_LIMITS, PLAN_FEATURES } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType, PlanLimits } from '../../common/interfaces/user.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
@@ -274,8 +274,8 @@ export class UsersService {
     // Usar plan efectivo (considera simulación para admins)
     const effectivePlan = this.getEffectivePlan(user);
 
-    // Solo Free no tiene acceso al historial (Pro, Pro Max y Enterprise sí)
-    if (!isAdminUnlimited && effectivePlan === 'free') {
+    // El historial es una feature premium: Free y Lite NO tienen acceso (solo Pro/Pro Max/Enterprise)
+    if (!isAdminUnlimited && !PLAN_FEATURES[effectivePlan].canViewHistory) {
       throw new ForbiddenException('History is only available for Pro, Pro Max and Enterprise plans');
     }
 
@@ -420,7 +420,7 @@ export class UsersService {
     outputFormat: 'pdf' | 'png' | 'jpeg' = 'pdf',
     fileUrl?: string,
     periodInfo?: PeriodInfo,
-    userPlan?: 'free' | 'pro' | 'enterprise',
+    userPlan?: PlanType,
   ): Promise<void> {
     // Save to history (use null instead of undefined for Firestore)
     await this.firestoreService.saveConversionHistory({
@@ -447,7 +447,7 @@ export class UsersService {
     let plan = userPlan;
     if (!plan) {
       const user = await this.firestoreService.getUserById(userId);
-      plan = (user?.plan as 'free' | 'pro' | 'enterprise') || 'free';
+      plan = (user?.plan as PlanType) || 'free';
     }
 
     // Update daily stats (fire-and-forget for performance)
@@ -481,9 +481,10 @@ export class UsersService {
    *
    * The template must be enabled in Firestore (controlled via frontend toggle).
    */
-  private async checkAndTriggerLimitEmails(userId: string, userPlan: 'free' | 'pro' | 'enterprise'): Promise<void> {
-    // Only trigger for free users
-    if (userPlan !== 'free') {
+  private async checkAndTriggerLimitEmails(userId: string, userPlan: PlanType): Promise<void> {
+    // Solo Free y Lite tienen cuota mensual baja y reciben avisos de límite.
+    // Pro/Pro Max/Enterprise tienen cuotas altas y no se les notifica.
+    if (userPlan !== 'free' && userPlan !== 'lite') {
       return;
     }
 
@@ -495,7 +496,9 @@ export class UsersService {
       const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
       const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
       const pdfCount = usage.pdfCount || 0;
-      const limit = user.planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
+      const limit = user.planLimits?.maxPdfsPerMonth
+        || DEFAULT_PLAN_LIMITS[user.plan]?.maxPdfsPerMonth
+        || DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
       const percentage = (pdfCount / limit) * 100;
 
       const periodStart = usage.periodStart;

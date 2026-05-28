@@ -4,11 +4,11 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class SimulatePlanDto {
   @ApiProperty({
     description: 'Plan a simular',
-    enum: ['free', 'pro', 'promax', 'enterprise'],
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
     example: 'free',
   })
-  @IsEnum(['free', 'pro', 'promax', 'enterprise'])
-  plan: 'free' | 'pro' | 'promax' | 'enterprise';
+  @IsEnum(['free', 'lite', 'pro', 'promax', 'enterprise'])
+  plan: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
 
   @ApiPropertyOptional({
     description: 'Duración de la simulación en horas (default: 24)',
@@ -34,9 +34,9 @@ export class SimulationStatusResponseDto {
   @ApiProperty()
   data: {
     isSimulating: boolean;
-    simulatedPlan?: 'free' | 'pro' | 'promax' | 'enterprise';
+    simulatedPlan?: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
     simulationExpiresAt?: string;
-    originalPlan: 'free' | 'pro' | 'promax' | 'enterprise';
+    originalPlan: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
     role: 'user' | 'admin';
   };
 }
@@ -47,7 +47,7 @@ export class SimulatePlanResponseDto {
 
   @ApiProperty()
   data: {
-    simulatedPlan: 'free' | 'pro' | 'promax' | 'enterprise';
+    simulatedPlan: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
     simulationExpiresAt: string;
     message: string;
   };
@@ -60,6 +60,6 @@ export class StopSimulationResponseDto {
   @ApiProperty()
   data: {
     message: string;
-    originalPlan: 'free' | 'pro' | 'promax' | 'enterprise';
+    originalPlan: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
   };
 }

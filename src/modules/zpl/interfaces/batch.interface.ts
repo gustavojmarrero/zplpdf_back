@@ -39,6 +39,11 @@ export const BATCH_LIMITS: Record<string, BatchLimits> = {
     maxFilesPerBatch: 0,
     maxFileSizeBytes: 0,
   },
+  lite: {
+    batchAllowed: false,
+    maxFilesPerBatch: 0,
+    maxFileSizeBytes: 0,
+  },
   pro: {
     batchAllowed: true,
     maxFilesPerBatch: 5,

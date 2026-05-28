@@ -6,7 +6,7 @@ export interface PeriodInfo {
 
 export interface UserForPeriod {
   id: string;
-  plan: 'free' | 'pro' | 'promax' | 'enterprise';
+  plan: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
   createdAt: Date;
   subscriptionPeriodStart?: Date;
   subscriptionPeriodEnd?: Date;

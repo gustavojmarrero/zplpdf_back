@@ -33,7 +33,9 @@ class UsersMetricsDto {
   @ApiProperty()
   byPlan: {
     free: number;
+    lite: number;
     pro: number;
+    promax: number;
     enterprise: number;
   };
 
@@ -205,7 +207,9 @@ class PlanUsageMetricsDto {
   @ApiProperty()
   distribution: {
     free: PlanDistributionItemDto;
+    lite: PlanDistributionItemDto;
     pro: PlanDistributionItemDto;
+    promax: PlanDistributionItemDto;
     enterprise: PlanDistributionItemDto;
   };
 

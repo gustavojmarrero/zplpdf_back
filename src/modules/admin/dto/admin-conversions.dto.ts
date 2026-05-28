@@ -20,12 +20,12 @@ export class GetConversionsQueryDto {
   endDate?: string;
 
   @ApiPropertyOptional({
-    enum: ['free', 'pro', 'promax', 'enterprise'],
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
     description: 'Filter by user plan type',
   })
   @IsOptional()
-  @IsEnum(['free', 'pro', 'promax', 'enterprise'])
-  plan?: 'free' | 'pro' | 'promax' | 'enterprise';
+  @IsEnum(['free', 'lite', 'pro', 'promax', 'enterprise'])
+  plan?: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
 }
 
 class ConversionsSummaryDto {
@@ -94,6 +94,7 @@ class ConversionsDataDto {
   @ApiProperty()
   byPlan: {
     free: PlanStatsDto;
+    lite: PlanStatsDto;
     pro: PlanStatsDto;
     promax: PlanStatsDto;
     enterprise: PlanStatsDto;

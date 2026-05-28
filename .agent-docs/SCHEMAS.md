@@ -39,7 +39,7 @@ interface User {
   email: string;
   displayName?: string;
   emailVerified: boolean;
-  plan: 'free' | 'pro' | 'promax' | 'enterprise';
+  plan: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
   role: 'user' | 'admin';
 
   // Stripe subscription
@@ -167,7 +167,9 @@ interface DailyStats {
   failureCount: number;
   conversionsByPlan: {
     free: { pdfs: number; labels: number };
+    lite: { pdfs: number; labels: number };
     pro: { pdfs: number; labels: number };
+    promax: { pdfs: number; labels: number };
     enterprise: { pdfs: number; labels: number };
   };
 }
@@ -292,10 +294,13 @@ Default limits defined in `src/common/interfaces/user.interface.ts:40`:
 
 | Plan | Labels/PDF | PDFs/Month | Image Export |
 |------|------------|------------|--------------|
-| free | 100 | 25 | No |
+| free | 75 | 10 | No |
+| lite | 100 | 25 | No |
 | pro | 500 | 500 | Yes |
 | promax | 1000 | 1000 | Yes |
 | enterprise | Unlimited | Unlimited | Yes |
+
+Features premium por plan en `PLAN_FEATURES` (mismo archivo): `canViewHistory`, `hasHighPriority`, `preservesOriginalFilename`. Free y Lite las tienen todas en `false`; Pro/Pro Max/Enterprise en `true`.
 
 ---
 

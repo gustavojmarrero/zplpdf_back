@@ -5,12 +5,12 @@ export class CreateCheckoutDto {
   @ApiProperty({
     description: 'Plan to subscribe to',
     required: false,
-    enum: ['pro', 'promax'],
+    enum: ['lite', 'pro', 'promax'],
     default: 'pro',
   })
-  @IsIn(['pro', 'promax'])
+  @IsIn(['lite', 'pro', 'promax'])
   @IsOptional()
-  plan?: 'pro' | 'promax';
+  plan?: 'lite' | 'pro' | 'promax';
 
   @ApiProperty({
     description: 'URL to redirect after successful checkout',
@@ -54,10 +54,10 @@ export class PortalResponseDto {
 export class UpgradeSubscriptionDto {
   @ApiProperty({
     description: 'Target plan to upgrade to',
-    enum: ['promax'],
+    enum: ['pro', 'promax'],
   })
-  @IsIn(['promax'])
-  targetPlan: 'promax';
+  @IsIn(['pro', 'promax'])
+  targetPlan: 'pro' | 'promax';
 }
 
 export class UpgradeResponseDto {
