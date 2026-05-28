@@ -15,6 +15,18 @@ El proyecto ZPLPDF consiste en dos repositorios que deben correr simultáneament
 | **Backend (NestJS)** | `/Users/gustavomarrero/Documents/node/zplpdf` | 8080 | `npm run start:dev` |
 | **Frontend (Next.js)** | `/Users/gustavomarrero/Documents/Next/zplpdf` | 3000 | `npm run dev` |
 
+### ⚠️ Flujo de trabajo Git y despliegue (REGLA OBLIGATORIA)
+
+El código se desarrolla y promueve SIEMPRE en este orden. No saltarse pasos ni desplegar desde otra rama:
+
+1. **Rama feature** con base en `development` (ej. `feat/...`, `fix/...`).
+2. **PR hacia `development`** y **review** del PR.
+3. Tras aprobar el review, **merge a `development`**.
+4. **Merge `development` → `main`** (fast-forward cuando sea posible).
+5. **Deploy a producción SOLO desde `main`** (`npm run deploy:build` + `npm run deploy:run`).
+
+`main` siempre refleja lo que está en producción. Nunca desplegar desde `development` ni desde una rama feature.
+
 ### ⚠️ Política de cambios en Frontend
 
 **IMPORTANTE:** Desde este repositorio (backend) NO se debe editar código del frontend directamente.
