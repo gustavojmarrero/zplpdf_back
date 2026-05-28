@@ -641,23 +641,35 @@ export class FirestoreService {
   }
 
   /**
-   * Incrementa contadores de uso usando el periodId calculado externamente
+   * Incrementa contadores de uso de forma atómica con upsert.
+   *
+   * Usa `set({...}, { merge: true })` + FieldValue.increment, así:
+   * - Si el doc existe → solo aplica los incrementos.
+   * - Si NO existe → crea el doc con userId/periodStart/periodEnd y los contadores iniciales.
+   *
+   * Esto cubre los caminos que no pasan por getOrCreateUsageWithPeriod, como el
+   * bypass de admins en checkCanConvert o el fallback de recordConversion.
    */
   async incrementUsageWithPeriod(
     userId: string,
-    periodId: string,
+    periodInfo: { periodId: string; periodStart: Date; periodEnd: Date },
     pdfCount: number,
     labelCount: number,
   ): Promise<void> {
     try {
-      const docRef = this.firestore.collection(this.usageCollection).doc(periodId);
-      // Incremento atómico — evita race conditions bajo concurrencia.
-      // getOrCreateUsageWithPeriod garantiza la creación del doc antes de llegar aquí.
-      await docRef.update({
-        pdfCount: FieldValue.increment(pdfCount),
-        labelCount: FieldValue.increment(labelCount),
-      });
-      this.logger.log(`Uso incrementado para usuario: ${userId} (${periodId})`);
+      const docRef = this.firestore.collection(this.usageCollection).doc(periodInfo.periodId);
+      await docRef.set(
+        {
+          odId: periodInfo.periodId,
+          userId,
+          periodStart: periodInfo.periodStart,
+          periodEnd: periodInfo.periodEnd,
+          pdfCount: FieldValue.increment(pdfCount),
+          labelCount: FieldValue.increment(labelCount),
+        },
+        { merge: true },
+      );
+      this.logger.log(`Uso incrementado para usuario: ${userId} (${periodInfo.periodId})`);
     } catch (error) {
       this.logger.error(`Error al incrementar uso con período: ${error.message}`);
       throw error;

@@ -12,6 +12,7 @@ import { Writable } from 'stream';
 import { pdfToPng, PngPageOutput } from 'pdf-to-png-converter';
 import { FirestoreService, ConversionStatus, ErrorLogData } from '../cache/firestore.service.js';
 import { UsersService } from '../users/users.service.js';
+import type { PeriodInfo } from '../../common/services/period-calculator.service.js';
 import { OutputFormat } from './enums/output-format.enum.js';
 import type { BatchJob, BatchFileJob, BatchLimits } from './interfaces/batch.interface.js';
 import { BATCH_LIMITS } from './interfaces/batch.interface.js';
@@ -311,9 +312,9 @@ export class ZplService {
       }
 
       // Encolar el trabajo para procesamiento asincrono
-      const periodId = canConvert.periodInfo?.periodId;
+      const periodInfo = canConvert.periodInfo;
       setTimeout(() => {
-        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodId, userPlan as 'free' | 'pro' | 'enterprise');
+        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodInfo, userPlan as 'free' | 'pro' | 'enterprise');
       }, 100);
 
       // Guardar ZPL para debugging de forma asíncrona (no bloquea)
@@ -350,7 +351,7 @@ export class ZplService {
     userId: string,
     labelCount: number,
     outputFormat: OutputFormat = OutputFormat.PDF,
-    periodId?: string,
+    periodInfo?: PeriodInfo,
     userPlan?: 'free' | 'pro' | 'enterprise',
   ): Promise<void> {
     try {
@@ -368,7 +369,7 @@ export class ZplService {
           'completed',
           outputFormat,
           job.resultUrl,
-          periodId,
+          periodInfo,
           userPlan,
         );
         // Update ZPL debug result
@@ -384,7 +385,7 @@ export class ZplService {
           'failed',
           outputFormat,
           undefined,
-          periodId,
+          periodInfo,
           userPlan,
         );
         // Update ZPL debug result
@@ -403,7 +404,7 @@ export class ZplService {
           'failed',
           outputFormat,
           undefined,
-          periodId,
+          periodInfo,
           userPlan,
         );
         // Update ZPL debug result
@@ -1711,8 +1712,7 @@ export class ZplService {
       }));
 
       // Iniciar procesamiento asíncrono
-      const periodId = userLimits.periodInfo?.periodId;
-      this.processBatchFiles(batchId, files, batchJobs, labelSize, outputFormat, periodId);
+      this.processBatchFiles(batchId, files, batchJobs, labelSize, outputFormat, userLimits.periodInfo);
 
       return { batchId, jobs: jobsMapping };
     } catch (error) {
@@ -1734,7 +1734,7 @@ export class ZplService {
     jobs: BatchFileJob[],
     labelSize: string,
     outputFormat: 'pdf' | 'png' | 'jpeg',
-    periodId?: string,
+    periodInfo?: PeriodInfo,
   ): Promise<void> {
     const size = this.getLabelSize(labelSize);
     let completedCount = 0;
@@ -1816,7 +1816,7 @@ export class ZplService {
             'completed',
             outputFormat,
             undefined,
-            periodId,
+            periodInfo,
           );
         }
 
@@ -1838,7 +1838,7 @@ export class ZplService {
               'failed',
               outputFormat,
               undefined,
-              periodId,
+              periodInfo,
             );
           } catch (recordError) {
             this.logger.error(`Error registrando conversión fallida: ${recordError.message}`);

@@ -419,7 +419,7 @@ export class UsersService {
     status: 'completed' | 'failed',
     outputFormat: 'pdf' | 'png' | 'jpeg' = 'pdf',
     fileUrl?: string,
-    periodId?: string,
+    periodInfo?: PeriodInfo,
     userPlan?: 'free' | 'pro' | 'enterprise',
   ): Promise<void> {
     // Save to history (use null instead of undefined for Firestore)
@@ -457,16 +457,15 @@ export class UsersService {
 
     // Increment usage only for completed conversions
     if (status === 'completed') {
-      if (periodId) {
-        // Usar el periodId proporcionado (más eficiente)
-        await this.firestoreService.incrementUsageWithPeriod(userId, periodId, 1, labelCount);
-      } else {
-        // Fallback: calcular período (para compatibilidad hacia atrás)
+      let effectivePeriod = periodInfo;
+      if (!effectivePeriod) {
         const user = await this.firestoreService.getUserById(userId);
         if (user) {
-          const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
-          await this.firestoreService.incrementUsageWithPeriod(userId, periodInfo.periodId, 1, labelCount);
+          effectivePeriod = this.periodCalculatorService.calculateCurrentPeriod(user);
         }
+      }
+      if (effectivePeriod) {
+        await this.firestoreService.incrementUsageWithPeriod(userId, effectivePeriod, 1, labelCount);
       }
 
       // Check and trigger limit emails (fire-and-forget)
