@@ -114,7 +114,15 @@ export class UsersController {
   }
 
   @Get('limits')
-  @ApiOperation({ summary: 'Get user limits and current usage' })
+  @ApiOperation({
+    summary: 'Get user limits and current usage',
+    description:
+      'El período de uso es mensual desde la fecha de registro del usuario (createdAt), ' +
+      'NO mes calendario. Free siempre calcula el período a partir de createdAt. Los planes con ' +
+      'período de facturación de Stripe almacenado en Firestore (Lite/Pro/Pro Max/Enterprise) usan ' +
+      'ese período de Stripe; si no hay período de Stripe disponible, se usa createdAt como fallback. ' +
+      'Este mismo período se usa para el bloqueo de conversiones y para los emails de límite (80%, 100%, bloqueo).',
+  })
   @ApiResponse({
     status: 200,
     description: 'User limits and usage',

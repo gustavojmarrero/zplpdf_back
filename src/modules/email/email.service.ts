@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
+import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type {
   EmailType,
   AbVariant,
@@ -817,7 +818,11 @@ export class EmailService {
       // Get usage data for pdfCount and period dates (período actual del usuario)
       const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
       const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
-      const limit = user.planLimits?.maxPdfsPerMonth || 25;
+      // Usar el límite real del plan (Free=10, Lite=25). El fallback hardcodeado a 25
+      // dejaba sin enviar el email de bloqueo a usuarios Free, que se bloquean a los 10.
+      const limit = user.planLimits?.maxPdfsPerMonth
+        || DEFAULT_PLAN_LIMITS[user.plan]?.maxPdfsPerMonth
+        || DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
       const pdfsUsed = usage.pdfCount || 0;
 
       if (pdfsUsed < limit) {
