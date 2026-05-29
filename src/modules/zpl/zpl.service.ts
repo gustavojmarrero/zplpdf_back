@@ -1,5 +1,5 @@
 import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef, ForbiddenException, Optional } from '@nestjs/common';
-import { ErrorCodes } from '../../common/constants/error-codes.js';
+import { ErrorCodes, getErrorTypeFromCode } from '../../common/constants/error-codes.js';
 import axios from 'axios';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
@@ -244,10 +244,13 @@ export class ZplService {
       // Check user limits before processing
       const canConvert = await this.usersService.checkCanConvert(userId, labelCount);
       if (!canConvert.allowed) {
-        // Log limit exceeded error
+        // Log conversion-gate rejection. El `type` se deriva del código real
+        // (no se hardcodea LIMIT_EXCEEDED) para que el dashboard distinga
+        // fricción de acceso (email sin verificar) de presión de cuota.
+        const errorCode = canConvert.errorCode || ErrorCodes.MONTHLY_LIMIT_EXCEEDED;
         await this.logError(
-          'LIMIT_EXCEEDED',
-          canConvert.errorCode || ErrorCodes.MONTHLY_LIMIT_EXCEEDED,
+          getErrorTypeFromCode(errorCode),
+          errorCode,
           canConvert.error,
           'warning',
           { labelCount, ...canConvert.data },
