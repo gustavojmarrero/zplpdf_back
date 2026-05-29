@@ -154,3 +154,30 @@ export const ErrorMessagesEn: Record<ErrorCode, string> = {
 export function getErrorMessage(code: ErrorCode, language: 'es' | 'en' = 'es'): string {
   return language === 'es' ? ErrorMessagesEs[code] : ErrorMessagesEn[code];
 }
+
+/**
+ * Categoría de alto nivel (campo `type`) usada para agrupar errores en el
+ * dashboard admin (`byType`). Distingue la fricción de acceso/onboarding
+ * (email sin verificar, dominio bloqueado) de la presión real de cuota, en
+ * lugar de mezclar todo bajo `LIMIT_EXCEEDED`.
+ *
+ * Acepta cualquier string porque algunos códigos (EMAIL_NOT_VERIFIED,
+ * BLOCKED_EMAIL_DOMAIN) no forman parte del enum `ErrorCodes`.
+ */
+export function getErrorTypeFromCode(code: string): string {
+  switch (code) {
+    case ErrorCodes.LABEL_LIMIT_EXCEEDED:
+    case ErrorCodes.MONTHLY_LIMIT_EXCEEDED:
+    case ErrorCodes.BATCH_LIMIT_EXCEEDED:
+      return 'LIMIT_EXCEEDED';
+    case 'EMAIL_NOT_VERIFIED':
+    case 'BLOCKED_EMAIL_DOMAIN':
+    case ErrorCodes.ACCESS_DENIED:
+    case ErrorCodes.USER_NOT_FOUND:
+      return 'ACCESS_DENIED';
+    default:
+      // Fallback conservador: mantiene el comportamiento previo para códigos
+      // no contemplados que provengan del chequeo de conversión.
+      return 'LIMIT_EXCEEDED';
+  }
+}
