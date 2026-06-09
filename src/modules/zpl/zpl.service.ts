@@ -1000,6 +1000,32 @@ export class ZplService {
   }
 
   /**
+   * Determina si un bloque ZPL produce una etiqueta imprimible.
+   *
+   * Labelary NO genera página para bloques que solo contienen comandos de
+   * configuración (p.ej. `^XA^MCY^XZ`, una etiqueta de "Map Clear" sin nada
+   * dibujable). Si esos bloques se cuentan como etiquetas, el número de páginas
+   * que esperamos deja de coincidir con las que Labelary devuelve, lo que
+   * desalinea el mapeo en `reconstructFinalPdf` y puede vaciar el PDF final.
+   *
+   * Se considera que un bloque dibuja contenido si incluye al menos un comando
+   * de salida visible: datos de campo (`^FD`/`^FV`), datos serializados que se
+   * imprimen sin `^FD` (`^SN`), primitivas gráficas
+   * (`^GB`/`^GC`/`^GD`/`^GE`/`^GF`/`^GS`), imágenes (`^XG`/`^IM`) o un código de
+   * barras real (`^BC`, `^BX`, `^B3`, ...).
+   *
+   * `^BY` (Bar Code Field Default) se excluye de forma explícita: aunque empieza
+   * con `B`, es solo configuración de los códigos de barras y no dibuja nada por
+   * sí mismo, así que no debe mantener vivo un bloque vacío.
+   *
+   * @param block Bloque ZPL normalizado
+   * @returns true si el bloque produce una página en Labelary
+   */
+  private blockProducesOutput(block: string): boolean {
+    return /\^(FD|FV|SN|GB|GC|GD|GE|GF|GS|XG|IM|B(?!Y)[0-9A-Z])/i.test(block);
+  }
+
+  /**
    * Divide ZPL en bloques, extrae copias ^PQ y elimina ^PQ del contenido
    * @param zpl Contenido ZPL
    * @returns Bloques ZPL procesados
@@ -1007,8 +1033,15 @@ export class ZplService {
   private splitAndExtractCopies(zpl: string): ParsedZplBlock[] {
     const blockMatches = zpl.match(/\^XA.*?\^XZ/gs) || [];
     let parsed: ParsedZplBlock[] = [];
-    blockMatches.forEach((rawBlock, i) => {
+    blockMatches.forEach((rawBlock) => {
       const normalized = this.normalizeZplBlock(rawBlock);
+
+      // Descartar bloques de pura configuración (no producen página en
+      // Labelary). Incluirlos provoca un desajuste de índices que vacía el PDF.
+      if (!this.blockProducesOutput(normalized)) {
+        return;
+      }
+
       const pqMatch = normalized.match(/\^PQ(\d+)/i);
       let copies = 1;
       if (pqMatch && pqMatch[1]) {
@@ -1019,7 +1052,7 @@ export class ZplService {
       parsed.push({
         normalizedContent: cleaned.trim(),
         copies,
-        originalIndex: i,
+        originalIndex: parsed.length,
       });
     });
     return parsed;
@@ -1256,18 +1289,42 @@ export class ZplService {
           continue;
         }
 
+        // Filtrar índices fuera de rango ANTES de copiar. copyPages es atómico:
+        // un único índice inexistente aborta toda la operación y descartaría
+        // también las páginas válidas, vaciando el PDF. Esto ocurre cuando el
+        // número de bloques detectados no coincide con las páginas que Labelary
+        // renderiza (defensa en profundidad: conservamos las páginas reales).
+        const srcPageCount = srcDoc.getPageCount();
+        const validPageIndices: number[] = [];
+        const validOutputPositions: number[] = [];
+        group.pageIndices.forEach((pageIdx, i) => {
+          if (pageIdx < srcPageCount) {
+            validPageIndices.push(pageIdx);
+            validOutputPositions.push(group.outputPositions[i]);
+          } else {
+            this.logger.warn(
+              `Página ${pageIdx} fuera de rango en chunk ${chunkNumber} (solo ${srcPageCount} páginas disponibles)`,
+            );
+            skippedPages++;
+          }
+        });
+
+        if (validPageIndices.length === 0) {
+          continue;
+        }
+
         try {
-          // Copiar TODAS las páginas necesarias de este chunk en UNA sola operación
-          const copiedPages = await finalDoc.copyPages(srcDoc, group.pageIndices);
+          // Copiar TODAS las páginas válidas de este chunk en UNA sola operación
+          const copiedPages = await finalDoc.copyPages(srcDoc, validPageIndices);
           copiedPages.forEach((page, i) => {
             copiedPagesWithPositions.push({
               page,
-              position: group.outputPositions[i],
+              position: validOutputPositions[i],
             });
           });
         } catch (error) {
           this.logger.warn(`Error copiando páginas del chunk ${chunkNumber}: ${error.message}`);
-          skippedPages += group.pageIndices.length;
+          skippedPages += validPageIndices.length;
         }
       }
       this.logger.debug(`Copia de páginas completada en ${Date.now() - copyStartTime}ms`);
