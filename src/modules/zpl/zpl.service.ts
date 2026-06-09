@@ -1009,15 +1009,20 @@ export class ZplService {
    * desalinea el mapeo en `reconstructFinalPdf` y puede vaciar el PDF final.
    *
    * Se considera que un bloque dibuja contenido si incluye al menos un comando
-   * de salida visible: datos de campo (`^FD`/`^FV`), primitivas gráficas
+   * de salida visible: datos de campo (`^FD`/`^FV`), datos serializados que se
+   * imprimen sin `^FD` (`^SN`), primitivas gráficas
    * (`^GB`/`^GC`/`^GD`/`^GE`/`^GF`/`^GS`), imágenes (`^XG`/`^IM`) o un código de
-   * barras (`^B...`).
+   * barras real (`^BC`, `^BX`, `^B3`, ...).
+   *
+   * `^BY` (Bar Code Field Default) se excluye de forma explícita: aunque empieza
+   * con `B`, es solo configuración de los códigos de barras y no dibuja nada por
+   * sí mismo, así que no debe mantener vivo un bloque vacío.
    *
    * @param block Bloque ZPL normalizado
    * @returns true si el bloque produce una página en Labelary
    */
   private blockProducesOutput(block: string): boolean {
-    return /\^(FD|FV|GB|GC|GD|GE|GF|GS|XG|IM|B[0-9A-Z])/i.test(block);
+    return /\^(FD|FV|SN|GB|GC|GD|GE|GF|GS|XG|IM|B(?!Y)[0-9A-Z])/i.test(block);
   }
 
   /**

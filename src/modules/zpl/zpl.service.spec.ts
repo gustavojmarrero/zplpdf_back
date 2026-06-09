@@ -60,6 +60,8 @@ describe('ZplService — bloques de configuración sin contenido', () => {
       expect(fn('^XA^MCY^XZ')).toBe(false);
       expect(fn('^XA^MCN^XZ')).toBe(false);
       expect(fn('^XA^LH0,0^CI28^XZ')).toBe(false);
+      // ^BY es configuración de barcode (Bar Code Field Default), no dibuja.
+      expect(fn('^XA^BY2,3,100^XZ')).toBe(false);
     });
 
     it('clasifica bloques con contenido dibujable como con salida', () => {
@@ -68,6 +70,10 @@ describe('ZplService — bloques de configuración sin contenido', () => {
       expect(fn('^XA^FO0,0^GB100,100,2^FS^XZ')).toBe(true); // gráfico
       expect(fn('^XA^FO10,10^BCN,100^FD12345^FS^XZ')).toBe(true); // código de barras
       expect(fn('^XA^FO10,10^BXN,8,200^FDABC^FS^XZ')).toBe(true); // DataMatrix
+      // ^SN imprime datos serializados sin necesitar ^FD/^FV.
+      expect(fn('^XA^FO50,50^A0N,30,30^SN0001,1,Y^FS^XZ')).toBe(true);
+      // Un bloque con ^BY de config + un barcode real sigue siendo imprimible.
+      expect(fn('^XA^BY1,,102^FO98,487^BCN,102^FD123^FS^XZ')).toBe(true);
     });
   });
 
