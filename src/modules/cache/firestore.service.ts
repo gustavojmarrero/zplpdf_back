@@ -460,7 +460,8 @@ export class FirestoreService {
         } as Feedback;
       });
 
-      // Filtros en memoria (evita índices compuestos)
+      // Filtros en memoria (evita índices compuestos). El filtro de sentimiento
+      // se aplica aparte (abajo) para no sesgar el resumen.
       if (plan) {
         all = all.filter((f) => f.plan === plan);
       }
@@ -472,10 +473,10 @@ export class FirestoreService {
             (f.userEmail || '').toLowerCase().includes(q),
         );
       }
-      if (sentiment) {
-        all = all.filter((f) => f.sentiment === sentiment);
-      }
 
+      // El resumen se calcula ANTES de filtrar por sentiment, para que el
+      // desglose (bad/neutral/good/satisfactionRate) siga siendo representativo
+      // aunque la lista se filtre por un sentimiento concreto.
       const good = all.filter((f) => f.sentiment === 'good').length;
       const summary: FeedbackSummary = {
         total: all.length,
@@ -485,9 +486,12 @@ export class FirestoreService {
         satisfactionRate: all.length ? Math.round((good / all.length) * 100) : 0,
       };
 
-      const total = all.length;
+      // El filtro de sentimiento solo afecta a la lista paginada.
+      const filtered = sentiment ? all.filter((f) => f.sentiment === sentiment) : all;
+
+      const total = filtered.length;
       const offset = (page - 1) * limit;
-      const items = all.slice(offset, offset + limit);
+      const items = filtered.slice(offset, offset + limit);
 
       return {
         items,

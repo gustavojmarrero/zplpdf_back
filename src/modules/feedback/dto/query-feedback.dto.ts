@@ -1,16 +1,22 @@
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsNumber, IsDateString, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class QueryFeedbackDto {
   @ApiPropertyOptional({ description: 'Número de página', default: 1 })
   @IsOptional()
-  @IsString()
-  page?: string;
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  page?: number = 1;
 
-  @ApiPropertyOptional({ description: 'Resultados por página', default: 20 })
+  @ApiPropertyOptional({ description: 'Resultados por página', default: 20, maximum: 100 })
   @IsOptional()
-  @IsString()
-  limit?: string;
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
 
   @ApiPropertyOptional({ enum: ['bad', 'neutral', 'good'], description: 'Filtrar por sentimiento' })
   @IsOptional()
@@ -27,12 +33,12 @@ export class QueryFeedbackDto {
 
   @ApiPropertyOptional({ description: 'Fecha de inicio (ISO 8601)' })
   @IsOptional()
-  @IsString()
+  @IsDateString()
   startDate?: string;
 
   @ApiPropertyOptional({ description: 'Fecha de fin (ISO 8601)' })
   @IsOptional()
-  @IsString()
+  @IsDateString()
   endDate?: string;
 
   @ApiPropertyOptional({ description: 'Buscar en el mensaje o el email del usuario' })
