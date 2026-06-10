@@ -3,6 +3,13 @@ import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
 import { DEFAULT_PLAN_LIMITS, PLAN_ORDER } from '../../common/interfaces/user.interface.js';
 import type { User, PlanType } from '../../common/interfaces/user.interface.js';
+import type {
+  Feedback,
+  CreateFeedbackData,
+  FeedbackFilters,
+  FeedbackListResult,
+  FeedbackSummary,
+} from '../../common/interfaces/feedback.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
@@ -217,6 +224,7 @@ export class FirestoreService {
   private readonly expensesCollection = 'expenses';
   private readonly goalsCollection = 'monthly_goals';
   private readonly subscriptionEventsCollection = 'subscription_events';
+  private readonly feedbackCollection = 'feedback';
 
   constructor(private configService: ConfigService) {
     let credentials: any = null;
@@ -358,6 +366,141 @@ export class FirestoreService {
       } as User;
     } catch (error) {
       this.logger.error(`Error al obtener usuario: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== Feedback (encuesta mensual de satisfacción) ==============
+
+  async createFeedback(data: CreateFeedbackData): Promise<Feedback> {
+    try {
+      const createdAt = new Date();
+      const ref = await this.firestore
+        .collection(this.feedbackCollection)
+        .add({ ...data, createdAt });
+      this.logger.log(`Feedback creado: ${ref.id} (${data.sentiment})`);
+      return { id: ref.id, ...data, createdAt };
+    } catch (error) {
+      this.logger.error(`Error al crear feedback: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Último feedback del usuario. Usa un where de un solo campo (sin índice
+   * compuesto) y ordena en memoria; cada usuario tiene pocos registros.
+   */
+  async getLastFeedbackByUser(userId: string): Promise<Feedback | null> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.feedbackCollection)
+        .where('userId', '==', userId)
+        .get();
+
+      if (snapshot.empty) {
+        return null;
+      }
+
+      const items = snapshot.docs.map((doc) => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          userId: d.userId,
+          userEmail: d.userEmail ?? null,
+          plan: d.plan,
+          sentiment: d.sentiment,
+          message: d.message ?? null,
+          locale: d.locale ?? null,
+          createdAt: d.createdAt?.toDate?.() || d.createdAt,
+        } as Feedback;
+      });
+
+      items.sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+      return items[0];
+    } catch (error) {
+      this.logger.error(`Error al obtener último feedback: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Listado de feedback para admin. Filtra por fecha en la query y el resto en
+   * memoria (mismo patrón que getErrorLogs: evita índices compuestos).
+   */
+  async getFeedbackList(filters: FeedbackFilters): Promise<FeedbackListResult> {
+    try {
+      const { page = 1, limit = 20, sentiment, plan, startDate, endDate, search } = filters;
+
+      let query: FirebaseFirestore.Query = this.firestore
+        .collection(this.feedbackCollection)
+        .orderBy('createdAt', 'desc');
+
+      if (startDate) {
+        query = query.where('createdAt', '>=', startDate);
+      }
+      if (endDate) {
+        query = query.where('createdAt', '<=', endDate);
+      }
+
+      const snapshot = await query.get();
+
+      let all: Feedback[] = snapshot.docs.map((doc) => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          userId: d.userId,
+          userEmail: d.userEmail ?? null,
+          plan: d.plan,
+          sentiment: d.sentiment,
+          message: d.message ?? null,
+          locale: d.locale ?? null,
+          createdAt: d.createdAt?.toDate?.() || d.createdAt,
+        } as Feedback;
+      });
+
+      // Filtros en memoria (evita índices compuestos)
+      if (plan) {
+        all = all.filter((f) => f.plan === plan);
+      }
+      if (search) {
+        const q = search.toLowerCase();
+        all = all.filter(
+          (f) =>
+            (f.message || '').toLowerCase().includes(q) ||
+            (f.userEmail || '').toLowerCase().includes(q),
+        );
+      }
+      if (sentiment) {
+        all = all.filter((f) => f.sentiment === sentiment);
+      }
+
+      const good = all.filter((f) => f.sentiment === 'good').length;
+      const summary: FeedbackSummary = {
+        total: all.length,
+        bad: all.filter((f) => f.sentiment === 'bad').length,
+        neutral: all.filter((f) => f.sentiment === 'neutral').length,
+        good,
+        satisfactionRate: all.length ? Math.round((good / all.length) * 100) : 0,
+      };
+
+      const total = all.length;
+      const offset = (page - 1) * limit;
+      const items = all.slice(offset, offset + limit);
+
+      return {
+        items,
+        summary,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error al obtener feedback list: ${error.message}`);
       throw error;
     }
   }
