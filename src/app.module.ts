@@ -16,6 +16,7 @@ import { CronModule } from './modules/cron/cron.module.js';
 import { AdminModule } from './modules/admin/admin.module.js';
 import { ErrorsModule } from './modules/errors/errors.module.js';
 import { EmailModule } from './modules/email/email.module.js';
+import { FeedbackModule } from './modules/feedback/feedback.module.js';
 import appConfig from './config/app.config.js';
 import { GoogleAuthProvider } from './config/google-auth.provider.js';
 
@@ -46,6 +47,7 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
     AdminModule,
     ErrorsModule,
     EmailModule,
+    FeedbackModule,
   ],
   controllers: [AppController],
   providers: [
