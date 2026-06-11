@@ -26,7 +26,7 @@ import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
 import type { AdminUserData } from '../../common/decorators/admin-user.decorator.js';
 import { AdminService } from './admin.service.js';
-import { AdminMetricsResponseDto } from './dto/admin-metrics.dto.js';
+import { AdminMetricsResponseDto, GetMetricsQueryDto } from './dto/admin-metrics.dto.js';
 import {
   GetUsersQueryDto,
   AdminUsersResponseDto,
@@ -107,9 +107,12 @@ export class AdminController {
   })
   @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
   @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
-  async getMetrics(@AdminUser() admin: AdminUserData): Promise<AdminMetricsResponseDto> {
+  async getMetrics(
+    @Query() query: GetMetricsQueryDto,
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminMetricsResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting dashboard metrics`);
-    return this.adminService.getDashboardMetrics();
+    return this.adminService.getDashboardMetrics(query.startDate, query.endDate);
   }
 
   @Get('users')

@@ -140,3 +140,71 @@ describe('ZplService — bloques de configuración sin contenido', () => {
     });
   });
 });
+
+/**
+ * Regresión: un fallo de la API de Labelary debe registrarse UNA sola vez y con
+ * severidad "error" (no "critical"). callLabelary marca la excepción con
+ * `loggedToDashboard` para que el catch genérico de processZplConversion no la
+ * vuelva a guardar como SERVER_ERROR/critical (evita doble conteo y falsos
+ * "critical" en el dashboard de admin).
+ */
+describe('ZplService — registro de errores de Labelary', () => {
+  function buildService(saveErrorLog: jest.Mock, enqueue: jest.Mock) {
+    const configService: any = { get: jest.fn(() => 'test-bucket') };
+    return new ZplService(
+      configService,
+      { saveErrorLog } as any,
+      {} as any,
+      {} as any,
+      { enqueue } as any,
+    );
+  }
+
+  it('registra el fallo de Labelary una vez con severidad "error" y marca la excepción', async () => {
+    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-1' });
+    const enqueue = jest.fn().mockRejectedValue(new Error('Labelary 503'));
+    const service = buildService(saveErrorLog, enqueue);
+
+    await expect(
+      (service as any).callLabelary(
+        '^XA^FO50,50^A0,30^FDtest^FS^XZ',
+        LabelSize.FOUR_BY_SIX,
+        'job1',
+        'user1',
+        'free',
+        1,
+      ),
+    ).rejects.toMatchObject({ loggedToDashboard: true });
+
+    // Un único registro, con severidad "error" (no "critical").
+    expect(saveErrorLog).toHaveBeenCalledTimes(1);
+    expect(saveErrorLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'SERVER_ERROR',
+        code: 'LABELARY_API_ERROR',
+        severity: 'error',
+      }),
+    );
+  });
+
+  it('no marca la excepción si el registro del error falló (deja actuar al fallback)', async () => {
+    const saveErrorLog = jest.fn().mockRejectedValue(new Error('Firestore down'));
+    const enqueue = jest.fn().mockRejectedValue(new Error('Labelary 503'));
+    const service = buildService(saveErrorLog, enqueue);
+
+    const err = await (service as any)
+      .callLabelary(
+        '^XA^FO50,50^A0,30^FDtest^FS^XZ',
+        LabelSize.FOUR_BY_SIX,
+        'job1',
+        'user1',
+        'free',
+        1,
+      )
+      .catch((e: any) => e);
+
+    // Sin confirmación de guardado, la excepción NO se marca: processZplConversion
+    // hará el registro de respaldo en lugar de omitirlo silenciosamente.
+    expect(err.loggedToDashboard).toBeUndefined();
+  });
+});

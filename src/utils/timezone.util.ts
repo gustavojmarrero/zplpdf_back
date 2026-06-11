@@ -71,6 +71,26 @@ export function getDateStringInTimezone(date: Date = new Date()): string {
 }
 
 /**
+ * Convierte un string de fecha (YYYY-MM-DD, o ISO con hora) al instante de
+ * inicio de ese día en GMT-6.
+ * Ej: "2026-06-11" → 2026-06-11T06:00:00.000Z (= 00:00:00 GMT-6)
+ */
+export function getStartOfDateInTimezone(dateStr: string): Date {
+  const [year, month, day] = dateStr.slice(0, 10).split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day, GMT_OFFSET_HOURS, 0, 0, 0));
+}
+
+/**
+ * Convierte un string de fecha (YYYY-MM-DD, o ISO con hora) al instante de
+ * fin de ese día en GMT-6.
+ * Ej: "2026-06-11" → 2026-06-12T05:59:59.999Z (= 23:59:59.999 GMT-6)
+ */
+export function getEndOfDateInTimezone(dateStr: string): Date {
+  const [year, month, day] = dateStr.slice(0, 10).split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day, GMT_OFFSET_HOURS + 23, 59, 59, 999));
+}
+
+/**
  * Obtiene el mes actual en GMT-6 (YYYY-MM)
  * Ejemplo: Si son las 03:00 UTC del 1 de febrero, en GMT-6 todavía es enero
  */

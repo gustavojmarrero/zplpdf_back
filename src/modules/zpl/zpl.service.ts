@@ -142,7 +142,21 @@ export class ZplService {
   }
 
   /**
-   * Registra un error en el log de errores de admin
+   * Marca una excepción como ya registrada en error_logs para que el catch
+   * genérico de processZplConversion no la vuelva a guardar. Evita el doble
+   * registro y los falsos "critical" provenientes de fallos ya clasificados
+   * en capas inferiores (p. ej. errores de la API de Labelary).
+   */
+  private markAsLogged<T>(error: T): T {
+    (error as any).loggedToDashboard = true;
+    return error;
+  }
+
+  /**
+   * Registra un error en el log de errores de admin.
+   * @returns `true` si el registro se guardó, `false` si el write falló.
+   *   Permite a quien lo llama decidir si confiar en que el error quedó
+   *   registrado (p. ej. para no omitir un fallback de logging).
    */
   private async logError(
     type: string,
@@ -153,7 +167,7 @@ export class ZplService {
     userId?: string,
     userEmail?: string,
     jobId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await this.firestoreService.saveErrorLog({
         type,
@@ -165,8 +179,10 @@ export class ZplService {
         userEmail,
         jobId,
       });
+      return true;
     } catch (error) {
       this.logger.error(`Error logging to error_logs: ${error.message}`);
+      return false;
     }
   }
 
@@ -521,19 +537,23 @@ export class ZplService {
     } catch (error) {
       this.logger.error(`Error al procesar conversión ZPL: ${error.message}`);
 
-      // Log error for admin dashboard
-      const errorType = error.message?.includes('ZPL') ? 'INVALID_ZPL' : 'SERVER_ERROR';
-      const severity = errorType === 'SERVER_ERROR' ? 'critical' : 'error';
-      await this.logError(
-        errorType,
-        errorType,
-        error.message,
-        severity,
-        { labelSize, outputFormat },
-        undefined,
-        undefined,
-        jobId,
-      );
+      // Log error for admin dashboard. Si el error ya fue registrado en una
+      // capa inferior (p. ej. fallo de Labelary guardado como LABELARY_API_ERROR),
+      // no lo duplicamos aquí: evita el doble conteo y los falsos "critical".
+      if (!(error as any)?.loggedToDashboard) {
+        const errorType = error.message?.includes('ZPL') ? 'INVALID_ZPL' : 'SERVER_ERROR';
+        const severity = errorType === 'SERVER_ERROR' ? 'critical' : 'error';
+        await this.logError(
+          errorType,
+          errorType,
+          error.message,
+          severity,
+          { labelSize, outputFormat },
+          undefined,
+          undefined,
+          jobId,
+        );
+      }
 
       // Actualizar estado a fallido
       job.status = 'failed';
@@ -1174,31 +1194,40 @@ export class ZplService {
       }
 
       if (error.response?.status === 413) {
-        this.logError(
+        const logged = await this.logError(
           'LABEL_LIMIT_EXCEEDED',
           'LABELARY_PAYLOAD_TOO_LARGE',
           'Labels exceed 50 per request limit',
           'error',
           { labelSize },
         );
-        throw new HttpException(
+        const httpError = new HttpException(
           'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
           HttpStatus.PAYLOAD_TOO_LARGE,
         );
+        // Solo omitimos el fallback de processZplConversion si el registro se
+        // confirmó; si el write falló, dejamos que el catch superior lo guarde.
+        if (logged) this.markAsLogged(httpError);
+        throw httpError;
       }
 
-      // Log generic Labelary error
-      this.logError(
+      // Log generic Labelary error (severidad "error": es un fallo de la
+      // dependencia externa, no un error crítico del propio servidor).
+      const logged = await this.logError(
         'SERVER_ERROR',
         'LABELARY_API_ERROR',
         `Labelary API error: ${error.message}`,
         'error',
         { status: error.response?.status },
       );
-      throw new HttpException(
+      const httpError = new HttpException(
         'Error in Labelary API conversion',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
+      // Solo omitimos el fallback de processZplConversion si el registro se
+      // confirmó; si el write falló, dejamos que el catch superior lo guarde.
+      if (logged) this.markAsLogged(httpError);
+      throw httpError;
     }
   }
 
