@@ -186,4 +186,25 @@ describe('ZplService — registro de errores de Labelary', () => {
       }),
     );
   });
+
+  it('no marca la excepción si el registro del error falló (deja actuar al fallback)', async () => {
+    const saveErrorLog = jest.fn().mockRejectedValue(new Error('Firestore down'));
+    const enqueue = jest.fn().mockRejectedValue(new Error('Labelary 503'));
+    const service = buildService(saveErrorLog, enqueue);
+
+    const err = await (service as any)
+      .callLabelary(
+        '^XA^FO50,50^A0,30^FDtest^FS^XZ',
+        LabelSize.FOUR_BY_SIX,
+        'job1',
+        'user1',
+        'free',
+        1,
+      )
+      .catch((e: any) => e);
+
+    // Sin confirmación de guardado, la excepción NO se marca: processZplConversion
+    // hará el registro de respaldo en lugar de omitirlo silenciosamente.
+    expect(err.loggedToDashboard).toBeUndefined();
+  });
 });

@@ -153,7 +153,10 @@ export class ZplService {
   }
 
   /**
-   * Registra un error en el log de errores de admin
+   * Registra un error en el log de errores de admin.
+   * @returns `true` si el registro se guardó, `false` si el write falló.
+   *   Permite a quien lo llama decidir si confiar en que el error quedó
+   *   registrado (p. ej. para no omitir un fallback de logging).
    */
   private async logError(
     type: string,
@@ -164,7 +167,7 @@ export class ZplService {
     userId?: string,
     userEmail?: string,
     jobId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await this.firestoreService.saveErrorLog({
         type,
@@ -176,8 +179,10 @@ export class ZplService {
         userEmail,
         jobId,
       });
+      return true;
     } catch (error) {
       this.logger.error(`Error logging to error_logs: ${error.message}`);
+      return false;
     }
   }
 
@@ -1189,36 +1194,40 @@ export class ZplService {
       }
 
       if (error.response?.status === 413) {
-        this.logError(
+        const logged = await this.logError(
           'LABEL_LIMIT_EXCEEDED',
           'LABELARY_PAYLOAD_TOO_LARGE',
           'Labels exceed 50 per request limit',
           'error',
           { labelSize },
         );
-        throw this.markAsLogged(
-          new HttpException(
-            'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
-            HttpStatus.PAYLOAD_TOO_LARGE,
-          ),
+        const httpError = new HttpException(
+          'El número de etiquetas excede el límite permitido (50 etiquetas por solicitud)',
+          HttpStatus.PAYLOAD_TOO_LARGE,
         );
+        // Solo omitimos el fallback de processZplConversion si el registro se
+        // confirmó; si el write falló, dejamos que el catch superior lo guarde.
+        if (logged) this.markAsLogged(httpError);
+        throw httpError;
       }
 
       // Log generic Labelary error (severidad "error": es un fallo de la
       // dependencia externa, no un error crítico del propio servidor).
-      this.logError(
+      const logged = await this.logError(
         'SERVER_ERROR',
         'LABELARY_API_ERROR',
         `Labelary API error: ${error.message}`,
         'error',
         { status: error.response?.status },
       );
-      throw this.markAsLogged(
-        new HttpException(
-          'Error in Labelary API conversion',
-          HttpStatus.INTERNAL_SERVER_ERROR,
-        ),
+      const httpError = new HttpException(
+        'Error in Labelary API conversion',
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
+      // Solo omitimos el fallback de processZplConversion si el registro se
+      // confirmó; si el write falló, dejamos que el catch superior lo guarde.
+      if (logged) this.markAsLogged(httpError);
+      throw httpError;
     }
   }
 
