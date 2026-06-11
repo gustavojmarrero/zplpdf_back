@@ -5,6 +5,10 @@ import { Storage } from '@google-cloud/storage';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { BillingService } from '../billing/billing.service.js';
 import { toISOString, ensureISOString } from '../../utils/date.util.js';
+import {
+  getStartOfDateInTimezone,
+  getEndOfDateInTimezone,
+} from '../../utils/timezone.util.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { LabelaryAnalyticsService } from '../zpl/services/labelary-analytics.service.js';
 import { DEFAULT_PLAN_LIMITS, PLAN_ORDER } from '../../common/interfaces/user.interface.js';
@@ -46,8 +50,11 @@ export class AdminService {
   private readonly logger = new Logger(AdminService.name);
   private stripe: Stripe | null = null;
 
-  // Caché de métricas del dashboard (5 minutos)
-  private metricsCache: { data: AdminMetricsResponseDto; timestamp: number } | null = null;
+  // Caché de métricas del dashboard (5 minutos), por rango de fechas solicitado
+  private metricsCache = new Map<
+    string,
+    { data: AdminMetricsResponseDto; timestamp: number }
+  >();
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 
   constructor(
@@ -69,11 +76,22 @@ export class AdminService {
     }
   }
 
-  async getDashboardMetrics(): Promise<AdminMetricsResponseDto> {
-    // Verificar caché
-    if (this.metricsCache && Date.now() - this.metricsCache.timestamp < this.CACHE_TTL_MS) {
+  async getDashboardMetrics(
+    startDate?: string,
+    endDate?: string,
+  ): Promise<AdminMetricsResponseDto> {
+    // Rango de fechas opcional: acota errors.byType y errors.criticalCount.
+    // Se interpretan como días completos en GMT-6 (coherente con el resto
+    // de métricas diarias del dashboard).
+    const errorsStart = startDate ? getStartOfDateInTimezone(startDate) : undefined;
+    const errorsEnd = endDate ? getEndOfDateInTimezone(endDate) : undefined;
+
+    // Verificar caché (por rango solicitado)
+    const cacheKey = `${startDate ?? '_'}|${endDate ?? '_'}`;
+    const cached = this.metricsCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
       this.logger.log('Returning cached dashboard metrics');
-      return this.metricsCache.data;
+      return cached.data;
     }
 
     this.logger.log('Fetching dashboard metrics (cache miss)');
@@ -107,7 +125,7 @@ export class AdminService {
         this.firestoreService.getConversionStats('week'),
         this.firestoreService.getConversionStats('month'),
         this.firestoreService.getConversionTrend(8),
-        this.firestoreService.getErrorStats(),
+        this.firestoreService.getErrorStats(errorsStart, errorsEnd),
         this.firestoreService.getUsersNearLimit(80),
         this.firestoreService.getPlanDistribution(),
         this.firestoreService.getUpgradeOpportunities(),
@@ -200,8 +218,8 @@ export class AdminService {
         generatedAt: new Date(),
       };
 
-      // Guardar en caché
-      this.metricsCache = { data: result, timestamp: Date.now() };
+      // Guardar en caché (por rango solicitado)
+      this.metricsCache.set(cacheKey, { data: result, timestamp: Date.now() });
 
       return result;
     } catch (error) {

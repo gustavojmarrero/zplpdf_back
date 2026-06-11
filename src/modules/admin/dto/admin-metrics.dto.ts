@@ -1,4 +1,23 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsOptional, IsDateString } from 'class-validator';
+
+export class GetMetricsQueryDto {
+  @ApiPropertyOptional({
+    description:
+      'Fecha de inicio (ISO 8601, ej. 2026-06-11). Acota errors.byType y errors.criticalCount a la ventana. Interpretada como día en GMT-6.',
+  })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Fecha de fin (ISO 8601, ej. 2026-06-11). Inclusiva hasta el final del día en GMT-6.',
+  })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+}
 
 class RecentRegistrationDto {
   @ApiProperty()

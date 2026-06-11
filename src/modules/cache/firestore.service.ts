@@ -1331,7 +1331,10 @@ export class FirestoreService {
     }
   }
 
-  async getErrorStats(): Promise<{
+  async getErrorStats(
+    startDate?: Date,
+    endDate?: Date,
+  ): Promise<{
     recentErrors: ErrorLog[];
     byType: Record<string, number>;
     criticalCount: number;
@@ -1357,10 +1360,19 @@ export class FirestoreService {
         } as ErrorLog;
       });
 
-      // Get all error stats
-      const allErrorsSnapshot = await this.firestore
-        .collection(this.errorLogsCollection)
-        .get();
+      // Get error stats. Si se provee rango de fechas se acotan byType y
+      // criticalCount a esa ventana (solo where sobre createdAt: usa el índice
+      // single-field, no requiere índice compuesto). Sin rango, totales históricos.
+      let statsQuery: FirebaseFirestore.Query = this.firestore.collection(
+        this.errorLogsCollection,
+      );
+      if (startDate) {
+        statsQuery = statsQuery.where('createdAt', '>=', startDate);
+      }
+      if (endDate) {
+        statsQuery = statsQuery.where('createdAt', '<=', endDate);
+      }
+      const allErrorsSnapshot = await statsQuery.get();
 
       const byType: Record<string, number> = {};
       let criticalCount = 0;
