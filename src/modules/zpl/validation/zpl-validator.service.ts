@@ -4,7 +4,6 @@ import {
   ValidationResult,
   ValidationOptions,
   ValidationIssue,
-  ValidationSummary,
   ValidatorType,
 } from './zpl-validation.types.js';
 import { StructureValidator } from './validators/structure-validator.js';

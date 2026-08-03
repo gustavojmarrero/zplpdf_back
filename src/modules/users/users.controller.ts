@@ -47,7 +47,11 @@ export class UsersController {
     const clientIP = this.getClientIP(req);
     // Obtener geo de headers de Vercel (más confiable que ip.guide)
     const vercelGeo = this.getVercelGeo(req);
-    const syncedUser = await this.usersService.syncUser(user, clientIP, vercelGeo);
+    const syncedUser = await this.usersService.syncUser(
+      user,
+      clientIP,
+      vercelGeo,
+    );
     return {
       id: syncedUser.id,
       email: syncedUser.email,
@@ -78,7 +82,9 @@ export class UsersController {
    * Extrae datos de geolocalización de los headers de Vercel
    * Vercel inyecta automáticamente x-vercel-ip-country y x-vercel-ip-city
    */
-  private getVercelGeo(req: Request): { country: string; city?: string } | undefined {
+  private getVercelGeo(
+    req: Request,
+  ): { country: string; city?: string } | undefined {
     const country = req.headers['x-vercel-ip-country'] as string;
     const city = req.headers['x-vercel-ip-city'] as string;
 
@@ -134,8 +140,18 @@ export class UsersController {
 
   @Get('history')
   @ApiOperation({ summary: 'Get conversion history (Pro/Enterprise only)' })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page (default: 50)' })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number (default: 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Items per page (default: 50)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Conversion history',

@@ -16,17 +16,19 @@ async function bootstrap() {
   app.set('trust proxy', true);
 
   // Configurar headers de seguridad con Helmet
-  app.use(helmet({
-    crossOriginEmbedderPolicy: false,
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:', 'https:'],
-        scriptSrc: ["'self'"],
+  app.use(
+    helmet({
+      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:', 'https:'],
+          scriptSrc: ["'self'"],
+        },
       },
-    },
-  }));
+    }),
+  );
 
   // Configurar límite de payload (reducido a 5MB por seguridad)
   app.useBodyParser('json', { limit: '5mb' });
@@ -67,7 +69,9 @@ async function bootstrap() {
   // Configurar Swagger
   const config = new DocumentBuilder()
     .setTitle('ZPLPDF API')
-    .setDescription('API para conversion de ZPL a PDF con modelo de suscripcion')
+    .setDescription(
+      'API para conversion de ZPL a PDF con modelo de suscripcion',
+    )
     .setVersion('2.0')
     .addTag('zpl', 'ZPL to PDF conversion endpoints')
     .addTag('users', 'User management endpoints')

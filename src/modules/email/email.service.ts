@@ -5,7 +5,6 @@ import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type {
-  EmailType,
   AbVariant,
   EmailLanguage,
   ProcessQueueResult,
@@ -29,7 +28,9 @@ export class EmailService {
     private readonly periodCalculatorService: PeriodCalculatorService,
   ) {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
-    this.fromEmail = this.configService.get<string>('RESEND_FROM_EMAIL') || 'ZPLPDF <noreply@zplpdf.com>';
+    this.fromEmail =
+      this.configService.get<string>('RESEND_FROM_EMAIL') ||
+      'ZPLPDF <noreply@zplpdf.com>';
     this.isEnabled = !!apiKey;
 
     if (this.isEnabled) {
@@ -57,9 +58,14 @@ export class EmailService {
 
     try {
       // Check if user already has a welcome email
-      const hasEmail = await this.firestoreService.hasUserReceivedEmail(user.id, 'welcome');
+      const hasEmail = await this.firestoreService.hasUserReceivedEmail(
+        user.id,
+        'welcome',
+      );
       if (hasEmail) {
-        this.logger.debug(`User ${user.id} already has welcome email, skipping`);
+        this.logger.debug(
+          `User ${user.id} already has welcome email, skipping`,
+        );
         return null;
       }
 
@@ -78,10 +84,14 @@ export class EmailService {
         metadata: { displayName: user.displayName },
       });
 
-      this.logger.log(`Welcome email queued for user ${user.id} (variant ${variant})`);
+      this.logger.log(
+        `Welcome email queued for user ${user.id} (variant ${variant})`,
+      );
       return emailId;
     } catch (error) {
-      this.logger.error(`Failed to queue welcome email for ${user.id}: ${error.message}`);
+      this.logger.error(
+        `Failed to queue welcome email for ${user.id}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -90,20 +100,26 @@ export class EmailService {
    * Queue a payment failed email for a user
    * Called from PaymentsService.handlePaymentFailed() when payment retries fail
    */
-  async queuePaymentFailedEmail(user: {
-    id: string;
-    email: string;
-    displayName?: string;
-    language?: string;
-  }, attemptCount: number): Promise<string | null> {
+  async queuePaymentFailedEmail(
+    user: {
+      id: string;
+      email: string;
+      displayName?: string;
+      language?: string;
+    },
+    attemptCount: number,
+  ): Promise<string | null> {
     if (!this.isEnabled) {
-      this.logger.debug('Email service disabled, skipping payment failed email');
+      this.logger.debug(
+        'Email service disabled, skipping payment failed email',
+      );
       return null;
     }
 
     try {
       // Check if template is enabled
-      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('payment_failed');
+      const isTemplateEnabled =
+        await this.firestoreService.isTemplateEnabled('payment_failed');
       if (!isTemplateEnabled) {
         this.logger.debug('Template payment_failed is disabled, skipping');
         return null;
@@ -132,10 +148,14 @@ export class EmailService {
         },
       });
 
-      this.logger.log(`Payment failed email queued for user ${user.id} (attempt ${attemptCount}, variant ${variant})`);
+      this.logger.log(
+        `Payment failed email queued for user ${user.id} (attempt ${attemptCount}, variant ${variant})`,
+      );
       return emailId;
     } catch (error) {
-      this.logger.error(`Failed to queue payment failed email for ${user.id}: ${error.message}`);
+      this.logger.error(
+        `Failed to queue payment failed email for ${user.id}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -144,22 +164,32 @@ export class EmailService {
    * Queue a subscription downgraded email for a user
    * Called when subscription is canceled, unpaid, or past_due
    */
-  async queueSubscriptionDowngradedEmail(user: {
-    id: string;
-    email: string;
-    displayName?: string;
-    language?: string;
-  }, previousPlan: string, reason: string): Promise<string | null> {
+  async queueSubscriptionDowngradedEmail(
+    user: {
+      id: string;
+      email: string;
+      displayName?: string;
+      language?: string;
+    },
+    previousPlan: string,
+    reason: string,
+  ): Promise<string | null> {
     if (!this.isEnabled) {
-      this.logger.debug('Email service disabled, skipping subscription downgraded email');
+      this.logger.debug(
+        'Email service disabled, skipping subscription downgraded email',
+      );
       return null;
     }
 
     try {
       // Check if template is enabled
-      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('subscription_downgraded');
+      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled(
+        'subscription_downgraded',
+      );
       if (!isTemplateEnabled) {
-        this.logger.debug('Template subscription_downgraded is disabled, skipping');
+        this.logger.debug(
+          'Template subscription_downgraded is disabled, skipping',
+        );
         return null;
       }
 
@@ -191,10 +221,14 @@ export class EmailService {
         },
       });
 
-      this.logger.log(`Subscription downgraded email queued for user ${user.id} (was ${previousPlan}, reason: ${reason})`);
+      this.logger.log(
+        `Subscription downgraded email queued for user ${user.id} (was ${previousPlan}, reason: ${reason})`,
+      );
       return emailId;
     } catch (error) {
-      this.logger.error(`Failed to queue subscription downgraded email for ${user.id}: ${error.message}`);
+      this.logger.error(
+        `Failed to queue subscription downgraded email for ${user.id}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -205,7 +239,9 @@ export class EmailService {
    */
   selectAbVariant(userId: string): AbVariant {
     // Simple hash: sum of char codes mod 2
-    const hash = userId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const hash = userId
+      .split('')
+      .reduce((acc, char) => acc + char.charCodeAt(0), 0);
     return hash % 2 === 0 ? 'A' : 'B';
   }
 
@@ -231,13 +267,17 @@ export class EmailService {
           await this.sendEmail(email);
           sent++;
         } catch (error) {
-          this.logger.error(`Failed to send email ${email.id}: ${error.message}`);
+          this.logger.error(
+            `Failed to send email ${email.id}: ${error.message}`,
+          );
           failed++;
         }
       }
 
       const duration = Date.now() - startTime;
-      this.logger.log(`Email queue processed in ${duration}ms: ${sent} sent, ${failed} failed`);
+      this.logger.log(
+        `Email queue processed in ${duration}ms: ${sent} sent, ${failed} failed`,
+      );
     } catch (error) {
       this.logger.error(`Error processing email queue: ${error.message}`);
     }
@@ -270,10 +310,13 @@ export class EmailService {
   }): Promise<void> {
     try {
       // Get template from Firestore (required - no fallback)
-      const firestoreTemplate = await this.firestoreService.getEmailTemplateByKey(queueItem.emailType);
+      const firestoreTemplate =
+        await this.firestoreService.getEmailTemplateByKey(queueItem.emailType);
 
       if (!firestoreTemplate?.content) {
-        throw new Error(`Template "${queueItem.emailType}" not found in Firestore`);
+        throw new Error(
+          `Template "${queueItem.emailType}" not found in Firestore`,
+        );
       }
 
       const lang = queueItem.language as EmailLanguage;
@@ -282,13 +325,17 @@ export class EmailService {
       // Get variant content (A/B structure)
       const variantContent = firestoreTemplate.content[variant];
       if (!variantContent) {
-        throw new Error(`Variant "${variant}" not found for template "${queueItem.emailType}"`);
+        throw new Error(
+          `Variant "${variant}" not found for template "${queueItem.emailType}"`,
+        );
       }
 
       // Get language content with fallback to English
       const langContent = variantContent[lang] || variantContent.en;
       if (!langContent) {
-        throw new Error(`Language content not found for template "${queueItem.emailType}" variant "${variant}"`);
+        throw new Error(
+          `Language content not found for template "${queueItem.emailType}" variant "${variant}"`,
+        );
       }
 
       // Prepare template data with all available variables
@@ -302,7 +349,10 @@ export class EmailService {
       const subject = this.replaceVariables(langContent.subject, templateData);
       const html = this.replaceVariables(langContent.body, templateData);
       // Generate plain text from HTML (simple strip tags)
-      const text = html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      const text = html
+        .replace(/<[^>]*>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 
       // Send via Resend
       const result = await this.resend.emails.send({
@@ -325,7 +375,9 @@ export class EmailService {
         result.data?.id,
       );
 
-      this.logger.debug(`Email sent to ${queueItem.userEmail}: ${result.data?.id}`);
+      this.logger.debug(
+        `Email sent to ${queueItem.userEmail}: ${result.data?.id}`,
+      );
     } catch (error) {
       // Update queue status with error
       await this.firestoreService.updateEmailQueueStatus(
@@ -348,17 +400,18 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    let skipped = 0;
+    const skipped = 0;
 
     try {
       // Get users created 1 day ago with 0 PDFs
-      const eligibleUsers = await this.firestoreService.getUsersEligibleForEmail({
-        emailType: 'tutorial',
-        minDaysSinceCreation: 1,
-        maxDaysSinceCreation: 2,
-        maxPdfCount: 0,
-        limit: 100,
-      });
+      const eligibleUsers =
+        await this.firestoreService.getUsersEligibleForEmail({
+          emailType: 'tutorial',
+          minDaysSinceCreation: 1,
+          maxDaysSinceCreation: 2,
+          maxPdfCount: 0,
+          limit: 100,
+        });
 
       for (const user of eligibleUsers) {
         const variant = this.selectAbVariant(user.userId);
@@ -376,7 +429,9 @@ export class EmailService {
         scheduled++;
       }
 
-      this.logger.log(`Tutorial emails scheduled: ${scheduled}, skipped: ${skipped}`);
+      this.logger.log(
+        `Tutorial emails scheduled: ${scheduled}, skipped: ${skipped}`,
+      );
     } catch (error) {
       this.logger.error(`Error scheduling tutorial emails: ${error.message}`);
     }
@@ -394,17 +449,18 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    let skipped = 0;
+    const skipped = 0;
 
     try {
       // Get users created 3 days ago with 0 PDFs
-      const eligibleUsers = await this.firestoreService.getUsersEligibleForEmail({
-        emailType: 'help',
-        minDaysSinceCreation: 3,
-        maxDaysSinceCreation: 4,
-        maxPdfCount: 0,
-        limit: 100,
-      });
+      const eligibleUsers =
+        await this.firestoreService.getUsersEligibleForEmail({
+          emailType: 'help',
+          minDaysSinceCreation: 3,
+          maxDaysSinceCreation: 4,
+          maxPdfCount: 0,
+          limit: 100,
+        });
 
       for (const user of eligibleUsers) {
         const variant = this.selectAbVariant(user.userId);
@@ -422,7 +478,9 @@ export class EmailService {
         scheduled++;
       }
 
-      this.logger.log(`Help emails scheduled: ${scheduled}, skipped: ${skipped}`);
+      this.logger.log(
+        `Help emails scheduled: ${scheduled}, skipped: ${skipped}`,
+      );
     } catch (error) {
       this.logger.error(`Error scheduling help emails: ${error.message}`);
     }
@@ -440,7 +498,7 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    let skipped = 0;
+    const skipped = 0;
 
     try {
       // Get users created 7 days ago with ≥1 PDF (success_story)
@@ -469,13 +527,14 @@ export class EmailService {
       }
 
       // Get users created 7 days ago with 0 PDFs (miss_you)
-      const inactiveUsers = await this.firestoreService.getUsersEligibleForEmail({
-        emailType: 'miss_you',
-        minDaysSinceCreation: 7,
-        maxDaysSinceCreation: 8,
-        maxPdfCount: 0,
-        limit: 100,
-      });
+      const inactiveUsers =
+        await this.firestoreService.getUsersEligibleForEmail({
+          emailType: 'miss_you',
+          minDaysSinceCreation: 7,
+          maxDaysSinceCreation: 8,
+          maxPdfCount: 0,
+          limit: 100,
+        });
 
       for (const user of inactiveUsers) {
         const variant = this.selectAbVariant(user.userId);
@@ -493,7 +552,9 @@ export class EmailService {
         scheduled++;
       }
 
-      this.logger.log(`Day 7 emails scheduled: ${scheduled}, skipped: ${skipped}`);
+      this.logger.log(
+        `Day 7 emails scheduled: ${scheduled}, skipped: ${skipped}`,
+      );
     } catch (error) {
       this.logger.error(`Error scheduling day 7 emails: ${error.message}`);
     }
@@ -570,8 +631,14 @@ export class EmailService {
 
     return {
       ...raw,
-      openRate: raw.delivered > 0 ? Math.round((raw.opened / raw.delivered) * 10000) / 100 : 0,
-      clickRate: raw.opened > 0 ? Math.round((raw.clicked / raw.opened) * 10000) / 100 : 0,
+      openRate:
+        raw.delivered > 0
+          ? Math.round((raw.opened / raw.delivered) * 10000) / 100
+          : 0,
+      clickRate:
+        raw.opened > 0
+          ? Math.round((raw.clicked / raw.opened) * 10000) / 100
+          : 0,
     };
   }
 
@@ -581,12 +648,16 @@ export class EmailService {
   async getAbTestResults(emailType?: string) {
     const results = await this.firestoreService.getAbTestResults(emailType);
 
-    return results.map(result => ({
+    return results.map((result) => ({
       emailType: result.emailType,
-      variants: result.variants.map(v => ({
+      variants: result.variants.map((v) => ({
         ...v,
-        openRate: v.delivered > 0 ? Math.round((v.opened / v.delivered) * 10000) / 100 : 0,
-        clickRate: v.opened > 0 ? Math.round((v.clicked / v.opened) * 10000) / 100 : 0,
+        openRate:
+          v.delivered > 0
+            ? Math.round((v.opened / v.delivered) * 10000) / 100
+            : 0,
+        clickRate:
+          v.opened > 0 ? Math.round((v.clicked / v.opened) * 10000) / 100 : 0,
       })),
     }));
   }
@@ -597,7 +668,7 @@ export class EmailService {
   async getMetricsByType() {
     const results = await this.firestoreService.getEmailMetricsByType();
 
-    return results.map(result => ({
+    return results.map((result) => ({
       emailType: result.emailType,
       metrics: {
         sent: result.sent,
@@ -606,8 +677,14 @@ export class EmailService {
         clicked: result.clicked,
         bounced: 0, // TODO: Add to query
         complained: 0, // TODO: Add to query
-        openRate: result.delivered > 0 ? Math.round((result.opened / result.delivered) * 10000) / 100 : 0,
-        clickRate: result.opened > 0 ? Math.round((result.clicked / result.opened) * 10000) / 100 : 0,
+        openRate:
+          result.delivered > 0
+            ? Math.round((result.opened / result.delivered) * 10000) / 100
+            : 0,
+        clickRate:
+          result.opened > 0
+            ? Math.round((result.clicked / result.opened) * 10000) / 100
+            : 0,
       },
     }));
   }
@@ -624,7 +701,11 @@ export class EmailService {
    */
   async cancelOnboardingEmailsForUser(userId: string): Promise<number> {
     // Cancel tutorial, help, miss_you emails since user is now active
-    return this.firestoreService.cancelPendingEmails(userId, ['tutorial', 'help', 'miss_you']);
+    return this.firestoreService.cancelPendingEmails(userId, [
+      'tutorial',
+      'help',
+      'miss_you',
+    ]);
   }
 
   /**
@@ -649,7 +730,11 @@ export class EmailService {
    */
   async queueLimitEmail(
     userId: string,
-    emailType: 'limit_80_percent' | 'limit_100_percent' | 'conversion_blocked' | 'high_usage',
+    emailType:
+      | 'limit_80_percent'
+      | 'limit_100_percent'
+      | 'conversion_blocked'
+      | 'high_usage',
     metadata: {
       pdfsUsed: number;
       limit: number;
@@ -669,7 +754,8 @@ export class EmailService {
 
     try {
       // Check if template is enabled in Firestore (controlled via frontend toggle)
-      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled(emailType);
+      const isTemplateEnabled =
+        await this.firestoreService.isTemplateEnabled(emailType);
       if (!isTemplateEnabled) {
         this.logger.debug(`Template ${emailType} is disabled, skipping`);
         return null;
@@ -683,14 +769,16 @@ export class EmailService {
       );
 
       if (hasEmail) {
-        this.logger.debug(`User ${userId} already received ${emailType} in current period, skipping`);
+        this.logger.debug(
+          `User ${userId} already received ${emailType} in current period, skipping`,
+        );
         return null;
       }
 
       // Get user info if not provided
       let userEmail = metadata.email;
       let displayName = metadata.displayName;
-      let language = metadata.language as EmailLanguage || 'en';
+      let language = (metadata.language as EmailLanguage) || 'en';
 
       if (!userEmail) {
         const user = await this.firestoreService.getUserById(userId);
@@ -725,10 +813,14 @@ export class EmailService {
         },
       });
 
-      this.logger.log(`Limit email ${emailType} queued for user ${userId} (variant ${variant})`);
+      this.logger.log(
+        `Limit email ${emailType} queued for user ${userId} (variant ${variant})`,
+      );
       return emailId;
     } catch (error) {
-      this.logger.error(`Failed to queue limit email ${emailType} for ${userId}: ${error.message}`);
+      this.logger.error(
+        `Failed to queue limit email ${emailType} for ${userId}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -745,11 +837,12 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    let skipped = 0;
+    const skipped = 0;
 
     try {
       // Check if template is enabled
-      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('high_usage');
+      const isTemplateEnabled =
+        await this.firestoreService.isTemplateEnabled('high_usage');
       if (!isTemplateEnabled) {
         this.logger.debug('Template high_usage is disabled, skipping');
         return { scheduled: 0, skipped: 0, executedAt: new Date() };
@@ -785,7 +878,9 @@ export class EmailService {
         scheduled++;
       }
 
-      this.logger.log(`High usage emails scheduled: ${scheduled}, skipped: ${skipped}`);
+      this.logger.log(
+        `High usage emails scheduled: ${scheduled}, skipped: ${skipped}`,
+      );
     } catch (error) {
       this.logger.error(`Error scheduling high usage emails: ${error.message}`);
     }
@@ -811,22 +906,31 @@ export class EmailService {
 
       // Only send if user is actually at/over limit (Free y Lite tienen cuota mensual baja)
       if (user.plan !== 'free' && user.plan !== 'lite') {
-        this.logger.debug(`User ${userId} is not on free/lite plan, skipping blocked email`);
+        this.logger.debug(
+          `User ${userId} is not on free/lite plan, skipping blocked email`,
+        );
         return null;
       }
 
       // Get usage data for pdfCount and period dates (período actual del usuario)
-      const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
-      const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
+      const periodInfo =
+        this.periodCalculatorService.calculateCurrentPeriod(user);
+      const usage = await this.firestoreService.getOrCreateUsageWithPeriod(
+        userId,
+        periodInfo,
+      );
       // Usar el límite real del plan (Free=10, Lite=25). El fallback hardcodeado a 25
       // dejaba sin enviar el email de bloqueo a usuarios Free, que se bloquean a los 10.
-      const limit = user.planLimits?.maxPdfsPerMonth
-        || DEFAULT_PLAN_LIMITS[user.plan]?.maxPdfsPerMonth
-        || DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
+      const limit =
+        user.planLimits?.maxPdfsPerMonth ||
+        DEFAULT_PLAN_LIMITS[user.plan]?.maxPdfsPerMonth ||
+        DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
       const pdfsUsed = usage.pdfCount || 0;
 
       if (pdfsUsed < limit) {
-        this.logger.debug(`User ${userId} has not reached limit (${pdfsUsed}/${limit}), skipping blocked email`);
+        this.logger.debug(
+          `User ${userId} has not reached limit (${pdfsUsed}/${limit}), skipping blocked email`,
+        );
         return null;
       }
 
@@ -841,7 +945,9 @@ export class EmailService {
         language: this.detectLanguageFromCountry(user.country),
       });
     } catch (error) {
-      this.logger.error(`Failed to trigger blocked email for ${userId}: ${error.message}`);
+      this.logger.error(
+        `Failed to trigger blocked email for ${userId}: ${error.message}`,
+      );
       return null;
     }
   }
@@ -852,9 +958,38 @@ export class EmailService {
   private detectLanguageFromCountry(country?: string): EmailLanguage {
     if (!country) return 'en';
 
-    const spanishCountries = ['MX', 'ES', 'AR', 'CO', 'CL', 'PE', 'VE', 'EC', 'GT', 'CU', 'BO', 'DO', 'HN', 'PY', 'SV', 'NI', 'CR', 'PA', 'UY'];
+    const spanishCountries = [
+      'MX',
+      'ES',
+      'AR',
+      'CO',
+      'CL',
+      'PE',
+      'VE',
+      'EC',
+      'GT',
+      'CU',
+      'BO',
+      'DO',
+      'HN',
+      'PY',
+      'SV',
+      'NI',
+      'CR',
+      'PA',
+      'UY',
+    ];
     const chineseCountries = ['CN', 'TW', 'HK', 'SG'];
-    const portugueseCountries = ['BR', 'PT', 'AO', 'MZ', 'CV', 'GW', 'ST', 'TL'];
+    const portugueseCountries = [
+      'BR',
+      'PT',
+      'AO',
+      'MZ',
+      'CV',
+      'GW',
+      'ST',
+      'TL',
+    ];
 
     if (spanishCountries.includes(country.toUpperCase())) return 'es';
     if (chineseCountries.includes(country.toUpperCase())) return 'zh';
@@ -882,19 +1017,21 @@ export class EmailService {
 
     try {
       // Check which templates are enabled
-      const [is7DaysEnabled, is14DaysEnabled, is30DaysEnabled] = await Promise.all([
-        this.firestoreService.isTemplateEnabled('pro_inactive_7_days'),
-        this.firestoreService.isTemplateEnabled('pro_inactive_14_days'),
-        this.firestoreService.isTemplateEnabled('pro_inactive_30_days'),
-      ]);
+      const [is7DaysEnabled, is14DaysEnabled, is30DaysEnabled] =
+        await Promise.all([
+          this.firestoreService.isTemplateEnabled('pro_inactive_7_days'),
+          this.firestoreService.isTemplateEnabled('pro_inactive_14_days'),
+          this.firestoreService.isTemplateEnabled('pro_inactive_30_days'),
+        ]);
 
       // Get PRO users inactive 7-13 days (if template enabled)
       if (is7DaysEnabled) {
-        const inactive7DaysResponse = await this.firestoreService.getProInactiveUsers({
-          minDaysInactive: 7,
-          maxDaysInactive: 14,
-          limit: 50,
-        });
+        const inactive7DaysResponse =
+          await this.firestoreService.getProInactiveUsers({
+            minDaysInactive: 7,
+            maxDaysInactive: 14,
+            limit: 50,
+          });
 
         for (const user of inactive7DaysResponse.users) {
           if (user.emailsSent.includes('pro_inactive_7_days')) {
@@ -925,11 +1062,12 @@ export class EmailService {
 
       // Get PRO users inactive 14-29 days (if template enabled)
       if (is14DaysEnabled) {
-        const inactive14DaysResponse = await this.firestoreService.getProInactiveUsers({
-          minDaysInactive: 14,
-          maxDaysInactive: 30,
-          limit: 50,
-        });
+        const inactive14DaysResponse =
+          await this.firestoreService.getProInactiveUsers({
+            minDaysInactive: 14,
+            maxDaysInactive: 30,
+            limit: 50,
+          });
 
         for (const user of inactive14DaysResponse.users) {
           if (user.emailsSent.includes('pro_inactive_14_days')) {
@@ -955,15 +1093,18 @@ export class EmailService {
           scheduled++;
         }
       } else {
-        this.logger.debug('Template pro_inactive_14_days is disabled, skipping');
+        this.logger.debug(
+          'Template pro_inactive_14_days is disabled, skipping',
+        );
       }
 
       // Get PRO users inactive 30+ days (if template enabled)
       if (is30DaysEnabled) {
-        const inactive30DaysResponse = await this.firestoreService.getProInactiveUsers({
-          minDaysInactive: 30,
-          limit: 50,
-        });
+        const inactive30DaysResponse =
+          await this.firestoreService.getProInactiveUsers({
+            minDaysInactive: 30,
+            limit: 50,
+          });
 
         for (const user of inactive30DaysResponse.users) {
           if (user.emailsSent.includes('pro_inactive_30_days')) {
@@ -989,10 +1130,14 @@ export class EmailService {
           scheduled++;
         }
       } else {
-        this.logger.debug('Template pro_inactive_30_days is disabled, skipping');
+        this.logger.debug(
+          'Template pro_inactive_30_days is disabled, skipping',
+        );
       }
 
-      this.logger.log(`Retention emails scheduled: ${scheduled}, skipped: ${skipped}`);
+      this.logger.log(
+        `Retention emails scheduled: ${scheduled}, skipped: ${skipped}`,
+      );
     } catch (error) {
       this.logger.error(`Error scheduling retention emails: ${error.message}`);
     }
@@ -1017,7 +1162,8 @@ export class EmailService {
 
     try {
       // Check if template is enabled
-      const isTemplateEnabled = await this.firestoreService.isTemplateEnabled('pro_power_user');
+      const isTemplateEnabled =
+        await this.firestoreService.isTemplateEnabled('pro_power_user');
       if (!isTemplateEnabled) {
         this.logger.debug('Template pro_power_user is disabled, skipping');
         return { scheduled: 0, skipped: 0, executedAt: new Date() };
@@ -1095,7 +1241,13 @@ export class EmailService {
 
     try {
       // Check which templates are enabled
-      const [is7dEnabled, is14dEnabled, isTriedEnabled, isDormantEnabled, isAbandonedEnabled] = await Promise.all([
+      const [
+        is7dEnabled,
+        is14dEnabled,
+        isTriedEnabled,
+        isDormantEnabled,
+        isAbandonedEnabled,
+      ] = await Promise.all([
         this.firestoreService.isTemplateEnabled('free_never_used_7d'),
         this.firestoreService.isTemplateEnabled('free_never_used_14d'),
         this.firestoreService.isTemplateEnabled('free_tried_abandoned'),
@@ -1113,7 +1265,9 @@ export class EmailService {
 
       // If all templates are disabled, skip processing
       if (!Object.values(enabledTemplates).some(Boolean)) {
-        this.logger.debug('All FREE reactivation templates are disabled, skipping');
+        this.logger.debug(
+          'All FREE reactivation templates are disabled, skipping',
+        );
         return {
           processed: 0,
           emailsScheduled: 0,
@@ -1123,9 +1277,10 @@ export class EmailService {
       }
 
       // Get all FREE inactive users
-      const { users: inactiveUsers } = await this.firestoreService.getFreeInactiveUsers({
-        limit: 200,
-      });
+      const { users: inactiveUsers } =
+        await this.firestoreService.getFreeInactiveUsers({
+          limit: 200,
+        });
 
       for (const user of inactiveUsers) {
         processed++;
@@ -1135,24 +1290,41 @@ export class EmailService {
 
         if (user.segment === 'never_used') {
           // Never used: 7d or 14d based on registration age
-          if (user.daysSinceRegistration >= 14 && !user.emailsSent.includes('free_never_used_14d') && enabledTemplates.free_never_used_14d) {
+          if (
+            user.daysSinceRegistration >= 14 &&
+            !user.emailsSent.includes('free_never_used_14d') &&
+            enabledTemplates.free_never_used_14d
+          ) {
             emailType = 'free_never_used_14d';
-          } else if (user.daysSinceRegistration >= 7 && !user.emailsSent.includes('free_never_used_7d') && enabledTemplates.free_never_used_7d) {
+          } else if (
+            user.daysSinceRegistration >= 7 &&
+            !user.emailsSent.includes('free_never_used_7d') &&
+            enabledTemplates.free_never_used_7d
+          ) {
             emailType = 'free_never_used_7d';
           }
         } else if (user.segment === 'tried_abandoned') {
           // Tried but abandoned: 1-3 PDFs, 14+ days inactive
-          if (!user.emailsSent.includes('free_tried_abandoned') && enabledTemplates.free_tried_abandoned) {
+          if (
+            !user.emailsSent.includes('free_tried_abandoned') &&
+            enabledTemplates.free_tried_abandoned
+          ) {
             emailType = 'free_tried_abandoned';
           }
         } else if (user.segment === 'dormant') {
           // Dormant: >3 PDFs, 30+ days inactive
-          if (!user.emailsSent.includes('free_dormant_30d') && enabledTemplates.free_dormant_30d) {
+          if (
+            !user.emailsSent.includes('free_dormant_30d') &&
+            enabledTemplates.free_dormant_30d
+          ) {
             emailType = 'free_dormant_30d';
           }
         } else if (user.segment === 'abandoned') {
           // Abandoned: 60+ days inactive
-          if (!user.emailsSent.includes('free_abandoned_60d') && enabledTemplates.free_abandoned_60d) {
+          if (
+            !user.emailsSent.includes('free_abandoned_60d') &&
+            enabledTemplates.free_abandoned_60d
+          ) {
             emailType = 'free_abandoned_60d';
           }
         }
@@ -1185,7 +1357,9 @@ export class EmailService {
         `FREE reactivation emails scheduled: ${emailsScheduled} (never_used_7d: ${byType.free_never_used_7d}, never_used_14d: ${byType.free_never_used_14d}, tried_abandoned: ${byType.free_tried_abandoned}, dormant_30d: ${byType.free_dormant_30d}, abandoned_60d: ${byType.free_abandoned_60d})`,
       );
     } catch (error) {
-      this.logger.error(`Error scheduling FREE reactivation emails: ${error.message}`);
+      this.logger.error(
+        `Error scheduling FREE reactivation emails: ${error.message}`,
+      );
     }
 
     return {
@@ -1232,7 +1406,7 @@ export class EmailService {
       });
 
       // Batch fetch all usage documents in a single Firestore operation
-      const periodIds = userPeriods.map(up => up.periodInfo.periodId);
+      const periodIds = userPeriods.map((up) => up.periodInfo.periodId);
       const usageMap = await this.firestoreService.batchGetUsage(periodIds);
 
       // Combine user data with usage
@@ -1279,8 +1453,14 @@ export class EmailService {
           else if (plan === 'enterprise') summary.byPlan.enterprise++;
 
           // Calculate months as PRO
-          const createdAt = user.createdAt instanceof Date ? user.createdAt : new Date(user.createdAt);
-          const monthsAsPro = Math.floor((new Date().getTime() - createdAt.getTime()) / (30 * 24 * 60 * 60 * 1000));
+          const createdAt =
+            user.createdAt instanceof Date
+              ? user.createdAt
+              : new Date(user.createdAt);
+          const monthsAsPro = Math.floor(
+            (new Date().getTime() - createdAt.getTime()) /
+              (30 * 24 * 60 * 60 * 1000),
+          );
 
           allUsersWithUsage.push({
             userId: user.id,
@@ -1299,16 +1479,22 @@ export class EmailService {
       allUsersWithUsage.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
 
       // Calculate percentile threshold
-      const percentileIndex = Math.floor(allUsersWithUsage.length * (1 - minPercentile / 100));
-      const percentileThreshold = allUsersWithUsage[percentileIndex]?.pdfsThisMonth || 0;
+      const percentileIndex = Math.floor(
+        allUsersWithUsage.length * (1 - minPercentile / 100),
+      );
+      const percentileThreshold =
+        allUsersWithUsage[percentileIndex]?.pdfsThisMonth || 0;
 
       // Filter to power users (above percentile threshold)
-      const powerUsers = allUsersWithUsage.filter(u => u.pdfsThisMonth >= percentileThreshold);
+      const powerUsers = allUsersWithUsage.filter(
+        (u) => u.pdfsThisMonth >= percentileThreshold,
+      );
 
       // Update summary
       summary.total = powerUsers.length;
       summary.topPerformers = Math.min(10, powerUsers.length);
-      summary.avgMonthlyPdfs = usersWithUsage > 0 ? Math.round(totalPdfs / usersWithUsage) : 0;
+      summary.avgMonthlyPdfs =
+        usersWithUsage > 0 ? Math.round(totalPdfs / usersWithUsage) : 0;
 
       // Apply pagination
       const totalPages = Math.ceil(powerUsers.length / limit);
@@ -1329,7 +1515,9 @@ export class EmailService {
         },
       };
     } catch (error) {
-      this.logger.error(`Error getting power users with period: ${error.message}`);
+      this.logger.error(
+        `Error getting power users with period: ${error.message}`,
+      );
       return {
         users: [],
         summary,

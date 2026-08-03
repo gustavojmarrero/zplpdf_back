@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { FirestoreService } from '../../cache/firestore.service.js';
 import { ExchangeRateService } from './exchange-rate.service.js';
 import type {
@@ -57,14 +62,19 @@ export class ExpenseService {
   /**
    * Crea un nuevo gasto
    */
-  async createExpense(data: CreateExpenseDto, adminEmail: string): Promise<Expense> {
+  async createExpense(
+    data: CreateExpenseDto,
+    adminEmail: string,
+  ): Promise<Expense> {
     // Validar datos
     if (data.amount <= 0) {
       throw new BadRequestException('Amount must be greater than 0');
     }
 
     if (data.type === 'recurring' && !data.recurrenceType) {
-      throw new BadRequestException('Recurring expenses must have a recurrence type');
+      throw new BadRequestException(
+        'Recurring expenses must have a recurrence type',
+      );
     }
 
     // Convertir a MXN si es necesario
@@ -92,7 +102,10 @@ export class ExpenseService {
     // Calcular próxima fecha de generación para gastos recurrentes
     let nextGenerationDate: Date | undefined;
     if (data.type === 'recurring' && data.recurrenceType) {
-      nextGenerationDate = this.calculateNextGenerationDate(now, data.recurrenceType);
+      nextGenerationDate = this.calculateNextGenerationDate(
+        now,
+        data.recurrenceType,
+      );
     }
 
     // Build expense object, excluding undefined values (Firestore doesn't accept undefined)
@@ -113,8 +126,12 @@ export class ExpenseService {
       ...(data.recurrenceType && { recurrenceType: data.recurrenceType }),
       ...(nextGenerationDate && { nextGenerationDate }),
       // Campos de suscripción
-      ...(data.subscriptionStartDate && { subscriptionStartDate: new Date(data.subscriptionStartDate) }),
-      ...(data.subscriptionEndDate && { subscriptionEndDate: new Date(data.subscriptionEndDate) }),
+      ...(data.subscriptionStartDate && {
+        subscriptionStartDate: new Date(data.subscriptionStartDate),
+      }),
+      ...(data.subscriptionEndDate && {
+        subscriptionEndDate: new Date(data.subscriptionEndDate),
+      }),
       ...(data.autoRenewal !== undefined && { autoRenewal: data.autoRenewal }),
     };
 
@@ -151,7 +168,7 @@ export class ExpenseService {
           );
           amountMxn = conversion.amountMxn;
           exchangeRate = conversion.rate;
-        } catch (error) {
+        } catch {
           exchangeRate = 20;
           amountMxn = newAmount * exchangeRate;
         }
@@ -162,7 +179,12 @@ export class ExpenseService {
     }
 
     // Extraer campos de suscripción para procesarlos por separado
-    const { subscriptionStartDate, subscriptionEndDate, autoRenewal, ...restData } = data;
+    const {
+      subscriptionStartDate,
+      subscriptionEndDate,
+      autoRenewal,
+      ...restData
+    } = data;
 
     const updateData: Partial<Expense> = {
       ...restData,
@@ -170,8 +192,12 @@ export class ExpenseService {
       exchangeRate,
       updatedAt: new Date(),
       // Campos de suscripción (convertir fechas a Date si vienen)
-      ...(subscriptionStartDate && { subscriptionStartDate: new Date(subscriptionStartDate) }),
-      ...(subscriptionEndDate && { subscriptionEndDate: new Date(subscriptionEndDate) }),
+      ...(subscriptionStartDate && {
+        subscriptionStartDate: new Date(subscriptionStartDate),
+      }),
+      ...(subscriptionEndDate && {
+        subscriptionEndDate: new Date(subscriptionEndDate),
+      }),
       ...(autoRenewal !== undefined && { autoRenewal }),
     };
 
@@ -236,19 +262,28 @@ export class ExpenseService {
     byType: { recurring: number; one_time: number };
     topVendors: Array<{ vendor: string; amount: number }>;
   }> {
-    const summary = await this.firestoreService.getExpenseSummary(startDate, endDate);
+    const summary = await this.firestoreService.getExpenseSummary(
+      startDate,
+      endDate,
+    );
 
     // Calcular porcentajes por categoría
-    const byCategory: Record<string, { amount: number; percentage: number }> = {};
+    const byCategory: Record<string, { amount: number; percentage: number }> =
+      {};
     for (const [category, amount] of Object.entries(summary.byCategory)) {
       byCategory[category] = {
         amount,
-        percentage: summary.totalMxn > 0 ? (amount / summary.totalMxn) * 100 : 0,
+        percentage:
+          summary.totalMxn > 0 ? (amount / summary.totalMxn) * 100 : 0,
       };
     }
 
     // Obtener top vendors
-    const { expenses } = await this.firestoreService.getExpenses({ startDate, endDate, limit: 500 });
+    const { expenses } = await this.firestoreService.getExpenses({
+      startDate,
+      endDate,
+      limit: 500,
+    });
     const vendorTotals = new Map<string, number>();
 
     for (const expense of expenses) {
@@ -278,7 +313,8 @@ export class ExpenseService {
    * Genera gastos recurrentes que vencen hoy (llamado por cron)
    */
   async generateRecurringExpenses(): Promise<{ generated: number }> {
-    const recurringExpenses = await this.firestoreService.getRecurringExpensesDueToday();
+    const recurringExpenses =
+      await this.firestoreService.getRecurringExpensesDueToday();
     let generated = 0;
 
     for (const parentExpense of recurringExpenses) {
@@ -324,15 +360,22 @@ export class ExpenseService {
         await this.firestoreService.saveExpense(newExpense);
 
         // Actualizar próxima fecha de generación del gasto padre
-        const nextDate = this.calculateNextGenerationDate(now, parentExpense.recurrenceType!);
+        const nextDate = this.calculateNextGenerationDate(
+          now,
+          parentExpense.recurrenceType!,
+        );
         await this.firestoreService.updateExpense(parentExpense.id, {
           nextGenerationDate: nextDate,
         });
 
         generated++;
-        this.logger.log(`Generated recurring expense: ${newExpenseId} from ${parentExpense.id}`);
+        this.logger.log(
+          `Generated recurring expense: ${newExpenseId} from ${parentExpense.id}`,
+        );
       } catch (error) {
-        this.logger.error(`Failed to generate expense from ${parentExpense.id}: ${error.message}`);
+        this.logger.error(
+          `Failed to generate expense from ${parentExpense.id}: ${error.message}`,
+        );
       }
     }
 
@@ -350,7 +393,10 @@ export class ExpenseService {
     return `expense_${dateStr}_${random}`;
   }
 
-  private calculateNextGenerationDate(fromDate: Date, recurrenceType: RecurrenceType): Date {
+  private calculateNextGenerationDate(
+    fromDate: Date,
+    recurrenceType: RecurrenceType,
+  ): Date {
     const nextDate = new Date(fromDate);
 
     if (recurrenceType === 'monthly') {

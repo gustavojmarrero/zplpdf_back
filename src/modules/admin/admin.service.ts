@@ -1,4 +1,11 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, Inject, Optional } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+  Inject,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { Storage } from '@google-cloud/storage';
@@ -11,7 +18,10 @@ import {
 } from '../../utils/timezone.util.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { LabelaryAnalyticsService } from '../zpl/services/labelary-analytics.service.js';
-import { DEFAULT_PLAN_LIMITS, PLAN_ORDER } from '../../common/interfaces/user.interface.js';
+import {
+  DEFAULT_PLAN_LIMITS,
+  PLAN_ORDER,
+} from '../../common/interfaces/user.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
 import type { AdminUserData } from '../../common/decorators/admin-user.decorator.js';
 import type { AdminMetricsResponseDto } from './dto/admin-metrics.dto.js';
@@ -22,7 +32,12 @@ import type {
 import { LabelaryQueueService } from '../zpl/services/labelary-queue.service.js';
 // Finance services
 import { FinanceService } from './services/finance.service.js';
-import { ExpenseService, type CreateExpenseDto, type UpdateExpenseDto, type ExpenseFilters } from './services/expense.service.js';
+import {
+  ExpenseService,
+  type CreateExpenseDto,
+  type UpdateExpenseDto,
+  type ExpenseFilters,
+} from './services/expense.service.js';
 import { GeoService } from './services/geo.service.js';
 import { GoalsService, type SetGoalsDto } from './services/goals.service.js';
 import type {
@@ -32,7 +47,12 @@ import type {
   UpdateUserPlanDto,
   UpdateUserPlanResponseDto,
 } from './dto/admin-users.dto.js';
-import type { GetConversionsQueryDto, AdminConversionsResponseDto, GetConversionsListQueryDto, AdminConversionsListResponseDto } from './dto/admin-conversions.dto.js';
+import type {
+  GetConversionsQueryDto,
+  AdminConversionsResponseDto,
+  GetConversionsListQueryDto,
+  AdminConversionsListResponseDto,
+} from './dto/admin-conversions.dto.js';
 import type {
   GetErrorsQueryDto,
   AdminErrorsResponseDto,
@@ -42,8 +62,14 @@ import type {
   AdminErrorStatsResponseDto,
 } from './dto/admin-errors.dto.js';
 import type { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
-import type { GetPlanChangesQueryDto, AdminPlanChangesResponseDto } from './dto/admin-plan-changes.dto.js';
-import type { GetConsumptionProjectionQueryDto, AdminConsumptionProjectionResponseDto } from './dto/admin-consumption-projection.dto.js';
+import type {
+  GetPlanChangesQueryDto,
+  AdminPlanChangesResponseDto,
+} from './dto/admin-plan-changes.dto.js';
+import type {
+  GetConsumptionProjectionQueryDto,
+  AdminConsumptionProjectionResponseDto,
+} from './dto/admin-consumption-projection.dto.js';
 
 @Injectable()
 export class AdminService {
@@ -84,10 +110,12 @@ export class AdminService {
    *
    * Solo hace la lectura si hay huecos que rellenar.
    */
-  private async fillMissingUserEmails<T extends { userId?: string; userEmail?: string }>(
-    items: T[],
-  ): Promise<T[]> {
-    const missingIds = items.filter((i) => i.userId && !i.userEmail).map((i) => i.userId);
+  private async fillMissingUserEmails<
+    T extends { userId?: string; userEmail?: string },
+  >(items: T[]): Promise<T[]> {
+    const missingIds = items
+      .filter((i) => i.userId && !i.userEmail)
+      .map((i) => i.userId);
 
     if (missingIds.length === 0) {
       return items;
@@ -109,7 +137,9 @@ export class AdminService {
     // Rango de fechas opcional: acota errors.byType y errors.criticalCount.
     // Se interpretan como días completos en GMT-6 (coherente con el resto
     // de métricas diarias del dashboard).
-    const errorsStart = startDate ? getStartOfDateInTimezone(startDate) : undefined;
+    const errorsStart = startDate
+      ? getStartOfDateInTimezone(startDate)
+      : undefined;
     const errorsEnd = endDate ? getEndOfDateInTimezone(endDate) : undefined;
 
     // Verificar caché (por rango solicitado)
@@ -160,9 +190,13 @@ export class AdminService {
 
       // Calculate success/failure rates
       const totalConversions = conversionStatsMonth.summary.totalPdfs;
-      const successRate = totalConversions > 0
-        ? Math.round((conversionStatsMonth.summary.successCount / totalConversions) * 1000) / 10
-        : 100;
+      const successRate =
+        totalConversions > 0
+          ? Math.round(
+              (conversionStatsMonth.summary.successCount / totalConversions) *
+                1000,
+            ) / 10
+          : 100;
       const failureRate = Math.round((100 - successRate) * 10) / 10;
 
       // Transform trend data
@@ -262,7 +296,8 @@ export class AdminService {
 
     try {
       // For pdfCount sorting, we need to handle it here after recalculating usage
-      const needsMemorySort = query.sortBy === 'pdfCount' || query.sortBy === 'lastActiveAt';
+      const needsMemorySort =
+        query.sortBy === 'pdfCount' || query.sortBy === 'lastActiveAt';
 
       const result = await this.firestoreService.getUsersPaginated({
         page: needsMemorySort ? 1 : query.page,
@@ -279,14 +314,19 @@ export class AdminService {
       const usersWithCorrectUsage = await Promise.all(
         result.users.map(async (user) => {
           try {
-            const periodInfo = this.periodCalculatorService.calculateCurrentPeriod({
-              id: user.id,
-              plan: user.plan as PlanType,
-              createdAt: user.createdAt,
-              subscriptionPeriodStart: user.subscriptionPeriodStart,
-              subscriptionPeriodEnd: user.subscriptionPeriodEnd,
-            });
-            const usage = await this.firestoreService.getOrCreateUsageWithPeriod(user.id, periodInfo);
+            const periodInfo =
+              this.periodCalculatorService.calculateCurrentPeriod({
+                id: user.id,
+                plan: user.plan as PlanType,
+                createdAt: user.createdAt,
+                subscriptionPeriodStart: user.subscriptionPeriodStart,
+                subscriptionPeriodEnd: user.subscriptionPeriodEnd,
+              });
+            const usage =
+              await this.firestoreService.getOrCreateUsageWithPeriod(
+                user.id,
+                periodInfo,
+              );
             return {
               ...user,
               usage: {
@@ -360,16 +400,26 @@ export class AdminService {
     }
   }
 
-  async getConversions(query: GetConversionsQueryDto): Promise<AdminConversionsResponseDto> {
-    this.logger.log(`Fetching conversions stats${query.plan ? ` for plan: ${query.plan}` : ''}`);
+  async getConversions(
+    query: GetConversionsQueryDto,
+  ): Promise<AdminConversionsResponseDto> {
+    this.logger.log(
+      `Fetching conversions stats${query.plan ? ` for plan: ${query.plan}` : ''}`,
+    );
 
     try {
       const startDate = query.startDate ? new Date(query.startDate) : undefined;
       const endDate = query.endDate ? new Date(query.endDate) : undefined;
 
       const [conversionStats, trend, topUsers] = await Promise.all([
-        this.firestoreService.getConversionStats(query.period, startDate, endDate),
-        this.firestoreService.getConversionTrend(query.period === 'day' ? 1 : query.period === 'week' ? 7 : 30),
+        this.firestoreService.getConversionStats(
+          query.period,
+          startDate,
+          endDate,
+        ),
+        this.firestoreService.getConversionTrend(
+          query.period === 'day' ? 1 : query.period === 'week' ? 7 : 30,
+        ),
         this.firestoreService.getTopUsers(10),
       ]);
 
@@ -391,10 +441,13 @@ export class AdminService {
         const totalLabels = planData.labels;
 
         // Calculate success/failure ratio for the plan based on global ratio
-        const globalTotal = conversionStats.summary.successCount + conversionStats.summary.failureCount;
-        const globalSuccessRate = globalTotal > 0
-          ? conversionStats.summary.successCount / globalTotal
-          : 1;
+        const globalTotal =
+          conversionStats.summary.successCount +
+          conversionStats.summary.failureCount;
+        const globalSuccessRate =
+          globalTotal > 0
+            ? conversionStats.summary.successCount / globalTotal
+            : 1;
 
         // Estimate success/failure counts for this plan based on global rate
         const estimatedSuccessCount = Math.round(totalPdfs * globalSuccessRate);
@@ -405,7 +458,8 @@ export class AdminService {
           totalLabels,
           successCount: estimatedSuccessCount,
           failureCount: estimatedFailureCount,
-          avgLabelsPerPdf: totalPdfs > 0 ? Math.round((totalLabels / totalPdfs) * 10) / 10 : 0,
+          avgLabelsPerPdf:
+            totalPdfs > 0 ? Math.round((totalLabels / totalPdfs) * 10) / 10 : 0,
         };
 
         // Filter topUsers by plan
@@ -427,7 +481,9 @@ export class AdminService {
     }
   }
 
-  async getConversionsList(query: GetConversionsListQueryDto): Promise<AdminConversionsListResponseDto> {
+  async getConversionsList(
+    query: GetConversionsListQueryDto,
+  ): Promise<AdminConversionsListResponseDto> {
     this.logger.log('Fetching conversions list');
 
     try {
@@ -642,7 +698,13 @@ export class AdminService {
     this.logger.log('Fetching plan usage');
 
     try {
-      const [usersNearLimit, usersNearLabelLimit, labelUsageDistribution, planDistribution, upgradeOpportunities] = await Promise.all([
+      const [
+        usersNearLimit,
+        usersNearLabelLimit,
+        labelUsageDistribution,
+        planDistribution,
+        upgradeOpportunities,
+      ] = await Promise.all([
         this.firestoreService.getUsersNearLimit(80),
         this.firestoreService.getUsersNearLabelLimit(80),
         this.firestoreService.getLabelUsageDistribution(),
@@ -690,7 +752,9 @@ export class AdminService {
     }
   }
 
-  async getPlanChanges(query: GetPlanChangesQueryDto): Promise<AdminPlanChangesResponseDto> {
+  async getPlanChanges(
+    query: GetPlanChangesQueryDto,
+  ): Promise<AdminPlanChangesResponseDto> {
     this.logger.log('Fetching plan changes history');
 
     try {
@@ -726,21 +790,28 @@ export class AdminService {
     }
   }
 
-  async getConsumptionProjection(query: GetConsumptionProjectionQueryDto): Promise<AdminConsumptionProjectionResponseDto> {
+  async getConsumptionProjection(
+    query: GetConsumptionProjectionQueryDto,
+  ): Promise<AdminConsumptionProjectionResponseDto> {
     this.logger.log('Fetching consumption projection');
 
     try {
-      const allProjections = await this.firestoreService.getConsumptionProjection();
+      const allProjections =
+        await this.firestoreService.getConsumptionProjection();
 
       // Apply filters
       let filteredProjections = allProjections;
 
       if (query.plan) {
-        filteredProjections = filteredProjections.filter((p) => p.plan === query.plan);
+        filteredProjections = filteredProjections.filter(
+          (p) => p.plan === query.plan,
+        );
       }
 
       if (query.status) {
-        filteredProjections = filteredProjections.filter((p) => p.status === query.status);
+        filteredProjections = filteredProjections.filter(
+          (p) => p.status === query.status,
+        );
       }
 
       // Calculate summary from ALL projections (before status filter for accurate totals)
@@ -749,9 +820,11 @@ export class AdminService {
         : allProjections;
 
       const summary = {
-        critical: projectionsForSummary.filter((p) => p.status === 'critical').length,
+        critical: projectionsForSummary.filter((p) => p.status === 'critical')
+          .length,
         risk: projectionsForSummary.filter((p) => p.status === 'risk').length,
-        normal: projectionsForSummary.filter((p) => p.status === 'normal').length,
+        normal: projectionsForSummary.filter((p) => p.status === 'normal')
+          .length,
         total: projectionsForSummary.length,
       };
 
@@ -779,7 +852,9 @@ export class AdminService {
         },
       };
     } catch (error) {
-      this.logger.error(`Error fetching consumption projection: ${error.message}`);
+      this.logger.error(
+        `Error fetching consumption projection: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -810,46 +885,66 @@ export class AdminService {
       subscriptionPeriodStart: user.subscriptionPeriodStart,
       subscriptionPeriodEnd: user.subscriptionPeriodEnd,
     });
-    const currentUsage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
+    const currentUsage = await this.firestoreService.getOrCreateUsageWithPeriod(
+      userId,
+      periodInfo,
+    );
     const planLimits = user.planLimits || DEFAULT_PLAN_LIMITS[user.plan];
     const pdfLimit = planLimits.maxPdfsPerMonth;
-    const percentUsed = pdfLimit > 0 ? Math.round((currentUsage.pdfCount / pdfLimit) * 100) : 0;
+    const percentUsed =
+      pdfLimit > 0 ? Math.round((currentUsage.pdfCount / pdfLimit) * 100) : 0;
 
     // 3. Get usage history (last 30 days)
-    const usageHistory = await this.firestoreService.getUserUsageHistory(userId, 30);
+    const usageHistory = await this.firestoreService.getUserUsageHistory(
+      userId,
+      30,
+    );
 
     // 4. Get subscription info if user has Stripe subscription
-    let subscription: {
-      status: string;
-      currentPeriodStart: string;
-      currentPeriodEnd: string;
-      stripeCustomerId?: string;
-      cancelAtPeriodEnd?: boolean;
-    } | undefined;
+    let subscription:
+      | {
+          status: string;
+          currentPeriodStart: string;
+          currentPeriodEnd: string;
+          stripeCustomerId?: string;
+          cancelAtPeriodEnd?: boolean;
+        }
+      | undefined;
 
     if (user.stripeSubscriptionId) {
       try {
-        const stripeSubscription = await this.billingService.getSubscription(userId);
+        const stripeSubscription =
+          await this.billingService.getSubscription(userId);
         if (stripeSubscription) {
           subscription = {
             status: stripeSubscription.status,
-            currentPeriodStart: new Date(stripeSubscription.currentPeriodStart * 1000).toISOString(),
+            currentPeriodStart: new Date(
+              stripeSubscription.currentPeriodStart * 1000,
+            ).toISOString(),
             currentPeriodEnd: stripeSubscription.currentPeriodEnd
-              ? new Date(stripeSubscription.currentPeriodEnd * 1000).toISOString()
+              ? new Date(
+                  stripeSubscription.currentPeriodEnd * 1000,
+                ).toISOString()
               : new Date().toISOString(),
             stripeCustomerId: user.stripeCustomerId,
             cancelAtPeriodEnd: stripeSubscription.cancelAtPeriodEnd,
           };
         }
       } catch (error) {
-        this.logger.warn(`Could not fetch Stripe subscription for user ${userId}: ${error.message}`);
+        this.logger.warn(
+          `Could not fetch Stripe subscription for user ${userId}: ${error.message}`,
+        );
       }
     }
 
     // 5. Get last activity from conversion history
     let lastActiveAt: string | undefined;
     try {
-      const history = await this.firestoreService.getUserConversionHistory(userId, 1, 0);
+      const history = await this.firestoreService.getUserConversionHistory(
+        userId,
+        1,
+        0,
+      );
       if (history.length > 0) {
         lastActiveAt =
           history[0].createdAt instanceof Date
@@ -888,7 +983,9 @@ export class AdminService {
     dto: UpdateUserPlanDto,
     adminUser: AdminUserData,
   ): Promise<UpdateUserPlanResponseDto> {
-    this.logger.log(`Admin ${adminUser.email} changing plan for user ${userId} to ${dto.newPlan}`);
+    this.logger.log(
+      `Admin ${adminUser.email} changing plan for user ${userId} to ${dto.newPlan}`,
+    );
 
     const warnings: string[] = [];
 
@@ -928,13 +1025,21 @@ export class AdminService {
         if (this.stripe) {
           await this.stripe.subscriptions.cancel(user.stripeSubscriptionId);
           stripeCanceled = true;
-          this.logger.log(`Stripe subscription ${user.stripeSubscriptionId} canceled for user ${userId}`);
+          this.logger.log(
+            `Stripe subscription ${user.stripeSubscriptionId} canceled for user ${userId}`,
+          );
         } else {
-          warnings.push('Stripe no está configurado. No se pudo cancelar la suscripción automáticamente.');
+          warnings.push(
+            'Stripe no está configurado. No se pudo cancelar la suscripción automáticamente.',
+          );
         }
       } catch (error) {
-        warnings.push(`No se pudo cancelar la suscripción Stripe: ${error.message}`);
-        this.logger.error(`Failed to cancel Stripe subscription: ${error.message}`);
+        warnings.push(
+          `No se pudo cancelar la suscripción Stripe: ${error.message}`,
+        );
+        this.logger.error(
+          `Failed to cancel Stripe subscription: ${error.message}`,
+        );
       }
     }
 
@@ -979,7 +1084,9 @@ export class AdminService {
   }
 
   private isPlanDowngrade(currentPlan: PlanType, newPlan: string): boolean {
-    return (PLAN_ORDER[newPlan as PlanType] ?? 0) < (PLAN_ORDER[currentPlan] ?? 0);
+    return (
+      (PLAN_ORDER[newPlan as PlanType] ?? 0) < (PLAN_ORDER[currentPlan] ?? 0)
+    );
   }
 
   // ==================== Simulación de Plan (Admin) ====================
@@ -990,7 +1097,9 @@ export class AdminService {
     durationHours: number = 24,
     adminUser: AdminUserData,
   ) {
-    this.logger.log(`Admin ${adminUser.email} simulating plan ${plan} for ${durationHours}h`);
+    this.logger.log(
+      `Admin ${adminUser.email} simulating plan ${plan} for ${durationHours}h`,
+    );
 
     // Verificar que el usuario admin existe
     const user = await this.firestoreService.getUserById(adminUid);
@@ -999,12 +1108,16 @@ export class AdminService {
     }
 
     if (user.role !== 'admin') {
-      throw new BadRequestException('Solo los administradores pueden simular planes');
+      throw new BadRequestException(
+        'Solo los administradores pueden simular planes',
+      );
     }
 
     // Calcular fecha de expiración
     const simulationExpiresAt = new Date();
-    simulationExpiresAt.setHours(simulationExpiresAt.getHours() + durationHours);
+    simulationExpiresAt.setHours(
+      simulationExpiresAt.getHours() + durationHours,
+    );
 
     // Actualizar usuario con simulación
     await this.firestoreService.updateUser(adminUid, {
@@ -1053,9 +1166,10 @@ export class AdminService {
       data: {
         isSimulating,
         simulatedPlan: isSimulating ? user.simulatedPlan : undefined,
-        simulationExpiresAt: isSimulating && user.simulationExpiresAt
-          ? new Date(user.simulationExpiresAt).toISOString()
-          : undefined,
+        simulationExpiresAt:
+          isSimulating && user.simulationExpiresAt
+            ? new Date(user.simulationExpiresAt).toISOString()
+            : undefined,
         originalPlan: user.plan,
         role: user.role || 'user',
       },
@@ -1072,7 +1186,9 @@ export class AdminService {
     }
 
     if (user.role !== 'admin') {
-      throw new BadRequestException('Solo los administradores pueden detener simulaciones');
+      throw new BadRequestException(
+        'Solo los administradores pueden detener simulaciones',
+      );
     }
 
     // Limpiar campos de simulación
@@ -1121,12 +1237,13 @@ export class AdminService {
 
     try {
       // Ejecutar todas las consultas en paralelo
-      const [todayStats, hourlyDistribution, weeklyHistory, queueStats] = await Promise.all([
-        this.firestoreService.getLabelaryTodayStats(),
-        this.firestoreService.getLabelaryHourlyDistribution(),
-        this.firestoreService.getLabelaryWeeklyHistory(7),
-        Promise.resolve(this.labelaryQueueService.getQueueStats()),
-      ]);
+      const [todayStats, hourlyDistribution, weeklyHistory, queueStats] =
+        await Promise.all([
+          this.firestoreService.getLabelaryTodayStats(),
+          this.firestoreService.getLabelaryHourlyDistribution(),
+          this.firestoreService.getLabelaryWeeklyHistory(7),
+          Promise.resolve(this.labelaryQueueService.getQueueStats()),
+        ]);
 
       // Calcular métricas de eficiencia
       const totalLabelsProcessed = todayStats.labelCount;
@@ -1134,11 +1251,17 @@ export class AdminService {
       const apiCallsSaved = totalLabelsProcessed - uniqueLabelsConverted;
       const deduplicationRatio =
         totalLabelsProcessed > 0
-          ? Math.round(((totalLabelsProcessed - uniqueLabelsConverted) / totalLabelsProcessed) * 1000) / 10
+          ? Math.round(
+              ((totalLabelsProcessed - uniqueLabelsConverted) /
+                totalLabelsProcessed) *
+                1000,
+            ) / 10
           : 0;
 
       // Calcular saturación
-      const saturationPercent = Math.round((todayStats.totalCalls / this.DAILY_LIMIT) * 100);
+      const saturationPercent = Math.round(
+        (todayStats.totalCalls / this.DAILY_LIMIT) * 100,
+      );
       const saturationLevel = this.calculateSaturationLevel(saturationPercent);
       const estimatedExhaustion = this.calculateEstimatedExhaustion(
         todayStats.totalCalls,
@@ -1184,7 +1307,9 @@ export class AdminService {
   /**
    * Determina el nivel de saturación basado en el porcentaje de uso
    */
-  private calculateSaturationLevel(percent: number): 'normal' | 'warning' | 'critical' {
+  private calculateSaturationLevel(
+    percent: number,
+  ): 'normal' | 'warning' | 'critical' {
     if (percent >= 90) return 'critical';
     if (percent >= 70) return 'warning';
     return 'normal';
@@ -1216,7 +1341,9 @@ export class AdminService {
 
     // Calcular hora estimada de agotamiento
     const now = new Date();
-    const exhaustionTime = new Date(now.getTime() + hoursRemaining * 60 * 60 * 1000);
+    const exhaustionTime = new Date(
+      now.getTime() + hoursRemaining * 60 * 60 * 1000,
+    );
     const hours = String(exhaustionTime.getHours()).padStart(2, '0');
     const minutes = String(exhaustionTime.getMinutes()).padStart(2, '0');
 
@@ -1226,7 +1353,8 @@ export class AdminService {
   // ==================== Finance (Revenue/MRR/Churn/LTV) ====================
 
   async getRevenue(period?: string) {
-    const validPeriod = (period as 'day' | 'week' | 'month' | 'year') || 'month';
+    const validPeriod =
+      (period as 'day' | 'week' | 'month' | 'year') || 'month';
     return this.financeService.getRevenue(validPeriod);
   }
 
@@ -1245,13 +1373,20 @@ export class AdminService {
     startDate?: Date;
     endDate?: Date;
     currency?: 'usd' | 'mxn';
-    type?: 'subscription' | 'upgrade' | 'renewal' | 'one_time' | 'refund' | 'chargeback';
+    type?:
+      | 'subscription'
+      | 'upgrade'
+      | 'renewal'
+      | 'one_time'
+      | 'refund'
+      | 'chargeback';
   }) {
     return this.firestoreService.getTransactions(filters);
   }
 
   async getChurnRate(period?: string) {
-    const validPeriod = (period as 'day' | 'week' | 'month' | 'quarter' | 'year') || 'month';
+    const validPeriod =
+      (period as 'day' | 'week' | 'month' | 'quarter' | 'year') || 'month';
     return this.financeService.getChurnRate(validPeriod);
   }
 
@@ -1360,13 +1495,16 @@ export class AdminService {
   }) {
     this.logger.log(`Fetching ZPL debug files for email: ${query.email}`);
 
-    const result = await this.firestoreService.getZplDebugFilesByEmail(query.email, {
-      page: query.page,
-      limit: query.limit,
-      startDate: query.startDate ? new Date(query.startDate) : undefined,
-      endDate: query.endDate ? new Date(query.endDate) : undefined,
-      result: query.result,
-    });
+    const result = await this.firestoreService.getZplDebugFilesByEmail(
+      query.email,
+      {
+        page: query.page,
+        limit: query.limit,
+        startDate: query.startDate ? new Date(query.startDate) : undefined,
+        endDate: query.endDate ? new Date(query.endDate) : undefined,
+        result: query.result,
+      },
+    );
 
     return {
       success: true,
@@ -1397,7 +1535,9 @@ export class AdminService {
 
     // Generar URL firmada
     const storage = new Storage(this.googleAuthOptions || {});
-    const bucket = this.configService.get<string>('GCP_STORAGE_BUCKET') || 'zplpdf-app-files';
+    const bucket =
+      this.configService.get<string>('GCP_STORAGE_BUCKET') ||
+      'zplpdf-app-files';
 
     const [url] = await storage
       .bucket(bucket)

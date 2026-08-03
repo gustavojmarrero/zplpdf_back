@@ -29,7 +29,10 @@ export class BatchFileDto {
 }
 
 export class BatchConvertDto {
-  @ApiProperty({ type: [BatchFileDto], description: 'Array of ZPL files to convert' })
+  @ApiProperty({
+    type: [BatchFileDto],
+    description: 'Array of ZPL files to convert',
+  })
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })

@@ -1,7 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
-import { DEFAULT_PLAN_LIMITS, PLAN_ORDER } from '../../common/interfaces/user.interface.js';
+import {
+  DEFAULT_PLAN_LIMITS,
+  PLAN_ORDER,
+} from '../../common/interfaces/user.interface.js';
 import type { User, PlanType } from '../../common/interfaces/user.interface.js';
 import type {
   Feedback,
@@ -14,7 +17,7 @@ import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
-import { getStartOfDayInTimezone, getDateStringInTimezone } from '../../utils/timezone.util.js';
+import { getDateStringInTimezone } from '../../utils/timezone.util.js';
 import type {
   ExchangeRate,
   StripeTransaction,
@@ -230,7 +233,9 @@ export class FirestoreService {
     let credentials: any = null;
 
     // Cargar credenciales desde variable de entorno FIREBASE_CREDENTIALS
-    const firebaseCredentials = this.configService.get<string>('FIREBASE_CREDENTIALS');
+    const firebaseCredentials = this.configService.get<string>(
+      'FIREBASE_CREDENTIALS',
+    );
     if (firebaseCredentials) {
       try {
         credentials = JSON.parse(firebaseCredentials);
@@ -239,14 +244,21 @@ export class FirestoreService {
           // Verificar si tiene \n literales (como string "\\n") o ya son saltos de línea
           const hasLiteralNewlines = credentials.private_key.includes('\\n');
           const hasRealNewlines = credentials.private_key.includes('\n');
-          this.logger.debug(`Private key: hasLiteralNewlines=${hasLiteralNewlines}, hasRealNewlines=${hasRealNewlines}`);
+          this.logger.debug(
+            `Private key: hasLiteralNewlines=${hasLiteralNewlines}, hasRealNewlines=${hasRealNewlines}`,
+          );
 
           if (hasLiteralNewlines) {
-            credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
+            credentials.private_key = credentials.private_key.replace(
+              /\\n/g,
+              '\n',
+            );
             this.logger.debug('Converted literal \\n to real newlines');
           }
         }
-        this.logger.log('Loaded Firebase credentials from environment variable');
+        this.logger.log(
+          'Loaded Firebase credentials from environment variable',
+        );
       } catch (error) {
         this.logger.error('Error parsing FIREBASE_CREDENTIALS:', error);
       }
@@ -360,9 +372,13 @@ export class FirestoreService {
         ...data,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
         updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
-        simulationExpiresAt: data.simulationExpiresAt?.toDate?.() || data.simulationExpiresAt,
-        subscriptionPeriodStart: data.subscriptionPeriodStart?.toDate?.() || data.subscriptionPeriodStart,
-        subscriptionPeriodEnd: data.subscriptionPeriodEnd?.toDate?.() || data.subscriptionPeriodEnd,
+        simulationExpiresAt:
+          data.simulationExpiresAt?.toDate?.() || data.simulationExpiresAt,
+        subscriptionPeriodStart:
+          data.subscriptionPeriodStart?.toDate?.() ||
+          data.subscriptionPeriodStart,
+        subscriptionPeriodEnd:
+          data.subscriptionPeriodEnd?.toDate?.() || data.subscriptionPeriodEnd,
       } as User;
     } catch (error) {
       this.logger.error(`Error al obtener usuario: ${error.message}`);
@@ -452,7 +468,8 @@ export class FirestoreService {
       });
 
       items.sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       );
       return items[0];
     } catch (error) {
@@ -467,7 +484,15 @@ export class FirestoreService {
    */
   async getFeedbackList(filters: FeedbackFilters): Promise<FeedbackListResult> {
     try {
-      const { page = 1, limit = 20, sentiment, plan, startDate, endDate, search } = filters;
+      const {
+        page = 1,
+        limit = 20,
+        sentiment,
+        plan,
+        startDate,
+        endDate,
+        search,
+      } = filters;
 
       let query: FirebaseFirestore.Query = this.firestore
         .collection(this.feedbackCollection)
@@ -519,11 +544,15 @@ export class FirestoreService {
         bad: all.filter((f) => f.sentiment === 'bad').length,
         neutral: all.filter((f) => f.sentiment === 'neutral').length,
         good,
-        satisfactionRate: all.length ? Math.round((good / all.length) * 100) : 0,
+        satisfactionRate: all.length
+          ? Math.round((good / all.length) * 100)
+          : 0,
       };
 
       // El filtro de sentimiento solo afecta a la lista paginada.
-      const filtered = sentiment ? all.filter((f) => f.sentiment === sentiment) : all;
+      const filtered = sentiment
+        ? all.filter((f) => f.sentiment === sentiment)
+        : all;
 
       const total = filtered.length;
       const offset = (page - 1) * limit;
@@ -606,8 +635,12 @@ export class FirestoreService {
           id: doc.id,
           createdAt: data.createdAt?.toDate?.() || data.createdAt,
           updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
-          subscriptionPeriodStart: data.subscriptionPeriodStart?.toDate?.() || data.subscriptionPeriodStart,
-          subscriptionPeriodEnd: data.subscriptionPeriodEnd?.toDate?.() || data.subscriptionPeriodEnd,
+          subscriptionPeriodStart:
+            data.subscriptionPeriodStart?.toDate?.() ||
+            data.subscriptionPeriodStart,
+          subscriptionPeriodEnd:
+            data.subscriptionPeriodEnd?.toDate?.() ||
+            data.subscriptionPeriodEnd,
         } as User;
       });
     } catch (error) {
@@ -629,7 +662,15 @@ export class FirestoreService {
   private createNewUsagePeriod(userId: string): Usage {
     const now = new Date();
     const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    const periodEnd = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+      999,
+    );
 
     return {
       odId: this.generateUsageId(userId, now),
@@ -682,7 +723,9 @@ export class FirestoreService {
   ): Promise<void> {
     try {
       const usageId = this.generateUsageId(userId);
-      const docRef = this.firestore.collection(this.usageCollection).doc(usageId);
+      const docRef = this.firestore
+        .collection(this.usageCollection)
+        .doc(usageId);
       const doc = await docRef.get();
 
       if (!doc.exists) {
@@ -729,7 +772,9 @@ export class FirestoreService {
         resetCount++;
       }
 
-      this.logger.log(`Reset de uso completado. Usuarios reseteados: ${resetCount}`);
+      this.logger.log(
+        `Reset de uso completado. Usuarios reseteados: ${resetCount}`,
+      );
       return resetCount;
     } catch (error) {
       this.logger.error(`Error al resetear uso: ${error.message}`);
@@ -743,15 +788,13 @@ export class FirestoreService {
    * Obtiene múltiples documentos de usage en una sola operación batch
    * Mucho más eficiente que llamar getOrCreateUsageWithPeriod() para cada usuario
    */
-  async batchGetUsage(
-    periodIds: string[],
-  ): Promise<Map<string, Usage | null>> {
+  async batchGetUsage(periodIds: string[]): Promise<Map<string, Usage | null>> {
     if (periodIds.length === 0) {
       return new Map();
     }
 
     try {
-      const refs = periodIds.map(id =>
+      const refs = periodIds.map((id) =>
         this.firestore.collection(this.usageCollection).doc(id),
       );
 
@@ -788,7 +831,9 @@ export class FirestoreService {
     periodInfo: { periodStart: Date; periodEnd: Date; periodId: string },
   ): Promise<Usage> {
     try {
-      const docRef = this.firestore.collection(this.usageCollection).doc(periodInfo.periodId);
+      const docRef = this.firestore
+        .collection(this.usageCollection)
+        .doc(periodInfo.periodId);
       const doc = await docRef.get();
 
       if (doc.exists) {
@@ -815,7 +860,9 @@ export class FirestoreService {
       // Eso evita que un set() con contadores en 0 pise uso ya registrado.
       try {
         await docRef.create(newUsage);
-        this.logger.log(`Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`);
+        this.logger.log(
+          `Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`,
+        );
         return newUsage;
       } catch (createError) {
         if (createError?.code === 6 /* ALREADY_EXISTS */) {
@@ -830,7 +877,9 @@ export class FirestoreService {
         throw createError;
       }
     } catch (error) {
-      this.logger.error(`Error al obtener/crear uso con período: ${error.message}`);
+      this.logger.error(
+        `Error al obtener/crear uso con período: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -852,7 +901,9 @@ export class FirestoreService {
     labelCount: number,
   ): Promise<void> {
     try {
-      const docRef = this.firestore.collection(this.usageCollection).doc(periodInfo.periodId);
+      const docRef = this.firestore
+        .collection(this.usageCollection)
+        .doc(periodInfo.periodId);
       await docRef.set(
         {
           odId: periodInfo.periodId,
@@ -864,9 +915,13 @@ export class FirestoreService {
         },
         { merge: true },
       );
-      this.logger.log(`Uso incrementado para usuario: ${userId} (${periodInfo.periodId})`);
+      this.logger.log(
+        `Uso incrementado para usuario: ${userId} (${periodInfo.periodId})`,
+      );
     } catch (error) {
-      this.logger.error(`Error al incrementar uso con período: ${error.message}`);
+      this.logger.error(
+        `Error al incrementar uso con período: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -964,7 +1019,9 @@ export class FirestoreService {
       });
       this.logger.log(`Contacto enterprise guardado: ${contact.email}`);
     } catch (error) {
-      this.logger.error(`Error al guardar contacto enterprise: ${error.message}`);
+      this.logger.error(
+        `Error al guardar contacto enterprise: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -986,7 +1043,9 @@ export class FirestoreService {
   ): Promise<void> {
     try {
       const dateKey = getDateStringInTimezone(new Date());
-      const docRef = this.firestore.collection(this.dailyStatsCollection).doc(dateKey);
+      const docRef = this.firestore
+        .collection(this.dailyStatsCollection)
+        .doc(dateKey);
       const globalRef = this.firestore.doc(this.globalTotalsDoc);
 
       await this.firestore.runTransaction(async (transaction) => {
@@ -1004,10 +1063,16 @@ export class FirestoreService {
             totalLabels: data.totalLabels + labelCount,
             totalPdfs: data.totalPdfs + pdfCount,
             activeUserIds,
-            successCount: status === 'completed' ? data.successCount + 1 : data.successCount,
-            failureCount: status === 'failed' ? data.failureCount + 1 : data.failureCount,
-            [`conversionsByPlan.${userPlan}.pdfs`]: (data.conversionsByPlan[userPlan]?.pdfs || 0) + pdfCount,
-            [`conversionsByPlan.${userPlan}.labels`]: (data.conversionsByPlan[userPlan]?.labels || 0) + labelCount,
+            successCount:
+              status === 'completed'
+                ? data.successCount + 1
+                : data.successCount,
+            failureCount:
+              status === 'failed' ? data.failureCount + 1 : data.failureCount,
+            [`conversionsByPlan.${userPlan}.pdfs`]:
+              (data.conversionsByPlan[userPlan]?.pdfs || 0) + pdfCount,
+            [`conversionsByPlan.${userPlan}.labels`]:
+              (data.conversionsByPlan[userPlan]?.labels || 0) + labelCount,
           });
         } else {
           const newStats: DailyStats = {
@@ -1027,7 +1092,10 @@ export class FirestoreService {
               enterprise: { pdfs: 0, labels: 0 },
             },
           };
-          newStats.conversionsByPlan[userPlan] = { pdfs: pdfCount, labels: labelCount };
+          newStats.conversionsByPlan[userPlan] = {
+            pdfs: pdfCount,
+            labels: labelCount,
+          };
           transaction.set(docRef, newStats);
         }
 
@@ -1063,7 +1131,9 @@ export class FirestoreService {
   async incrementDailyErrorCount(): Promise<void> {
     try {
       const dateKey = getDateStringInTimezone(new Date());
-      const docRef = this.firestore.collection(this.dailyStatsCollection).doc(dateKey);
+      const docRef = this.firestore
+        .collection(this.dailyStatsCollection)
+        .doc(dateKey);
 
       await this.firestore.runTransaction(async (transaction) => {
         const doc = await transaction.get(docRef);
@@ -1094,7 +1164,9 @@ export class FirestoreService {
         }
       });
     } catch (error) {
-      this.logger.error(`Error incrementing daily error count: ${error.message}`);
+      this.logger.error(
+        `Error incrementing daily error count: ${error.message}`,
+      );
     }
   }
 
@@ -1103,7 +1175,10 @@ export class FirestoreService {
    */
   async getDailyStats(date: string): Promise<DailyStats | null> {
     try {
-      const doc = await this.firestore.collection(this.dailyStatsCollection).doc(date).get();
+      const doc = await this.firestore
+        .collection(this.dailyStatsCollection)
+        .doc(date)
+        .get();
       return doc.exists ? (doc.data() as DailyStats) : null;
     } catch (error) {
       this.logger.error(`Error getting daily stats: ${error.message}`);
@@ -1114,7 +1189,10 @@ export class FirestoreService {
   /**
    * Get daily stats for a date range
    */
-  async getDailyStatsRange(startDate: string, endDate: string): Promise<DailyStats[]> {
+  async getDailyStatsRange(
+    startDate: string,
+    endDate: string,
+  ): Promise<DailyStats[]> {
     try {
       const snapshot = await this.firestore
         .collection(this.dailyStatsCollection)
@@ -1210,7 +1288,10 @@ export class FirestoreService {
     }
   }
 
-  async updateBatchJob(batchId: string, data: Partial<BatchJob>): Promise<void> {
+  async updateBatchJob(
+    batchId: string,
+    data: Partial<BatchJob>,
+  ): Promise<void> {
     try {
       await this.firestore
         .collection(this.batchCollection)
@@ -1458,7 +1539,10 @@ export class FirestoreService {
       }
 
       // Otherwise, search by document ID
-      const doc = await this.firestore.collection(this.errorLogsCollection).doc(id).get();
+      const doc = await this.firestore
+        .collection(this.errorLogsCollection)
+        .doc(id)
+        .get();
 
       if (!doc.exists) return null;
 
@@ -1510,7 +1594,10 @@ export class FirestoreService {
         updateData.notes = data.notes;
       }
 
-      await this.firestore.collection(this.errorLogsCollection).doc(error.id).update(updateData);
+      await this.firestore
+        .collection(this.errorLogsCollection)
+        .doc(error.id)
+        .update(updateData);
 
       // Return updated error
       return await this.getErrorById(error.id);
@@ -1602,7 +1689,9 @@ export class FirestoreService {
         trend,
       };
     } catch (error) {
-      this.logger.error(`Error al obtener stats detalladas de errores: ${error.message}`);
+      this.logger.error(
+        `Error al obtener stats detalladas de errores: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -1639,7 +1728,9 @@ export class FirestoreService {
         deletedCount += chunk.length;
       }
 
-      this.logger.log(`Eliminados ${deletedCount} errores anteriores a ${beforeDate.toISOString()}`);
+      this.logger.log(
+        `Eliminados ${deletedCount} errores anteriores a ${beforeDate.toISOString()}`,
+      );
       return deletedCount;
     } catch (error) {
       this.logger.error(`Error al eliminar errores antiguos: ${error.message}`);
@@ -1655,7 +1746,9 @@ export class FirestoreService {
         ...logData,
         createdAt: new Date(),
       });
-      this.logger.debug(`Admin audit log: ${logData.adminEmail} - ${logData.action}`);
+      this.logger.debug(
+        `Admin audit log: ${logData.adminEmail} - ${logData.action}`,
+      );
     } catch (error) {
       this.logger.error(`Error al guardar admin audit log: ${error.message}`);
       // No lanzar error para no interrumpir el flujo
@@ -1720,7 +1813,13 @@ export class FirestoreService {
       const paginatedDocs = filteredDocs.slice(offset, offset + limit);
 
       // Collect unique user IDs for batch lookup
-      const userIds = [...new Set(paginatedDocs.map((doc) => doc.data().requestParams?.userId).filter(Boolean))];
+      const userIds = [
+        ...new Set(
+          paginatedDocs
+            .map((doc) => doc.data().requestParams?.userId)
+            .filter(Boolean),
+        ),
+      ];
 
       // Batch read users
       const userDataMap: Record<string, { email: string }> = {};
@@ -1741,7 +1840,8 @@ export class FirestoreService {
       const changes = paginatedDocs.map((doc) => {
         const data = doc.data();
         const params = data.requestParams || {};
-        const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
+        const createdAt =
+          data.createdAt?.toDate?.() || new Date(data.createdAt);
 
         // Determine reason
         let reason: 'upgrade' | 'downgrade' | 'admin_change' = 'admin_change';
@@ -1803,7 +1903,13 @@ export class FirestoreService {
     }
   }
 
-  async getUsersByPlan(): Promise<{ free: number; lite: number; pro: number; promax: number; enterprise: number }> {
+  async getUsersByPlan(): Promise<{
+    free: number;
+    lite: number;
+    pro: number;
+    promax: number;
+    enterprise: number;
+  }> {
     try {
       // Count users by plan and subtract admins from each plan
       const [
@@ -1818,17 +1924,62 @@ export class FirestoreService {
         promaxAdminCount,
         enterpriseAdminCount,
       ] = await Promise.all([
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'free').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'lite').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'pro').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'promax').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'enterprise').count().get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'free')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'lite')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'pro')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'promax')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'enterprise')
+          .count()
+          .get(),
         // Count admins by plan to subtract
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'free').where('role', '==', 'admin').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'lite').where('role', '==', 'admin').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'pro').where('role', '==', 'admin').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'promax').where('role', '==', 'admin').count().get(),
-        this.firestore.collection(this.usersCollection).where('plan', '==', 'enterprise').where('role', '==', 'admin').count().get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'free')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'lite')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'pro')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'promax')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
+        this.firestore
+          .collection(this.usersCollection)
+          .where('plan', '==', 'enterprise')
+          .where('role', '==', 'admin')
+          .count()
+          .get(),
       ]);
 
       return {
@@ -1836,7 +1987,8 @@ export class FirestoreService {
         lite: liteCount.data().count - liteAdminCount.data().count,
         pro: proCount.data().count - proAdminCount.data().count,
         promax: promaxCount.data().count - promaxAdminCount.data().count,
-        enterprise: enterpriseCount.data().count - enterpriseAdminCount.data().count,
+        enterprise:
+          enterpriseCount.data().count - enterpriseAdminCount.data().count,
       };
     } catch (error) {
       this.logger.error(`Error al obtener usuarios por plan: ${error.message}`);
@@ -1863,7 +2015,9 @@ export class FirestoreService {
 
       // Use daily_stats instead of scanning conversion_history
       const endDate = getDateStringInTimezone(now);
-      const startDateObj = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+      const startDateObj = new Date(
+        now.getTime() - (days - 1) * 24 * 60 * 60 * 1000,
+      );
       const startDate = getDateStringInTimezone(startDateObj);
 
       // Get daily stats and admin user IDs in parallel
@@ -1920,20 +2074,33 @@ export class FirestoreService {
 
       return users.slice(0, limit);
     } catch (error) {
-      this.logger.error(`Error al obtener registros recientes: ${error.message}`);
+      this.logger.error(
+        `Error al obtener registros recientes: ${error.message}`,
+      );
       throw error;
     }
   }
 
   async getUsersPaginated(filters: UserFilters): Promise<PaginatedUsers> {
     try {
-      const { page = 1, limit = 50, plan, search, sortBy = 'createdAt', sortOrder = 'desc', dateFrom, dateTo } = filters;
+      const {
+        page = 1,
+        limit = 50,
+        plan,
+        search,
+        sortBy = 'createdAt',
+        sortOrder = 'desc',
+        dateFrom,
+        dateTo,
+      } = filters;
 
       // Fields that exist in Firestore users collection
       const firestoreFields = ['createdAt', 'email', 'displayName', 'plan'];
       const canSortInFirestore = firestoreFields.includes(sortBy);
 
-      let query: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
+      let query: FirebaseFirestore.Query = this.firestore.collection(
+        this.usersCollection,
+      );
 
       if (plan) {
         query = query.where('plan', '==', plan);
@@ -1956,8 +2123,12 @@ export class FirestoreService {
       }
 
       // Get total count (without sort-dependent fields), excluding admins
-      let countQuery: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
-      let countQueryAdmins: FirebaseFirestore.Query = this.firestore.collection(this.usersCollection);
+      let countQuery: FirebaseFirestore.Query = this.firestore.collection(
+        this.usersCollection,
+      );
+      let countQueryAdmins: FirebaseFirestore.Query = this.firestore.collection(
+        this.usersCollection,
+      );
       if (plan) {
         countQuery = countQuery.where('plan', '==', plan);
         countQueryAdmins = countQueryAdmins.where('plan', '==', plan);
@@ -1975,7 +2146,8 @@ export class FirestoreService {
         countQuery.count().get(),
         countQueryAdmins.count().get(),
       ]);
-      const total = countSnapshot.data().count - adminCountSnapshot.data().count;
+      const total =
+        countSnapshot.data().count - adminCountSnapshot.data().count;
 
       // For pdfCount/lastActiveAt sorting, we need to fetch all users and sort in memory
       // For Firestore-sortable fields, use pagination
@@ -1997,12 +2169,20 @@ export class FirestoreService {
           // Get current usage for the user's actual billing period
           let usage = { pdfCount: 0, labelCount: 0 };
           try {
-            const createdAt = userData.createdAt?.toDate?.() || (userData.createdAt ? new Date(userData.createdAt) : null);
+            const createdAt =
+              userData.createdAt?.toDate?.() ||
+              (userData.createdAt ? new Date(userData.createdAt) : null);
             if (createdAt) {
-              const sps = userData.subscriptionPeriodStart?.toDate?.()
-                || (userData.subscriptionPeriodStart ? new Date(userData.subscriptionPeriodStart) : undefined);
-              const spe = userData.subscriptionPeriodEnd?.toDate?.()
-                || (userData.subscriptionPeriodEnd ? new Date(userData.subscriptionPeriodEnd) : undefined);
+              const sps =
+                userData.subscriptionPeriodStart?.toDate?.() ||
+                (userData.subscriptionPeriodStart
+                  ? new Date(userData.subscriptionPeriodStart)
+                  : undefined);
+              const spe =
+                userData.subscriptionPeriodEnd?.toDate?.() ||
+                (userData.subscriptionPeriodEnd
+                  ? new Date(userData.subscriptionPeriodEnd)
+                  : undefined);
               const periodInfo = calculateCurrentPeriod({
                 id: userId,
                 plan: (userData.plan as PlanType) || 'free',
@@ -2012,7 +2192,11 @@ export class FirestoreService {
               });
               const usageMap = await this.batchGetUsage([periodInfo.periodId]);
               const u = usageMap.get(periodInfo.periodId);
-              if (u) usage = { pdfCount: u.pdfCount || 0, labelCount: u.labelCount || 0 };
+              if (u)
+                usage = {
+                  pdfCount: u.pdfCount || 0,
+                  labelCount: u.labelCount || 0,
+                };
             }
           } catch {
             // Ignore usage errors
@@ -2029,7 +2213,8 @@ export class FirestoreService {
               .get();
             if (!historySnapshot.empty) {
               const historyData = historySnapshot.docs[0].data();
-              lastActiveAt = historyData.createdAt?.toDate?.() || historyData.createdAt;
+              lastActiveAt =
+                historyData.createdAt?.toDate?.() || historyData.createdAt;
             }
           } catch {
             // Ignore history errors
@@ -2043,8 +2228,12 @@ export class FirestoreService {
           // Apply search filter in memory (Firestore doesn't support LIKE queries)
           if (search) {
             const searchLower = search.toLowerCase();
-            const emailMatch = userData.email?.toLowerCase().includes(searchLower);
-            const nameMatch = userData.displayName?.toLowerCase().includes(searchLower);
+            const emailMatch = userData.email
+              ?.toLowerCase()
+              .includes(searchLower);
+            const nameMatch = userData.displayName
+              ?.toLowerCase()
+              .includes(searchLower);
             if (!emailMatch && !nameMatch) {
               return null;
             }
@@ -2056,8 +2245,12 @@ export class FirestoreService {
             displayName: userData.displayName,
             plan: userData.plan,
             stripeSubscriptionId: userData.stripeSubscriptionId,
-            subscriptionPeriodStart: userData.subscriptionPeriodStart?.toDate?.() || userData.subscriptionPeriodStart,
-            subscriptionPeriodEnd: userData.subscriptionPeriodEnd?.toDate?.() || userData.subscriptionPeriodEnd,
+            subscriptionPeriodStart:
+              userData.subscriptionPeriodStart?.toDate?.() ||
+              userData.subscriptionPeriodStart,
+            subscriptionPeriodEnd:
+              userData.subscriptionPeriodEnd?.toDate?.() ||
+              userData.subscriptionPeriodEnd,
             usage,
             createdAt: userData.createdAt?.toDate?.() || userData.createdAt,
             lastActiveAt,
@@ -2106,11 +2299,15 @@ export class FirestoreService {
           page,
           limit,
           total: search ? users.filter((u) => u !== null).length : total,
-          totalPages: Math.ceil((search ? users.filter((u) => u !== null).length : total) / limit),
+          totalPages: Math.ceil(
+            (search ? users.filter((u) => u !== null).length : total) / limit,
+          ),
         },
       };
     } catch (error) {
-      this.logger.error(`Error al obtener usuarios paginados: ${error.message}`);
+      this.logger.error(
+        `Error al obtener usuarios paginados: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2122,17 +2319,21 @@ export class FirestoreService {
    * Reemplaza al patrón anterior de barrer toda la colección usage, que
    * incluía periodos vencidos y duplicaba usuarios con docs históricos.
    */
-  private async getCurrentPeriodUsageEntries(): Promise<Array<{
-    userId: string;
-    plan: PlanType;
-    user: any;
-    pdfCount: number;
-    labelCount: number;
-    periodStart: Date;
-    periodEnd: Date;
-  }>> {
+  private async getCurrentPeriodUsageEntries(): Promise<
+    Array<{
+      userId: string;
+      plan: PlanType;
+      user: any;
+      pdfCount: number;
+      labelCount: number;
+      periodStart: Date;
+      periodEnd: Date;
+    }>
+  > {
     const now = new Date();
-    const usersSnapshot = await this.firestore.collection(this.usersCollection).get();
+    const usersSnapshot = await this.firestore
+      .collection(this.usersCollection)
+      .get();
 
     const candidates: Array<{
       userId: string;
@@ -2148,13 +2349,20 @@ export class FirestoreService {
       if (u.role === 'admin') continue;
 
       const plan = (u.plan as PlanType) || 'free';
-      const createdAt = u.createdAt?.toDate?.() || (u.createdAt ? new Date(u.createdAt) : null);
+      const createdAt =
+        u.createdAt?.toDate?.() || (u.createdAt ? new Date(u.createdAt) : null);
       if (!createdAt) continue;
 
-      const subscriptionPeriodStart = u.subscriptionPeriodStart?.toDate?.()
-        || (u.subscriptionPeriodStart ? new Date(u.subscriptionPeriodStart) : undefined);
-      const subscriptionPeriodEnd = u.subscriptionPeriodEnd?.toDate?.()
-        || (u.subscriptionPeriodEnd ? new Date(u.subscriptionPeriodEnd) : undefined);
+      const subscriptionPeriodStart =
+        u.subscriptionPeriodStart?.toDate?.() ||
+        (u.subscriptionPeriodStart
+          ? new Date(u.subscriptionPeriodStart)
+          : undefined);
+      const subscriptionPeriodEnd =
+        u.subscriptionPeriodEnd?.toDate?.() ||
+        (u.subscriptionPeriodEnd
+          ? new Date(u.subscriptionPeriodEnd)
+          : undefined);
 
       const periodInfo = calculateCurrentPeriod(
         {
@@ -2177,7 +2385,9 @@ export class FirestoreService {
       });
     }
 
-    const usageMap = await this.batchGetUsage(candidates.map((c) => c.periodId));
+    const usageMap = await this.batchGetUsage(
+      candidates.map((c) => c.periodId),
+    );
 
     return candidates.map((c) => {
       const usage = usageMap.get(c.periodId);
@@ -2193,22 +2403,26 @@ export class FirestoreService {
     });
   }
 
-  async getUsersNearLimit(threshold: number = 80): Promise<Array<{
-    id: string;
-    email: string;
-    plan: PlanType;
-    pdfCount: number;
-    pdfLimit: number;
-    percentUsed: number;
-    periodEnd: Date;
-  }>> {
+  async getUsersNearLimit(threshold: number = 80): Promise<
+    Array<{
+      id: string;
+      email: string;
+      plan: PlanType;
+      pdfCount: number;
+      pdfLimit: number;
+      percentUsed: number;
+      periodEnd: Date;
+    }>
+  > {
     try {
       const entries = await this.getCurrentPeriodUsageEntries();
 
       const usersNearLimit = entries
         .map((e) => {
           const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
-          const pdfLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
+          const pdfLimit =
+            planLimits?.maxPdfsPerMonth ||
+            DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
           const percentUsed = (e.pdfCount / pdfLimit) * 100;
           return {
             id: e.userId,
@@ -2228,20 +2442,24 @@ export class FirestoreService {
 
       return usersNearLimit;
     } catch (error) {
-      this.logger.error(`Error al obtener usuarios cerca del límite: ${error.message}`);
+      this.logger.error(
+        `Error al obtener usuarios cerca del límite: ${error.message}`,
+      );
       throw error;
     }
   }
 
-  async getUsersNearLabelLimit(threshold: number = 80): Promise<Array<{
-    id: string;
-    email: string;
-    plan: PlanType;
-    labelCount: number;
-    labelLimit: number;
-    percentUsed: number;
-    periodEnd: Date;
-  }>> {
+  async getUsersNearLabelLimit(threshold: number = 80): Promise<
+    Array<{
+      id: string;
+      email: string;
+      plan: PlanType;
+      labelCount: number;
+      labelLimit: number;
+      percentUsed: number;
+      periodEnd: Date;
+    }>
+  > {
     try {
       const entries = await this.getCurrentPeriodUsageEntries();
 
@@ -2249,8 +2467,12 @@ export class FirestoreService {
         .filter((e) => e.plan !== 'enterprise')
         .map((e) => {
           const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
-          const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
-          const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[e.plan].maxLabelsPerPdf;
+          const maxPdfs =
+            planLimits?.maxPdfsPerMonth ||
+            DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
+          const maxLabelsPerPdf =
+            planLimits?.maxLabelsPerPdf ||
+            DEFAULT_PLAN_LIMITS[e.plan].maxLabelsPerPdf;
           const labelLimit = maxPdfs * maxLabelsPerPdf;
           const percentUsed = (e.labelCount / labelLimit) * 100;
           return {
@@ -2271,7 +2493,9 @@ export class FirestoreService {
 
       return usersNearLabelLimit;
     } catch (error) {
-      this.logger.error(`Error al obtener usuarios cerca del límite de etiquetas: ${error.message}`);
+      this.logger.error(
+        `Error al obtener usuarios cerca del límite de etiquetas: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2296,8 +2520,12 @@ export class FirestoreService {
         if (e.plan === 'enterprise') continue;
 
         const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
-        const maxPdfs = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
-        const maxLabelsPerPdf = planLimits?.maxLabelsPerPdf || DEFAULT_PLAN_LIMITS[e.plan].maxLabelsPerPdf;
+        const maxPdfs =
+          planLimits?.maxPdfsPerMonth ||
+          DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
+        const maxLabelsPerPdf =
+          planLimits?.maxLabelsPerPdf ||
+          DEFAULT_PLAN_LIMITS[e.plan].maxLabelsPerPdf;
         const labelLimit = maxPdfs * maxLabelsPerPdf;
 
         const percentUsed = (e.labelCount / labelLimit) * 100;
@@ -2315,25 +2543,29 @@ export class FirestoreService {
 
       return distribution;
     } catch (error) {
-      this.logger.error(`Error al obtener distribución de uso de etiquetas: ${error.message}`);
+      this.logger.error(
+        `Error al obtener distribución de uso de etiquetas: ${error.message}`,
+      );
       throw error;
     }
   }
 
-  async getConsumptionProjection(): Promise<Array<{
-    id: string;
-    email: string;
-    name: string;
-    plan: PlanType;
-    billingPeriodStart: Date;
-    billingPeriodEnd: Date;
-    planLimit: number;
-    pdfsUsed: number;
-    daysElapsed: number;
-    dailyRate: number;
-    projectedDaysToExhaust: number;
-    status: 'critical' | 'risk' | 'normal';
-  }>> {
+  async getConsumptionProjection(): Promise<
+    Array<{
+      id: string;
+      email: string;
+      name: string;
+      plan: PlanType;
+      billingPeriodStart: Date;
+      billingPeriodEnd: Date;
+      planLimit: number;
+      pdfsUsed: number;
+      daysElapsed: number;
+      dailyRate: number;
+      projectedDaysToExhaust: number;
+      status: 'critical' | 'risk' | 'normal';
+    }>
+  > {
     try {
       const now = new Date();
       const entries = await this.getCurrentPeriodUsageEntries();
@@ -2342,14 +2574,19 @@ export class FirestoreService {
         .filter((e) => e.pdfCount > 0)
         .map((e) => {
           const planLimits = e.user.planLimits || DEFAULT_PLAN_LIMITS[e.plan];
-          const planLimit = planLimits?.maxPdfsPerMonth || DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
+          const planLimit =
+            planLimits?.maxPdfsPerMonth ||
+            DEFAULT_PLAN_LIMITS[e.plan].maxPdfsPerMonth;
 
           const daysElapsed = Math.max(
             1,
-            Math.ceil((now.getTime() - e.periodStart.getTime()) / (1000 * 60 * 60 * 24)),
+            Math.ceil(
+              (now.getTime() - e.periodStart.getTime()) / (1000 * 60 * 60 * 24),
+            ),
           );
           const dailyRate = e.pdfCount / daysElapsed;
-          const projectedDaysToExhaust = dailyRate > 0 ? Math.round((planLimit / dailyRate) * 10) / 10 : 999;
+          const projectedDaysToExhaust =
+            dailyRate > 0 ? Math.round((planLimit / dailyRate) * 10) / 10 : 999;
 
           let status: 'critical' | 'risk' | 'normal';
           if (projectedDaysToExhaust < 15) status = 'critical';
@@ -2372,11 +2609,15 @@ export class FirestoreService {
           };
         });
 
-      projections.sort((a, b) => a.projectedDaysToExhaust - b.projectedDaysToExhaust);
+      projections.sort(
+        (a, b) => a.projectedDaysToExhaust - b.projectedDaysToExhaust,
+      );
 
       return projections;
     } catch (error) {
-      this.logger.error(`Error al obtener proyección de consumo: ${error.message}`);
+      this.logger.error(
+        `Error al obtener proyección de consumo: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2402,7 +2643,9 @@ export class FirestoreService {
       let days: number;
 
       if (startDate && endDate) {
-        days = Math.ceil((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
+        days = Math.ceil(
+          (endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000),
+        );
       } else {
         switch (period) {
           case 'day':
@@ -2419,10 +2662,14 @@ export class FirestoreService {
 
       // Use daily_stats instead of scanning conversion_history
       const endDateStr = getDateStringInTimezone(endDate || now);
-      const startDateObj = startDate || new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+      const startDateObj =
+        startDate || new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
       const startDateStr = getDateStringInTimezone(startDateObj);
 
-      const dailyStats = await this.getDailyStatsRange(startDateStr, endDateStr);
+      const dailyStats = await this.getDailyStatsRange(
+        startDateStr,
+        endDateStr,
+      );
 
       // Aggregate from daily stats
       let totalPdfs = 0;
@@ -2460,17 +2707,23 @@ export class FirestoreService {
           totalLabels,
           successCount,
           failureCount,
-          avgLabelsPerPdf: totalPdfs > 0 ? Math.round((totalLabels / totalPdfs) * 10) / 10 : 0,
+          avgLabelsPerPdf:
+            totalPdfs > 0 ? Math.round((totalLabels / totalPdfs) * 10) / 10 : 0,
         },
         byPlan,
       };
     } catch (error) {
-      this.logger.error(`Error al obtener estadísticas de conversiones: ${error.message}`);
+      this.logger.error(
+        `Error al obtener estadísticas de conversiones: ${error.message}`,
+      );
       throw error;
     }
   }
 
-  async getHistoricalTotals(): Promise<{ pdfsTotal: number; labelsTotal: number }> {
+  async getHistoricalTotals(): Promise<{
+    pdfsTotal: number;
+    labelsTotal: number;
+  }> {
     try {
       // Use global_totals instead of scanning all conversion_history
       const totals = await this.getGlobalTotals();
@@ -2479,33 +2732,47 @@ export class FirestoreService {
         labelsTotal: totals.labelsTotal,
       };
     } catch (error) {
-      this.logger.error(`Error al obtener totales históricos: ${error.message}`);
+      this.logger.error(
+        `Error al obtener totales históricos: ${error.message}`,
+      );
       throw error;
     }
   }
 
-  async getConversionTrend(days: number = 7): Promise<Array<{
-    date: string;
-    pdfs: number;
-    labels: number;
-    failures: number;
-  }>> {
+  async getConversionTrend(days: number = 7): Promise<
+    Array<{
+      date: string;
+      pdfs: number;
+      labels: number;
+      failures: number;
+    }>
+  > {
     try {
       const now = new Date();
 
       // Use daily_stats instead of scanning conversion_history
       const endDateStr = getDateStringInTimezone(now);
-      const startDateObj = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+      const startDateObj = new Date(
+        now.getTime() - (days - 1) * 24 * 60 * 60 * 1000,
+      );
       const startDateStr = getDateStringInTimezone(startDateObj);
 
-      const dailyStats = await this.getDailyStatsRange(startDateStr, endDateStr);
+      const dailyStats = await this.getDailyStatsRange(
+        startDateStr,
+        endDateStr,
+      );
 
       // Create a map for easy lookup
       const statsMap = new Map<string, DailyStats>();
       dailyStats.forEach((stat) => statsMap.set(stat.date, stat));
 
       // Build result array with all dates (fill missing with zeros)
-      const result: Array<{ date: string; pdfs: number; labels: number; failures: number }> = [];
+      const result: Array<{
+        date: string;
+        pdfs: number;
+        labels: number;
+        failures: number;
+      }> = [];
       for (let i = days - 1; i >= 0; i--) {
         const date = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
         const dateKey = getDateStringInTimezone(date);
@@ -2521,18 +2788,22 @@ export class FirestoreService {
 
       return result;
     } catch (error) {
-      this.logger.error(`Error al obtener tendencia de conversiones: ${error.message}`);
+      this.logger.error(
+        `Error al obtener tendencia de conversiones: ${error.message}`,
+      );
       throw error;
     }
   }
 
-  async getTopUsers(limit: number = 10): Promise<Array<{
-    id: string;
-    email: string;
-    plan: string;
-    pdfs: number;
-    labels: number;
-  }>> {
+  async getTopUsers(limit: number = 10): Promise<
+    Array<{
+      id: string;
+      email: string;
+      plan: string;
+      pdfs: number;
+      labels: number;
+    }>
+  > {
     try {
       // Get conversions from last 7 days
       const startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -2563,25 +2834,32 @@ export class FirestoreService {
         .slice(0, limit * 2);
 
       // Get user details, excluding admins
-      const topUsers = (await Promise.all(
-        sortedUsers.map(async ([userId, stats]) => {
-          const userDoc = await this.firestore.collection(this.usersCollection).doc(userId).get();
-          const userData = userDoc.exists ? userDoc.data() : { email: 'unknown', plan: 'free' };
+      const topUsers = (
+        await Promise.all(
+          sortedUsers.map(async ([userId, stats]) => {
+            const userDoc = await this.firestore
+              .collection(this.usersCollection)
+              .doc(userId)
+              .get();
+            const userData = userDoc.exists
+              ? userDoc.data()
+              : { email: 'unknown', plan: 'free' };
 
-          // Exclude admin users from metrics
-          if (userData.role === 'admin') {
-            return null;
-          }
+            // Exclude admin users from metrics
+            if (userData.role === 'admin') {
+              return null;
+            }
 
-          return {
-            id: userId,
-            email: userData.email,
-            plan: userData.plan,
-            pdfs: stats.pdfs,
-            labels: stats.labels,
-          };
-        }),
-      )).filter((user) => user !== null);
+            return {
+              id: userId,
+              email: userData.email,
+              plan: userData.plan,
+              pdfs: stats.pdfs,
+              labels: stats.labels,
+            };
+          }),
+        )
+      ).filter((user) => user !== null);
 
       return topUsers.slice(0, limit);
     } catch (error) {
@@ -2594,34 +2872,60 @@ export class FirestoreService {
 
   async getPlanDistribution(): Promise<{
     distribution: Record<string, { users: number; percentage: number }>;
-    conversionRates: { freeToPaid: number; freeTrialToPro: number; proToEnterprise: number };
+    conversionRates: {
+      freeToPaid: number;
+      freeTrialToPro: number;
+      proToEnterprise: number;
+    };
   }> {
     try {
       const byPlan = await this.getUsersByPlan();
-      const total = byPlan.free + byPlan.lite + byPlan.pro + byPlan.promax + byPlan.enterprise;
-      const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
+      const total =
+        byPlan.free +
+        byPlan.lite +
+        byPlan.pro +
+        byPlan.promax +
+        byPlan.enterprise;
+      const pct = (n: number) =>
+        total > 0 ? Math.round((n / total) * 1000) / 10 : 0;
 
       const distribution = {
         free: { users: byPlan.free, percentage: pct(byPlan.free) },
         lite: { users: byPlan.lite, percentage: pct(byPlan.lite) },
         pro: { users: byPlan.pro, percentage: pct(byPlan.pro) },
         promax: { users: byPlan.promax, percentage: pct(byPlan.promax) },
-        enterprise: { users: byPlan.enterprise, percentage: pct(byPlan.enterprise) },
+        enterprise: {
+          users: byPlan.enterprise,
+          percentage: pct(byPlan.enterprise),
+        },
       };
 
       // Calculate conversion rates (simplified - would need historical data for accurate rates).
       // Paid = lite + pro + promax + enterprise.
       const paid = byPlan.lite + byPlan.pro + byPlan.promax + byPlan.enterprise;
-      const freeToPaid = byPlan.free + paid > 0 ? Math.round((paid / (byPlan.free + paid)) * 1000) / 10 : 0;
-      const freeTrialToPro = byPlan.free > 0 ? Math.round((byPlan.pro / (byPlan.free + byPlan.pro)) * 1000) / 10 : 0;
-      const proToEnterprise = byPlan.pro > 0 ? Math.round((byPlan.enterprise / (byPlan.pro + byPlan.enterprise)) * 1000) / 10 : 0;
+      const freeToPaid =
+        byPlan.free + paid > 0
+          ? Math.round((paid / (byPlan.free + paid)) * 1000) / 10
+          : 0;
+      const freeTrialToPro =
+        byPlan.free > 0
+          ? Math.round((byPlan.pro / (byPlan.free + byPlan.pro)) * 1000) / 10
+          : 0;
+      const proToEnterprise =
+        byPlan.pro > 0
+          ? Math.round(
+              (byPlan.enterprise / (byPlan.pro + byPlan.enterprise)) * 1000,
+            ) / 10
+          : 0;
 
       return {
         distribution,
         conversionRates: { freeToPaid, freeTrialToPro, proToEnterprise },
       };
     } catch (error) {
-      this.logger.error(`Error al obtener distribución de planes: ${error.message}`);
+      this.logger.error(
+        `Error al obtener distribución de planes: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2658,7 +2962,9 @@ export class FirestoreService {
         freeToProCandidates: freeToLiteCandidates,
       };
     } catch (error) {
-      this.logger.error(`Error al obtener oportunidades de upgrade: ${error.message}`);
+      this.logger.error(
+        `Error al obtener oportunidades de upgrade: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2693,7 +2999,8 @@ export class FirestoreService {
       // Aggregate data by date using GMT-6 timezone
       snapshot.docs.forEach((doc) => {
         const data = doc.data();
-        const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
+        const createdAt =
+          data.createdAt?.toDate?.() || new Date(data.createdAt);
         // Convert to GMT-6 date string
         const dateKey = getDateStringInTimezone(createdAt);
 
@@ -2708,7 +3015,9 @@ export class FirestoreService {
         .map(([date, stats]) => ({ date, ...stats }))
         .sort((a, b) => b.date.localeCompare(a.date));
     } catch (error) {
-      this.logger.error(`Error al obtener historial de uso del usuario: ${error.message}`);
+      this.logger.error(
+        `Error al obtener historial de uso del usuario: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2742,9 +3051,18 @@ export class FirestoreService {
     };
   }> {
     try {
-      const { page = 1, limit = 20, userId, startDate, endDate, status } = filters;
+      const {
+        page = 1,
+        limit = 20,
+        userId,
+        startDate,
+        endDate,
+        status,
+      } = filters;
 
-      let query: FirebaseFirestore.Query = this.firestore.collection(this.historyCollection);
+      let query: FirebaseFirestore.Query = this.firestore.collection(
+        this.historyCollection,
+      );
 
       // Apply filters
       if (userId) {
@@ -2771,7 +3089,11 @@ export class FirestoreService {
       const snapshot = await query.offset(offset).limit(limit).get();
 
       // Collect unique user IDs for batch user lookup
-      const userIds = [...new Set(snapshot.docs.map((doc) => doc.data().userId).filter(Boolean))];
+      const userIds = [
+        ...new Set(
+          snapshot.docs.map((doc) => doc.data().userId).filter(Boolean),
+        ),
+      ];
 
       // Batch read users
       const userDataMap: Record<string, { email: string }> = {};
@@ -2791,7 +3113,8 @@ export class FirestoreService {
       // Map conversions with user emails
       const conversions = snapshot.docs.map((doc) => {
         const data = doc.data();
-        const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
+        const createdAt =
+          data.createdAt?.toDate?.() || new Date(data.createdAt);
 
         return {
           id: data.jobId || doc.id,
@@ -2816,7 +3139,9 @@ export class FirestoreService {
         },
       };
     } catch (error) {
-      this.logger.error(`Error al obtener conversiones paginadas: ${error.message}`);
+      this.logger.error(
+        `Error al obtener conversiones paginadas: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2909,7 +3234,9 @@ export class FirestoreService {
         };
       });
     } catch (error) {
-      this.logger.error(`Error getting Labelary hourly stats: ${error.message}`);
+      this.logger.error(
+        `Error getting Labelary hourly stats: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2939,7 +3266,9 @@ export class FirestoreService {
             : 0,
       };
     } catch (error) {
-      this.logger.error(`Error getting Labelary stats for ${hourKey}: ${error.message}`);
+      this.logger.error(
+        `Error getting Labelary stats for ${hourKey}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -2975,7 +3304,9 @@ export class FirestoreService {
 
       return count;
     } catch (error) {
-      this.logger.error(`Error cleaning up old Labelary stats: ${error.message}`);
+      this.logger.error(
+        `Error cleaning up old Labelary stats: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -3056,9 +3387,7 @@ export class FirestoreService {
    * Obtiene histórico semanal de estadísticas de Labelary
    * Agrega datos por día para los últimos N días
    */
-  async getLabelaryWeeklyHistory(
-    days: number = 7,
-  ): Promise<
+  async getLabelaryWeeklyHistory(days: number = 7): Promise<
     Array<{
       date: string;
       requests: number;
@@ -3113,7 +3442,9 @@ export class FirestoreService {
 
       return results;
     } catch (error) {
-      this.logger.error(`Error getting weekly Labelary history: ${error.message}`);
+      this.logger.error(
+        `Error getting weekly Labelary history: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -3182,7 +3513,10 @@ export class FirestoreService {
   async getExchangeRate(date: string): Promise<ExchangeRate | null> {
     try {
       const docId = `rate_${date.replace(/-/g, '')}`;
-      const doc = await this.firestore.collection(this.exchangeRatesCollection).doc(docId).get();
+      const doc = await this.firestore
+        .collection(this.exchangeRatesCollection)
+        .doc(docId)
+        .get();
 
       if (!doc.exists) {
         return null;
@@ -3194,7 +3528,9 @@ export class FirestoreService {
         date: data.date,
         usdToMxn: data.usdToMxn,
         source: data.source,
-        fetchedAt: data.fetchedAt?.toDate ? data.fetchedAt.toDate() : new Date(data.fetchedAt),
+        fetchedAt: data.fetchedAt?.toDate
+          ? data.fetchedAt.toDate()
+          : new Date(data.fetchedAt),
       };
     } catch (error) {
       this.logger.error(`Error getting exchange rate: ${error.message}`);
@@ -3204,10 +3540,13 @@ export class FirestoreService {
 
   async saveExchangeRate(rate: ExchangeRate): Promise<void> {
     try {
-      await this.firestore.collection(this.exchangeRatesCollection).doc(rate.id).set({
-        ...rate,
-        fetchedAt: rate.fetchedAt,
-      });
+      await this.firestore
+        .collection(this.exchangeRatesCollection)
+        .doc(rate.id)
+        .set({
+          ...rate,
+          fetchedAt: rate.fetchedAt,
+        });
     } catch (error) {
       this.logger.error(`Error saving exchange rate: ${error.message}`);
       throw error;
@@ -3220,10 +3559,13 @@ export class FirestoreService {
 
   async saveTransaction(transaction: StripeTransaction): Promise<void> {
     try {
-      await this.firestore.collection(this.transactionsCollection).doc(transaction.id).set({
-        ...transaction,
-        createdAt: transaction.createdAt,
-      });
+      await this.firestore
+        .collection(this.transactionsCollection)
+        .doc(transaction.id)
+        .set({
+          ...transaction,
+          createdAt: transaction.createdAt,
+        });
       this.logger.log(`Saved transaction: ${transaction.id}`);
     } catch (error) {
       this.logger.error(`Error saving transaction: ${error.message}`);
@@ -3241,7 +3583,9 @@ export class FirestoreService {
     limit?: number;
   }): Promise<{ transactions: StripeTransaction[]; total: number }> {
     try {
-      let query = this.firestore.collection(this.transactionsCollection) as FirebaseFirestore.Query;
+      let query = this.firestore.collection(
+        this.transactionsCollection,
+      ) as FirebaseFirestore.Query;
 
       if (filters.startDate) {
         query = query.where('createdAt', '>=', filters.startDate);
@@ -3293,7 +3637,9 @@ export class FirestoreService {
           stripePaymentIntentId: data.stripePaymentIntentId,
           status: data.status,
           billingCountry: data.billingCountry,
-          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+          createdAt: data.createdAt?.toDate
+            ? data.createdAt.toDate()
+            : new Date(data.createdAt),
           metadata: data.metadata,
         };
       });
@@ -3346,11 +3692,14 @@ export class FirestoreService {
 
   async saveExpense(expense: Expense): Promise<void> {
     try {
-      await this.firestore.collection(this.expensesCollection).doc(expense.id).set({
-        ...expense,
-        createdAt: expense.createdAt,
-        updatedAt: expense.updatedAt || new Date(),
-      });
+      await this.firestore
+        .collection(this.expensesCollection)
+        .doc(expense.id)
+        .set({
+          ...expense,
+          createdAt: expense.createdAt,
+          updatedAt: expense.updatedAt || new Date(),
+        });
       this.logger.log(`Saved expense: ${expense.id}`);
     } catch (error) {
       this.logger.error(`Error saving expense: ${error.message}`);
@@ -3367,7 +3716,9 @@ export class FirestoreService {
     limit?: number;
   }): Promise<{ expenses: Expense[]; total: number }> {
     try {
-      let query = this.firestore.collection(this.expensesCollection) as FirebaseFirestore.Query;
+      let query = this.firestore.collection(
+        this.expensesCollection,
+      ) as FirebaseFirestore.Query;
 
       if (filters.startDate) {
         query = query.where('createdAt', '>=', filters.startDate);
@@ -3414,8 +3765,12 @@ export class FirestoreService {
               : undefined,
           parentExpenseId: data.parentExpenseId,
           createdBy: data.createdBy,
-          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
-          updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : undefined,
+          createdAt: data.createdAt?.toDate
+            ? data.createdAt.toDate()
+            : new Date(data.createdAt),
+          updatedAt: data.updatedAt?.toDate
+            ? data.updatedAt.toDate()
+            : undefined,
           isAutoGenerated: data.isAutoGenerated,
           subscriptionStartDate: data.subscriptionStartDate?.toDate
             ? data.subscriptionStartDate.toDate()
@@ -3495,12 +3850,16 @@ export class FirestoreService {
             : new Date(data.nextGenerationDate),
           parentExpenseId: data.parentExpenseId,
           createdBy: data.createdBy,
-          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+          createdAt: data.createdAt?.toDate
+            ? data.createdAt.toDate()
+            : new Date(data.createdAt),
           isAutoGenerated: data.isAutoGenerated,
         };
       });
     } catch (error) {
-      this.logger.error(`Error getting recurring expenses due today: ${error.message}`);
+      this.logger.error(
+        `Error getting recurring expenses due today: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -3529,7 +3888,8 @@ export class FirestoreService {
         const data = doc.data();
         totalMxn += data.amountMxn;
 
-        byCategory[data.category] = (byCategory[data.category] || 0) + data.amountMxn;
+        byCategory[data.category] =
+          (byCategory[data.category] || 0) + data.amountMxn;
         byType[data.type as 'recurring' | 'one_time'] += data.amountMxn;
       }
 
@@ -3546,11 +3906,14 @@ export class FirestoreService {
 
   async saveGoal(goal: MonthlyGoal): Promise<void> {
     try {
-      await this.firestore.collection(this.goalsCollection).doc(goal.id).set({
-        ...goal,
-        createdAt: goal.createdAt,
-        updatedAt: goal.updatedAt || new Date(),
-      });
+      await this.firestore
+        .collection(this.goalsCollection)
+        .doc(goal.id)
+        .set({
+          ...goal,
+          createdAt: goal.createdAt,
+          updatedAt: goal.updatedAt || new Date(),
+        });
       this.logger.log(`Saved goal: ${goal.id}`);
     } catch (error) {
       this.logger.error(`Error saving goal: ${error.message}`);
@@ -3561,7 +3924,10 @@ export class FirestoreService {
   async getGoal(month: string): Promise<MonthlyGoal | null> {
     try {
       const docId = `goal_${month.replace(/-/g, '')}`;
-      const doc = await this.firestore.collection(this.goalsCollection).doc(docId).get();
+      const doc = await this.firestore
+        .collection(this.goalsCollection)
+        .doc(docId)
+        .get();
 
       if (!doc.exists) {
         return null;
@@ -3577,7 +3943,9 @@ export class FirestoreService {
         metrics: data.metrics,
         alerts: data.alerts,
         createdBy: data.createdBy,
-        createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+        createdAt: data.createdAt?.toDate
+          ? data.createdAt.toDate()
+          : new Date(data.createdAt),
         updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate() : undefined,
       };
     } catch (error) {
@@ -3593,14 +3961,11 @@ export class FirestoreService {
   ): Promise<void> {
     try {
       const docId = `goal_${month.replace(/-/g, '')}`;
-      await this.firestore
-        .collection(this.goalsCollection)
-        .doc(docId)
-        .update({
-          actual,
-          alerts,
-          updatedAt: new Date(),
-        });
+      await this.firestore.collection(this.goalsCollection).doc(docId).update({
+        actual,
+        alerts,
+        updatedAt: new Date(),
+      });
     } catch (error) {
       this.logger.error(`Error updating goal actuals: ${error.message}`);
       throw error;
@@ -3613,10 +3978,13 @@ export class FirestoreService {
 
   async saveSubscriptionEvent(event: SubscriptionEvent): Promise<void> {
     try {
-      await this.firestore.collection(this.subscriptionEventsCollection).doc(event.id).set({
-        ...event,
-        createdAt: event.createdAt,
-      });
+      await this.firestore
+        .collection(this.subscriptionEventsCollection)
+        .doc(event.id)
+        .set({
+          ...event,
+          createdAt: event.createdAt,
+        });
       this.logger.log(`Saved subscription event: ${event.id}`);
     } catch (error) {
       this.logger.error(`Error saving subscription event: ${error.message}`);
@@ -3666,7 +4034,9 @@ export class FirestoreService {
           stripeSubscriptionId: data.stripeSubscriptionId,
           cancellationReason: data.cancellationReason,
           country: data.country,
-          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt),
+          createdAt: data.createdAt?.toDate
+            ? data.createdAt.toDate()
+            : new Date(data.createdAt),
         };
       });
     } catch (error) {
@@ -3686,12 +4056,17 @@ export class FirestoreService {
 
       return snapshot.data().count;
     } catch (error) {
-      this.logger.error(`Error getting active subscribers count: ${error.message}`);
+      this.logger.error(
+        `Error getting active subscribers count: ${error.message}`,
+      );
       return 0;
     }
   }
 
-  async getChurnedUsersInPeriod(startDate: Date, endDate: Date): Promise<number> {
+  async getChurnedUsersInPeriod(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<number> {
     try {
       const snapshot = await this.firestore
         .collection(this.subscriptionEventsCollection)
@@ -3716,7 +4091,13 @@ export class FirestoreService {
     Array<{
       country: string;
       total: number;
-      byPlan: { free: number; lite: number; pro: number; promax: number; enterprise: number };
+      byPlan: {
+        free: number;
+        lite: number;
+        pro: number;
+        promax: number;
+        enterprise: number;
+      };
     }>
   > {
     try {
@@ -3742,7 +4123,16 @@ export class FirestoreService {
 
       const countryMap = new Map<
         string,
-        { total: number; byPlan: { free: number; lite: number; pro: number; promax: number; enterprise: number } }
+        {
+          total: number;
+          byPlan: {
+            free: number;
+            lite: number;
+            pro: number;
+            promax: number;
+            enterprise: number;
+          };
+        }
       >();
 
       for (const doc of usersSnapshot.docs) {
@@ -3796,8 +4186,15 @@ export class FirestoreService {
       return usersByCountry.map((countryData) => {
         const freeUsers = countryData.byPlan.free;
         // "proUsers" = todos los usuarios de pago (Lite incluido tras el lanzamiento de Lite)
-        const proUsers = countryData.byPlan.lite + countryData.byPlan.pro + countryData.byPlan.promax + countryData.byPlan.enterprise;
-        const conversionRate = freeUsers + proUsers > 0 ? (proUsers / (freeUsers + proUsers)) * 100 : 0;
+        const proUsers =
+          countryData.byPlan.lite +
+          countryData.byPlan.pro +
+          countryData.byPlan.promax +
+          countryData.byPlan.enterprise;
+        const conversionRate =
+          freeUsers + proUsers > 0
+            ? (proUsers / (freeUsers + proUsers)) * 100
+            : 0;
 
         return {
           country: countryData.country,
@@ -3807,7 +4204,9 @@ export class FirestoreService {
         };
       });
     } catch (error) {
-      this.logger.error(`Error getting conversion rates by country: ${error.message}`);
+      this.logger.error(
+        `Error getting conversion rates by country: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -3815,7 +4214,14 @@ export class FirestoreService {
   async getRevenueByCountry(
     startDate: Date,
     endDate: Date,
-  ): Promise<Array<{ country: string; revenue: number; revenueMxn: number; transactions: number }>> {
+  ): Promise<
+    Array<{
+      country: string;
+      revenue: number;
+      revenueMxn: number;
+      transactions: number;
+    }>
+  > {
     try {
       const snapshot = await this.firestore
         .collection(this.transactionsCollection)
@@ -3825,7 +4231,11 @@ export class FirestoreService {
         .get();
 
       // Obtener userIds únicos de las transacciones
-      const userIds = [...new Set(snapshot.docs.map((doc) => doc.data().userId).filter(Boolean))];
+      const userIds = [
+        ...new Set(
+          snapshot.docs.map((doc) => doc.data().userId).filter(Boolean),
+        ),
+      ];
 
       // Obtener usuarios en batches de 30 (límite de Firestore para 'in')
       const userCountryMap = new Map<string, string>();
@@ -3842,15 +4252,23 @@ export class FirestoreService {
         }
       }
 
-      const countryMap = new Map<string, { revenue: number; revenueMxn: number; transactions: number }>();
+      const countryMap = new Map<
+        string,
+        { revenue: number; revenueMxn: number; transactions: number }
+      >();
 
       for (const doc of snapshot.docs) {
         const data = doc.data();
         // Usar el país del usuario, no el billingCountry de Stripe
-        const country = userCountryMap.get(data.userId) || data.billingCountry || 'unknown';
+        const country =
+          userCountryMap.get(data.userId) || data.billingCountry || 'unknown';
 
         if (!countryMap.has(country)) {
-          countryMap.set(country, { revenue: 0, revenueMxn: 0, transactions: 0 });
+          countryMap.set(country, {
+            revenue: 0,
+            revenueMxn: 0,
+            transactions: 0,
+          });
         }
 
         const countryData = countryMap.get(country)!;
@@ -3887,7 +4305,10 @@ export class FirestoreService {
     }
   }
 
-  async getProConversionsInPeriod(startDate: Date, endDate: Date): Promise<number> {
+  async getProConversionsInPeriod(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<number> {
     try {
       const snapshot = await this.firestore
         .collection(this.subscriptionEventsCollection)
@@ -3899,7 +4320,9 @@ export class FirestoreService {
 
       return snapshot.data().count;
     } catch (error) {
-      this.logger.error(`Error getting pro conversions in period: ${error.message}`);
+      this.logger.error(
+        `Error getting pro conversions in period: ${error.message}`,
+      );
       return 0;
     }
   }
@@ -3954,7 +4377,9 @@ export class FirestoreService {
       );
       return users;
     } catch (error) {
-      this.logger.error(`Error getting inactive users (${daysInactive} days): ${error.message}`);
+      this.logger.error(
+        `Error getting inactive users (${daysInactive} days): ${error.message}`,
+      );
       return [];
     }
   }
@@ -3977,7 +4402,9 @@ export class FirestoreService {
           updatedAt: new Date(),
         });
     } catch (error) {
-      this.logger.error(`Error marking user ${userId} as notified: ${error.message}`);
+      this.logger.error(
+        `Error marking user ${userId} as notified: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -4014,16 +4441,18 @@ export class FirestoreService {
   /**
    * Get pending emails ready to be sent
    */
-  async getPendingEmails(limit: number = 50): Promise<Array<{
-    id: string;
-    userId: string;
-    userEmail: string;
-    emailType: string;
-    abVariant: string;
-    language: string;
-    scheduledFor: Date;
-    metadata?: Record<string, any>;
-  }>> {
+  async getPendingEmails(limit: number = 50): Promise<
+    Array<{
+      id: string;
+      userId: string;
+      userEmail: string;
+      emailType: string;
+      abVariant: string;
+      language: string;
+      scheduledFor: Date;
+      metadata?: Record<string, any>;
+    }>
+  > {
     const now = new Date();
     const snapshot = await this.firestore
       .collection(this.emailQueueCollection)
@@ -4033,7 +4462,7 @@ export class FirestoreService {
       .limit(limit)
       .get();
 
-    return snapshot.docs.map(doc => {
+    return snapshot.docs.map((doc) => {
       const data = doc.data();
       return {
         id: doc.id,
@@ -4080,7 +4509,10 @@ export class FirestoreService {
   /**
    * Check if user has already received a specific email type
    */
-  async hasUserReceivedEmail(userId: string, emailType: string): Promise<boolean> {
+  async hasUserReceivedEmail(
+    userId: string,
+    emailType: string,
+  ): Promise<boolean> {
     const snapshot = await this.firestore
       .collection(this.emailQueueCollection)
       .where('userId', '==', userId)
@@ -4143,7 +4575,10 @@ export class FirestoreService {
   /**
    * Cancel pending emails for a user (e.g., when they convert)
    */
-  async cancelPendingEmails(userId: string, emailTypes?: string[]): Promise<number> {
+  async cancelPendingEmails(
+    userId: string,
+    emailTypes?: string[],
+  ): Promise<number> {
     let query = this.firestore
       .collection(this.emailQueueCollection)
       .where('userId', '==', userId)
@@ -4156,7 +4591,7 @@ export class FirestoreService {
     const snapshot = await query.get();
 
     const batch = this.firestore.batch();
-    snapshot.docs.forEach(doc => {
+    snapshot.docs.forEach((doc) => {
       batch.update(doc.ref, {
         status: 'cancelled',
         updatedAt: new Date(),
@@ -4193,7 +4628,10 @@ export class FirestoreService {
   /**
    * Get email metrics (totals and rates)
    */
-  async getEmailMetrics(startDate?: Date, endDate?: Date): Promise<{
+  async getEmailMetrics(
+    startDate?: Date,
+    endDate?: Date,
+  ): Promise<{
     sent: number;
     delivered: number;
     opened: number;
@@ -4217,7 +4655,9 @@ export class FirestoreService {
     const sent = sentSnapshot.size;
 
     // Count events by type
-    let eventsQuery: FirebaseFirestore.Query = this.firestore.collection(this.emailEventsCollection);
+    let eventsQuery: FirebaseFirestore.Query = this.firestore.collection(
+      this.emailEventsCollection,
+    );
 
     if (startDate) {
       eventsQuery = eventsQuery.where('timestamp', '>=', startDate);
@@ -4239,7 +4679,7 @@ export class FirestoreService {
     // Count unique events per email (avoid counting multiple opens/clicks)
     const uniqueEvents = new Map<string, Set<string>>();
 
-    eventsSnapshot.docs.forEach(doc => {
+    eventsSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       const key = `${data.emailQueueId}-${data.eventType}`;
 
@@ -4255,16 +4695,18 @@ export class FirestoreService {
   /**
    * Get A/B test results by email type
    */
-  async getAbTestResults(emailType?: string): Promise<Array<{
-    emailType: string;
-    variants: Array<{
-      variant: string;
-      sent: number;
-      delivered: number;
-      opened: number;
-      clicked: number;
-    }>;
-  }>> {
+  async getAbTestResults(emailType?: string): Promise<
+    Array<{
+      emailType: string;
+      variants: Array<{
+        variant: string;
+        sent: number;
+        delivered: number;
+        opened: number;
+        clicked: number;
+      }>;
+    }>
+  > {
     // Get all sent emails grouped by type and variant
     let query: FirebaseFirestore.Query = this.firestore
       .collection(this.emailQueueCollection)
@@ -4277,12 +4719,24 @@ export class FirestoreService {
     const emailsSnapshot = await query.get();
 
     // Build a map of emailId -> {emailType, variant}
-    const emailMap = new Map<string, { emailType: string; abVariant: string }>();
-    const typeVariantCounts = new Map<string, Map<string, { sent: number; delivered: number; opened: number; clicked: number }>>();
+    const emailMap = new Map<
+      string,
+      { emailType: string; abVariant: string }
+    >();
+    const typeVariantCounts = new Map<
+      string,
+      Map<
+        string,
+        { sent: number; delivered: number; opened: number; clicked: number }
+      >
+    >();
 
-    emailsSnapshot.docs.forEach(doc => {
+    emailsSnapshot.docs.forEach((doc) => {
       const data = doc.data();
-      emailMap.set(doc.id, { emailType: data.emailType, abVariant: data.abVariant });
+      emailMap.set(doc.id, {
+        emailType: data.emailType,
+        abVariant: data.abVariant,
+      });
 
       // Initialize counts
       if (!typeVariantCounts.has(data.emailType)) {
@@ -4290,18 +4744,25 @@ export class FirestoreService {
       }
       const variantMap = typeVariantCounts.get(data.emailType)!;
       if (!variantMap.has(data.abVariant)) {
-        variantMap.set(data.abVariant, { sent: 0, delivered: 0, opened: 0, clicked: 0 });
+        variantMap.set(data.abVariant, {
+          sent: 0,
+          delivered: 0,
+          opened: 0,
+          clicked: 0,
+        });
       }
       variantMap.get(data.abVariant)!.sent++;
     });
 
     // Get events for these emails
-    const eventsSnapshot = await this.firestore.collection(this.emailEventsCollection).get();
+    const eventsSnapshot = await this.firestore
+      .collection(this.emailEventsCollection)
+      .get();
 
     // Track unique events per email
     const processedEvents = new Set<string>();
 
-    eventsSnapshot.docs.forEach(doc => {
+    eventsSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       const emailInfo = emailMap.get(data.emailQueueId);
       if (!emailInfo) return;
@@ -4310,7 +4771,9 @@ export class FirestoreService {
       if (processedEvents.has(eventKey)) return;
       processedEvents.add(eventKey);
 
-      const counts = typeVariantCounts.get(emailInfo.emailType)?.get(emailInfo.abVariant);
+      const counts = typeVariantCounts
+        .get(emailInfo.emailType)
+        ?.get(emailInfo.abVariant);
       if (counts && data.eventType in counts) {
         counts[data.eventType as keyof typeof counts]++;
       }
@@ -4350,27 +4813,32 @@ export class FirestoreService {
   /**
    * Get metrics grouped by email type
    */
-  async getEmailMetricsByType(): Promise<Array<{
-    emailType: string;
-    sent: number;
-    delivered: number;
-    opened: number;
-    clicked: number;
-  }>> {
+  async getEmailMetricsByType(): Promise<
+    Array<{
+      emailType: string;
+      sent: number;
+      delivered: number;
+      opened: number;
+      clicked: number;
+    }>
+  > {
     const emailsSnapshot = await this.firestore
       .collection(this.emailQueueCollection)
       .where('status', '==', 'sent')
       .get();
 
-    const typeStats = new Map<string, {
-      emailIds: Set<string>;
-      sent: number;
-      delivered: number;
-      opened: number;
-      clicked: number;
-    }>();
+    const typeStats = new Map<
+      string,
+      {
+        emailIds: Set<string>;
+        sent: number;
+        delivered: number;
+        opened: number;
+        clicked: number;
+      }
+    >();
 
-    emailsSnapshot.docs.forEach(doc => {
+    emailsSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       if (!typeStats.has(data.emailType)) {
         typeStats.set(data.emailType, {
@@ -4387,10 +4855,12 @@ export class FirestoreService {
     });
 
     // Get events
-    const eventsSnapshot = await this.firestore.collection(this.emailEventsCollection).get();
+    const eventsSnapshot = await this.firestore
+      .collection(this.emailEventsCollection)
+      .get();
     const processedEvents = new Set<string>();
 
-    eventsSnapshot.docs.forEach(doc => {
+    eventsSnapshot.docs.forEach((doc) => {
       const data = doc.data();
 
       // Find which type this email belongs to
@@ -4428,19 +4898,21 @@ export class FirestoreService {
   /**
    * Get active A/B variant configuration for an email type
    */
-  async getAbVariantConfig(emailType: string): Promise<Array<{
-    id: string;
-    variant: string;
-    subjectLine: Record<string, string>;
-    trafficPercentage: number;
-  }>> {
+  async getAbVariantConfig(emailType: string): Promise<
+    Array<{
+      id: string;
+      variant: string;
+      subjectLine: Record<string, string>;
+      trafficPercentage: number;
+    }>
+  > {
     const snapshot = await this.firestore
       .collection(this.abVariantsCollection)
       .where('emailType', '==', emailType)
       .where('isActive', '==', true)
       .get();
 
-    return snapshot.docs.map(doc => {
+    return snapshot.docs.map((doc) => {
       const data = doc.data();
       return {
         id: doc.id,
@@ -4460,14 +4932,22 @@ export class FirestoreService {
       {
         emailType: 'welcome',
         variant: 'A',
-        subjectLine: { en: 'Welcome to ZPLPDF!', es: '¡Bienvenido a ZPLPDF!', zh: '欢迎使用ZPLPDF！' },
+        subjectLine: {
+          en: 'Welcome to ZPLPDF!',
+          es: '¡Bienvenido a ZPLPDF!',
+          zh: '欢迎使用ZPLPDF！',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
       {
         emailType: 'welcome',
         variant: 'B',
-        subjectLine: { en: 'Your ZPL journey starts now', es: 'Tu viaje ZPL comienza ahora', zh: '您的ZPL之旅现在开始' },
+        subjectLine: {
+          en: 'Your ZPL journey starts now',
+          es: 'Tu viaje ZPL comienza ahora',
+          zh: '您的ZPL之旅现在开始',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
@@ -4475,14 +4955,22 @@ export class FirestoreService {
       {
         emailType: 'tutorial',
         variant: 'A',
-        subjectLine: { en: 'Quick Tutorial: Convert your first ZPL', es: 'Tutorial rápido: Convierte tu primer ZPL', zh: '快速教程：转换您的第一个ZPL' },
+        subjectLine: {
+          en: 'Quick Tutorial: Convert your first ZPL',
+          es: 'Tutorial rápido: Convierte tu primer ZPL',
+          zh: '快速教程：转换您的第一个ZPL',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
       {
         emailType: 'tutorial',
         variant: 'B',
-        subjectLine: { en: 'See ZPL to PDF in action', es: 'Ve ZPL a PDF en acción', zh: '查看ZPL转PDF的实际操作' },
+        subjectLine: {
+          en: 'See ZPL to PDF in action',
+          es: 'Ve ZPL a PDF en acción',
+          zh: '查看ZPL转PDF的实际操作',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
@@ -4490,14 +4978,22 @@ export class FirestoreService {
       {
         emailType: 'help',
         variant: 'A',
-        subjectLine: { en: 'Need help with ZPLPDF?', es: '¿Necesitas ayuda con ZPLPDF?', zh: '需要ZPLPDF的帮助吗？' },
+        subjectLine: {
+          en: 'Need help with ZPLPDF?',
+          es: '¿Necesitas ayuda con ZPLPDF?',
+          zh: '需要ZPLPDF的帮助吗？',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
       {
         emailType: 'help',
         variant: 'B',
-        subjectLine: { en: "We noticed you haven't converted yet", es: 'Notamos que aún no has convertido', zh: '我们注意到您还没有转换' },
+        subjectLine: {
+          en: "We noticed you haven't converted yet",
+          es: 'Notamos que aún no has convertido',
+          zh: '我们注意到您还没有转换',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
@@ -4505,14 +5001,22 @@ export class FirestoreService {
       {
         emailType: 'success_story',
         variant: 'A',
-        subjectLine: { en: 'How businesses use ZPLPDF', es: 'Cómo las empresas usan ZPLPDF', zh: '企业如何使用ZPLPDF' },
+        subjectLine: {
+          en: 'How businesses use ZPLPDF',
+          es: 'Cómo las empresas usan ZPLPDF',
+          zh: '企业如何使用ZPLPDF',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
       {
         emailType: 'success_story',
         variant: 'B',
-        subjectLine: { en: "You're doing great!", es: '¡Lo estás haciendo genial!', zh: '你做得很棒！' },
+        subjectLine: {
+          en: "You're doing great!",
+          es: '¡Lo estás haciendo genial!',
+          zh: '你做得很棒！',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
@@ -4520,14 +5024,22 @@ export class FirestoreService {
       {
         emailType: 'miss_you',
         variant: 'A',
-        subjectLine: { en: 'We miss you at ZPLPDF', es: 'Te extrañamos en ZPLPDF', zh: '我们在ZPLPDF想念你' },
+        subjectLine: {
+          en: 'We miss you at ZPLPDF',
+          es: 'Te extrañamos en ZPLPDF',
+          zh: '我们在ZPLPDF想念你',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
       {
         emailType: 'miss_you',
         variant: 'B',
-        subjectLine: { en: 'Still struggling with ZPL?', es: '¿Aún tienes problemas con ZPL?', zh: '还在为ZPL烦恼吗？' },
+        subjectLine: {
+          en: 'Still struggling with ZPL?',
+          es: '¿Aún tienes problemas con ZPL?',
+          zh: '还在为ZPL烦恼吗？',
+        },
         isActive: true,
         trafficPercentage: 50,
       },
@@ -4545,7 +5057,9 @@ export class FirestoreService {
         .get();
 
       if (existing.empty) {
-        const docRef = this.firestore.collection(this.abVariantsCollection).doc();
+        const docRef = this.firestore
+          .collection(this.abVariantsCollection)
+          .doc();
         batch.set(docRef, {
           ...variant,
           id: docRef.id,
@@ -4572,14 +5086,16 @@ export class FirestoreService {
     minPdfCount?: number;
     maxPdfCount?: number;
     limit?: number;
-  }): Promise<Array<{
-    userId: string;
-    userEmail: string;
-    displayName?: string;
-    language: string;
-    pdfCount: number;
-    createdAt: Date;
-  }>> {
+  }): Promise<
+    Array<{
+      userId: string;
+      userEmail: string;
+      displayName?: string;
+      language: string;
+      pdfCount: number;
+      createdAt: Date;
+    }>
+  > {
     const now = new Date();
     const minDate = new Date(now);
     minDate.setDate(minDate.getDate() - params.maxDaysSinceCreation);
@@ -4607,7 +5123,10 @@ export class FirestoreService {
       const userData = doc.data();
 
       // Check if user already has this email type in queue
-      const hasEmail = await this.hasUserReceivedEmail(doc.id, params.emailType);
+      const hasEmail = await this.hasUserReceivedEmail(
+        doc.id,
+        params.emailType,
+      );
       if (hasEmail) continue;
 
       // Get user's PDF count from usage
@@ -4624,8 +5143,10 @@ export class FirestoreService {
       }
 
       // Check PDF count criteria
-      if (params.minPdfCount !== undefined && pdfCount < params.minPdfCount) continue;
-      if (params.maxPdfCount !== undefined && pdfCount > params.maxPdfCount) continue;
+      if (params.minPdfCount !== undefined && pdfCount < params.minPdfCount)
+        continue;
+      if (params.maxPdfCount !== undefined && pdfCount > params.maxPdfCount)
+        continue;
 
       // Determine language (default to 'en')
       const language = this.detectLanguageFromCountry(userData.country) || 'en';
@@ -4646,7 +5167,9 @@ export class FirestoreService {
   /**
    * Get onboarding funnel data for a given period
    */
-  async getOnboardingFunnel(period: 'day' | 'week' | 'month' = 'month'): Promise<{
+  async getOnboardingFunnel(
+    period: 'day' | 'week' | 'month' = 'month',
+  ): Promise<{
     registeredUsers: number;
     receivedWelcome: number;
     openedWelcome: number;
@@ -4678,7 +5201,7 @@ export class FirestoreService {
       .get();
 
     const registeredUsers = usersSnapshot.size;
-    const userIds = new Set(usersSnapshot.docs.map(doc => doc.id));
+    const userIds = new Set(usersSnapshot.docs.map((doc) => doc.id));
 
     // Get welcome emails sent to these users
     const welcomeEmailsSnapshot = await this.firestore
@@ -4689,9 +5212,11 @@ export class FirestoreService {
       .get();
 
     // Filter to only users in our period
-    const welcomeEmails = welcomeEmailsSnapshot.docs.filter(doc => userIds.has(doc.data().userId));
+    const welcomeEmails = welcomeEmailsSnapshot.docs.filter((doc) =>
+      userIds.has(doc.data().userId),
+    );
     const receivedWelcome = welcomeEmails.length;
-    const welcomeEmailIds = new Set(welcomeEmails.map(doc => doc.id));
+    const welcomeEmailIds = new Set(welcomeEmails.map((doc) => doc.id));
 
     // Get events for welcome emails
     const eventsSnapshot = await this.firestore
@@ -4703,11 +5228,13 @@ export class FirestoreService {
     const openedUsers = new Set<string>();
     const clickedUsers = new Set<string>();
 
-    eventsSnapshot.docs.forEach(doc => {
+    eventsSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       if (!welcomeEmailIds.has(data.emailQueueId)) return;
 
-      const welcomeEmail = welcomeEmails.find(e => e.id === data.emailQueueId);
+      const welcomeEmail = welcomeEmails.find(
+        (e) => e.id === data.emailQueueId,
+      );
       if (!welcomeEmail) return;
 
       const userId = welcomeEmail.data().userId;
@@ -4725,7 +5252,8 @@ export class FirestoreService {
 
     for (const doc of usersSnapshot.docs) {
       const userData = doc.data();
-      const userCreatedAt = userData.createdAt?.toDate?.() || userData.createdAt;
+      const userCreatedAt =
+        userData.createdAt?.toDate?.() || userData.createdAt;
 
       // Check if user has any conversions
       const conversionsSnapshot = await this.firestore
@@ -4740,10 +5268,14 @@ export class FirestoreService {
 
         // Check if first conversion was within 7 days of registration
         const firstConversion = conversionsSnapshot.docs[0].data();
-        const conversionDate = firstConversion.createdAt?.toDate?.() || firstConversion.createdAt;
+        const conversionDate =
+          firstConversion.createdAt?.toDate?.() || firstConversion.createdAt;
 
         if (userCreatedAt && conversionDate) {
-          const daysDiff = Math.floor((conversionDate.getTime() - userCreatedAt.getTime()) / (1000 * 60 * 60 * 24));
+          const daysDiff = Math.floor(
+            (conversionDate.getTime() - userCreatedAt.getTime()) /
+              (1000 * 60 * 60 * 24),
+          );
           if (daysDiff <= 7) {
             activatedIn7Days++;
           }
@@ -4767,7 +5299,27 @@ export class FirestoreService {
   private detectLanguageFromCountry(country?: string): EmailLanguage {
     if (!country) return 'en';
 
-    const spanishCountries = ['MX', 'ES', 'AR', 'CO', 'PE', 'CL', 'VE', 'EC', 'GT', 'CU', 'BO', 'DO', 'HN', 'SV', 'NI', 'CR', 'PA', 'UY', 'PR'];
+    const spanishCountries = [
+      'MX',
+      'ES',
+      'AR',
+      'CO',
+      'PE',
+      'CL',
+      'VE',
+      'EC',
+      'GT',
+      'CU',
+      'BO',
+      'DO',
+      'HN',
+      'SV',
+      'NI',
+      'CR',
+      'PA',
+      'UY',
+      'PR',
+    ];
     const chineseCountries = ['CN', 'TW', 'HK', 'MO', 'SG'];
 
     if (spanishCountries.includes(country)) return 'es';
@@ -4784,17 +5336,19 @@ export class FirestoreService {
     minPdfsPerDay: number;
     consecutiveDays: number;
     limit?: number;
-  }): Promise<Array<{
-    userId: string;
-    userEmail: string;
-    displayName?: string;
-    language: string;
-    avgPdfsPerDay: number;
-    pdfsUsed: number;
-    limit: number;
-    projectedDaysToLimit: number;
-    periodEnd: Date;
-  }>> {
+  }): Promise<
+    Array<{
+      userId: string;
+      userEmail: string;
+      displayName?: string;
+      language: string;
+      avgPdfsPerDay: number;
+      pdfsUsed: number;
+      limit: number;
+      projectedDaysToLimit: number;
+      periodEnd: Date;
+    }>
+  > {
     const { minPdfsPerDay, consecutiveDays, limit = 100 } = params;
     const highUsageUsers: Array<{
       userId: string;
@@ -4821,9 +5375,14 @@ export class FirestoreService {
       const userId = userDoc.id;
 
       // Check if already received high_usage email in current period
-      const periodStart = userData.periodStart?.toDate?.() || userData.periodStart;
+      const periodStart =
+        userData.periodStart?.toDate?.() || userData.periodStart;
       if (periodStart) {
-        const hasEmail = await this.hasUserReceivedEmailInPeriod(userId, 'high_usage', periodStart);
+        const hasEmail = await this.hasUserReceivedEmailInPeriod(
+          userId,
+          'high_usage',
+          periodStart,
+        );
         if (hasEmail) continue;
       }
 
@@ -4842,7 +5401,7 @@ export class FirestoreService {
 
       // Group conversions by day
       const dailyCounts: Record<string, number> = {};
-      conversionsSnapshot.docs.forEach(doc => {
+      conversionsSnapshot.docs.forEach((doc) => {
         const data = doc.data();
         const createdAt = data.createdAt?.toDate?.() || data.createdAt;
         if (!createdAt) return;
@@ -4857,7 +5416,11 @@ export class FirestoreService {
 
       // Check consecutive days with high usage
       let consecutiveHighUsageDays = 0;
-      for (let i = days.length - 1; i >= 0 && consecutiveHighUsageDays < consecutiveDays; i--) {
+      for (
+        let i = days.length - 1;
+        i >= 0 && consecutiveHighUsageDays < consecutiveDays;
+        i--
+      ) {
         if (dailyCounts[days[i]] >= minPdfsPerDay) {
           consecutiveHighUsageDays++;
         } else {
@@ -4868,19 +5431,24 @@ export class FirestoreService {
       if (consecutiveHighUsageDays < consecutiveDays) continue;
 
       // Calculate average PDFs per day
-      const totalPdfs = Object.values(dailyCounts).reduce((sum, count) => sum + count, 0);
+      const totalPdfs = Object.values(dailyCounts).reduce(
+        (sum, count) => sum + count,
+        0,
+      );
       const avgPdfsPerDay = totalPdfs / days.length;
 
       // Get current usage and calculate projection
       const pdfLimit = DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
       const pdfsUsed = userData.pdfCount || 0;
       const remaining = pdfLimit - pdfsUsed;
-      const projectedDaysToLimit = remaining > 0 ? Math.ceil(remaining / avgPdfsPerDay) : 0;
+      const projectedDaysToLimit =
+        remaining > 0 ? Math.ceil(remaining / avgPdfsPerDay) : 0;
 
       // Only include if projected to hit limit soon (within 14 days)
       if (projectedDaysToLimit > 14) continue;
 
-      const periodEnd = userData.periodEnd?.toDate?.() || userData.periodEnd || new Date();
+      const periodEnd =
+        userData.periodEnd?.toDate?.() || userData.periodEnd || new Date();
 
       highUsageUsers.push({
         userId,
@@ -4914,10 +5482,12 @@ export class FirestoreService {
       stripeSubscriptionId: data.stripeSubscriptionId,
       planLimits: data.planLimits,
       simulatedPlan: data.simulatedPlan,
-      simulationExpiresAt: data.simulationExpiresAt?.toDate?.() || data.simulationExpiresAt,
+      simulationExpiresAt:
+        data.simulationExpiresAt?.toDate?.() || data.simulationExpiresAt,
       country: data.country,
       countrySource: data.countrySource,
-      countryDetectedAt: data.countryDetectedAt?.toDate?.() || data.countryDetectedAt,
+      countryDetectedAt:
+        data.countryDetectedAt?.toDate?.() || data.countryDetectedAt,
       lastActivityAt: data.lastActivityAt?.toDate?.() || data.lastActivityAt,
       notifiedInactive7Days: data.notifiedInactive7Days,
       notifiedInactive30Days: data.notifiedInactive30Days,
@@ -4973,7 +5543,9 @@ export class FirestoreService {
   }> {
     const { minDaysInactive, maxDaysInactive, page = 1, limit = 50 } = params;
     const now = new Date();
-    const minDate = new Date(now.getTime() - minDaysInactive * 24 * 60 * 60 * 1000);
+    const minDate = new Date(
+      now.getTime() - minDaysInactive * 24 * 60 * 60 * 1000,
+    );
     const maxDate = maxDaysInactive
       ? new Date(now.getTime() - maxDaysInactive * 24 * 60 * 60 * 1000)
       : null;
@@ -5007,14 +5579,15 @@ export class FirestoreService {
 
       // PHASE 1: Get lastActiveAt from conversion history for all users (parallel queries)
       // lastActiveAt is NOT stored in user document - it must be calculated from conversions history
-      const historyPromises = usersSnapshot.docs.map(doc =>
-        this.firestore
-          .collection(this.historyCollection)
-          .where('userId', '==', doc.id)
-          .orderBy('createdAt', 'desc')
-          .limit(1)
-          .get()
-          .catch(() => null), // Ignore errors (e.g., no index)
+      const historyPromises = usersSnapshot.docs.map(
+        (doc) =>
+          this.firestore
+            .collection(this.historyCollection)
+            .where('userId', '==', doc.id)
+            .orderBy('createdAt', 'desc')
+            .limit(1)
+            .get()
+            .catch(() => null), // Ignore errors (e.g., no index)
       );
       const historySnapshots = await Promise.all(historyPromises);
 
@@ -5023,7 +5596,8 @@ export class FirestoreService {
       historySnapshots.forEach((snapshot, index) => {
         if (snapshot && !snapshot.empty) {
           const historyData = snapshot.docs[0].data();
-          const lastActiveAt = historyData.createdAt?.toDate?.() || historyData.createdAt || null;
+          const lastActiveAt =
+            historyData.createdAt?.toDate?.() || historyData.createdAt || null;
           lastActiveAtMap.set(usersSnapshot.docs[index].id, lastActiveAt);
         } else {
           lastActiveAtMap.set(usersSnapshot.docs[index].id, null);
@@ -5051,7 +5625,9 @@ export class FirestoreService {
 
         if (!relevantDate) continue;
 
-        const daysInactive = Math.floor((now.getTime() - relevantDate.getTime()) / (24 * 60 * 60 * 1000));
+        const daysInactive = Math.floor(
+          (now.getTime() - relevantDate.getTime()) / (24 * 60 * 60 * 1000),
+        );
 
         // Count for summary (all inactive users regardless of min/max filter)
         if (daysInactive >= 7) {
@@ -5075,12 +5651,20 @@ export class FirestoreService {
       // PHASE 3: OPTIMIZATION - Batch read all usage documents for current period in one query
       const periodIdByUser = new Map<string, string>();
       for (const { userId, userData } of filteredUsers) {
-        const createdAt = userData.createdAt?.toDate?.() || (userData.createdAt ? new Date(userData.createdAt) : null);
+        const createdAt =
+          userData.createdAt?.toDate?.() ||
+          (userData.createdAt ? new Date(userData.createdAt) : null);
         if (!createdAt) continue;
-        const sps = userData.subscriptionPeriodStart?.toDate?.()
-          || (userData.subscriptionPeriodStart ? new Date(userData.subscriptionPeriodStart) : undefined);
-        const spe = userData.subscriptionPeriodEnd?.toDate?.()
-          || (userData.subscriptionPeriodEnd ? new Date(userData.subscriptionPeriodEnd) : undefined);
+        const sps =
+          userData.subscriptionPeriodStart?.toDate?.() ||
+          (userData.subscriptionPeriodStart
+            ? new Date(userData.subscriptionPeriodStart)
+            : undefined);
+        const spe =
+          userData.subscriptionPeriodEnd?.toDate?.() ||
+          (userData.subscriptionPeriodEnd
+            ? new Date(userData.subscriptionPeriodEnd)
+            : undefined);
         const periodInfo = calculateCurrentPeriod({
           id: userId,
           plan: (userData.plan as PlanType) || 'free',
@@ -5093,7 +5677,8 @@ export class FirestoreService {
       const usageRefs = [...periodIdByUser.values()].map((id) =>
         this.firestore.collection(this.usageCollection).doc(id),
       );
-      const usageDocs = usageRefs.length > 0 ? await this.firestore.getAll(...usageRefs) : [];
+      const usageDocs =
+        usageRefs.length > 0 ? await this.firestore.getAll(...usageRefs) : [];
       const usageByPeriodId = new Map<string, FirebaseFirestore.DocumentData>();
       usageDocs.forEach((doc) => {
         if (doc.exists) usageByPeriodId.set(doc.id, doc.data()!);
@@ -5109,19 +5694,34 @@ export class FirestoreService {
         this.firestore
           .collection(this.emailQueueCollection)
           .where('userId', '==', userId)
-          .where('emailType', 'in', ['pro_inactive_7_days', 'pro_inactive_14_days', 'pro_inactive_30_days'])
+          .where('emailType', 'in', [
+            'pro_inactive_7_days',
+            'pro_inactive_14_days',
+            'pro_inactive_30_days',
+          ])
           .where('status', 'in', ['pending', 'sent'])
           .get(),
       );
       const emailSnapshots = await Promise.all(emailPromises);
       const emailsMap = new Map<string, string[]>();
       emailSnapshots.forEach((snapshot, index) => {
-        emailsMap.set(filteredUsers[index].userId, snapshot.docs.map(d => d.data().emailType));
+        emailsMap.set(
+          filteredUsers[index].userId,
+          snapshot.docs.map((d) => d.data().emailType),
+        );
       });
 
       // PHASE 5: Build final array using Maps (O(1) lookups, no queries)
-      for (const { userId, userData, daysInactive, lastActivityAt } of filteredUsers) {
-        const usageData = usageMap.get(userId) || { pdfCount: 0, labelCount: 0 };
+      for (const {
+        userId,
+        userData,
+        daysInactive,
+        lastActivityAt,
+      } of filteredUsers) {
+        const usageData = usageMap.get(userId) || {
+          pdfCount: 0,
+          labelCount: 0,
+        };
         const emailsSent = emailsMap.get(userId) || [];
 
         allInactiveUsers.push({
@@ -5147,7 +5747,10 @@ export class FirestoreService {
 
       // Apply pagination
       const startIndex = (page - 1) * limit;
-      const paginatedUsers = allInactiveUsers.slice(startIndex, startIndex + limit);
+      const paginatedUsers = allInactiveUsers.slice(
+        startIndex,
+        startIndex + limit,
+      );
 
       // Remove plan field from output (only used for summary)
       const users = paginatedUsers.map(({ plan, ...user }) => user);
@@ -5213,7 +5816,7 @@ export class FirestoreService {
   }> {
     this.logger.warn(
       'getProPowerUsers (calendar-month, _YYYYMM) is deprecated. ' +
-      'Caller should use EmailService.getPowerUsersWithPeriod instead.',
+        'Caller should use EmailService.getPowerUsersWithPeriod instead.',
     );
     const { page = 1, limit = 50 } = params;
     return {
@@ -5291,38 +5894,63 @@ export class FirestoreService {
         const userId = doc.id;
 
         // Get registration date
-        const registeredAt = userData.createdAt?.toDate?.() || userData.createdAt || now;
+        const registeredAt =
+          userData.createdAt?.toDate?.() || userData.createdAt || now;
         const daysSinceRegistration = Math.floor(
           (now.getTime() - registeredAt.getTime()) / (24 * 60 * 60 * 1000),
         );
 
         // Filter by days since registration if specified
-        if (minDaysSinceRegistration !== undefined && daysSinceRegistration < minDaysSinceRegistration) continue;
-        if (maxDaysSinceRegistration !== undefined && daysSinceRegistration > maxDaysSinceRegistration) continue;
+        if (
+          minDaysSinceRegistration !== undefined &&
+          daysSinceRegistration < minDaysSinceRegistration
+        )
+          continue;
+        if (
+          maxDaysSinceRegistration !== undefined &&
+          daysSinceRegistration > maxDaysSinceRegistration
+        )
+          continue;
 
         // Get last activity date
-        const lastActiveAt = userData.lastActiveAt?.toDate?.() || userData.lastActiveAt || null;
+        const lastActiveAt =
+          userData.lastActiveAt?.toDate?.() || userData.lastActiveAt || null;
         const relevantDate = lastActiveAt || registeredAt;
         const daysInactive = Math.floor(
           (now.getTime() - relevantDate.getTime()) / (24 * 60 * 60 * 1000),
         );
 
         // Filter by days inactive if specified
-        if (minDaysInactive !== undefined && daysInactive < minDaysInactive) continue;
-        if (maxDaysInactive !== undefined && daysInactive > maxDaysInactive) continue;
+        if (minDaysInactive !== undefined && daysInactive < minDaysInactive)
+          continue;
+        if (maxDaysInactive !== undefined && daysInactive > maxDaysInactive)
+          continue;
 
-        filteredUsers.push({ userId, userData, registeredAt, lastActiveAt, daysSinceRegistration, daysInactive });
+        filteredUsers.push({
+          userId,
+          userData,
+          registeredAt,
+          lastActiveAt,
+          daysSinceRegistration,
+          daysInactive,
+        });
       }
 
       // PHASE 2: OPTIMIZATION - Batch read all usage documents and group by userId
       // Get all usage docs for filtered users in parallel queries (more efficient than N sequential)
       const usagePromises = filteredUsers.map(({ userId }) =>
-        this.firestore.collection(this.usageCollection).where('userId', '==', userId).get(),
+        this.firestore
+          .collection(this.usageCollection)
+          .where('userId', '==', userId)
+          .get(),
       );
       const usageSnapshots = await Promise.all(usagePromises);
 
       // Create Map with aggregated usage per user
-      const usageMap = new Map<string, { pdfCount: number; labelCount: number }>();
+      const usageMap = new Map<
+        string,
+        { pdfCount: number; labelCount: number }
+      >();
       usageSnapshots.forEach((snapshot, index) => {
         let totalPdfCount = 0;
         let totalLabelCount = 0;
@@ -5331,7 +5959,10 @@ export class FirestoreService {
           totalPdfCount += usageData.pdfCount || 0;
           totalLabelCount += usageData.labelCount || 0;
         }
-        usageMap.set(filteredUsers[index].userId, { pdfCount: totalPdfCount, labelCount: totalLabelCount });
+        usageMap.set(filteredUsers[index].userId, {
+          pdfCount: totalPdfCount,
+          labelCount: totalLabelCount,
+        });
       });
 
       // PHASE 3: Filter by segment and collect users that need email queries
@@ -5348,7 +5979,10 @@ export class FirestoreService {
       }> = [];
 
       for (const user of filteredUsers) {
-        const usage = usageMap.get(user.userId) || { pdfCount: 0, labelCount: 0 };
+        const usage = usageMap.get(user.userId) || {
+          pdfCount: 0,
+          labelCount: 0,
+        };
         const totalPdfCount = usage.pdfCount;
         const totalLabelCount = usage.labelCount;
 
@@ -5369,7 +6003,12 @@ export class FirestoreService {
         // Filter by segment if specified
         if (segment && userSegment !== segment) continue;
 
-        usersForEmailQuery.push({ ...user, totalPdfCount, totalLabelCount, userSegment });
+        usersForEmailQuery.push({
+          ...user,
+          totalPdfCount,
+          totalLabelCount,
+          userSegment,
+        });
       }
 
       // PHASE 4: OPTIMIZATION - Parallel email queries instead of sequential
@@ -5390,7 +6029,14 @@ export class FirestoreService {
       const emailSnapshots = await Promise.all(emailPromises);
 
       // Create Map with email data per user
-      const emailsMap = new Map<string, { emailsSent: string[]; lastEmailSentAt: Date | null; lastEmailType: string | null }>();
+      const emailsMap = new Map<
+        string,
+        {
+          emailsSent: string[];
+          lastEmailSentAt: Date | null;
+          lastEmailType: string | null;
+        }
+      >();
       emailSnapshots.forEach((snapshot, index) => {
         const emailsSent = snapshot.docs.map((d) => d.data().emailType);
         let lastEmailSentAt: Date | null = null;
@@ -5400,22 +6046,35 @@ export class FirestoreService {
           const sortedEmails = snapshot.docs
             .map((d) => d.data())
             .sort((a, b) => {
-              const dateA = a.sentAt?.toDate?.() || a.createdAt?.toDate?.() || new Date(0);
-              const dateB = b.sentAt?.toDate?.() || b.createdAt?.toDate?.() || new Date(0);
+              const dateA =
+                a.sentAt?.toDate?.() || a.createdAt?.toDate?.() || new Date(0);
+              const dateB =
+                b.sentAt?.toDate?.() || b.createdAt?.toDate?.() || new Date(0);
               return dateB.getTime() - dateA.getTime();
             });
           if (sortedEmails[0]) {
-            lastEmailSentAt = sortedEmails[0].sentAt?.toDate?.() || sortedEmails[0].createdAt?.toDate?.() || null;
+            lastEmailSentAt =
+              sortedEmails[0].sentAt?.toDate?.() ||
+              sortedEmails[0].createdAt?.toDate?.() ||
+              null;
             lastEmailType = sortedEmails[0].emailType || null;
           }
         }
 
-        emailsMap.set(usersForEmailQuery[index].userId, { emailsSent, lastEmailSentAt, lastEmailType });
+        emailsMap.set(usersForEmailQuery[index].userId, {
+          emailsSent,
+          lastEmailSentAt,
+          lastEmailType,
+        });
       });
 
       // PHASE 5: Build final array using Maps (O(1) lookups)
       for (const user of usersForEmailQuery) {
-        const emailData = emailsMap.get(user.userId) || { emailsSent: [], lastEmailSentAt: null, lastEmailType: null };
+        const emailData = emailsMap.get(user.userId) || {
+          emailsSent: [],
+          lastEmailSentAt: null,
+          lastEmailType: null,
+        };
 
         allInactiveUsers.push({
           userId: user.userId,
@@ -5447,7 +6106,10 @@ export class FirestoreService {
       // Apply pagination
       const totalPages = Math.ceil(allInactiveUsers.length / limit);
       const startIndex = (page - 1) * limit;
-      const paginatedUsers = allInactiveUsers.slice(startIndex, startIndex + limit);
+      const paginatedUsers = allInactiveUsers.slice(
+        startIndex,
+        startIndex + limit,
+      );
 
       return {
         users: paginatedUsers,
@@ -5516,7 +6178,9 @@ export class FirestoreService {
   /**
    * Get email template by ID
    */
-  async getEmailTemplateById(templateId: string): Promise<EmailTemplate | null> {
+  async getEmailTemplateById(
+    templateId: string,
+  ): Promise<EmailTemplate | null> {
     try {
       const doc = await this.firestore
         .collection(this.emailTemplatesCollection)
@@ -5550,7 +6214,9 @@ export class FirestoreService {
   /**
    * Get email template by templateKey
    */
-  async getEmailTemplateByKey(templateKey: string): Promise<EmailTemplate | null> {
+  async getEmailTemplateByKey(
+    templateKey: string,
+  ): Promise<EmailTemplate | null> {
     try {
       const snapshot = await this.firestore
         .collection(this.emailTemplatesCollection)
@@ -5578,7 +6244,9 @@ export class FirestoreService {
         version: data.version || 1,
       } as EmailTemplate;
     } catch (error) {
-      this.logger.error(`Error getting email template by key: ${error.message}`);
+      this.logger.error(
+        `Error getting email template by key: ${error.message}`,
+      );
       return null;
     }
   }
@@ -5592,7 +6260,9 @@ export class FirestoreService {
       const template = await this.getEmailTemplateByKey(templateKey);
       return template?.enabled ?? false;
     } catch (error) {
-      this.logger.error(`Error checking template enabled status: ${error.message}`);
+      this.logger.error(
+        `Error checking template enabled status: ${error.message}`,
+      );
       return false;
     }
   }
@@ -5603,20 +6273,22 @@ export class FirestoreService {
   async createEmailTemplate(data: CreateEmailTemplateData): Promise<string> {
     try {
       const now = new Date();
-      const docRef = await this.firestore.collection(this.emailTemplatesCollection).add({
-        templateType: data.templateType,
-        templateKey: data.templateKey,
-        name: data.name,
-        description: data.description,
-        triggerDays: data.triggerDays,
-        enabled: data.enabled,
-        content: data.content,
-        variables: data.variables,
-        createdAt: now,
-        updatedAt: now,
-        updatedBy: data.createdBy,
-        version: 1,
-      });
+      const docRef = await this.firestore
+        .collection(this.emailTemplatesCollection)
+        .add({
+          templateType: data.templateType,
+          templateKey: data.templateKey,
+          name: data.name,
+          description: data.description,
+          triggerDays: data.triggerDays,
+          enabled: data.enabled,
+          content: data.content,
+          variables: data.variables,
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: data.createdBy,
+          version: 1,
+        });
 
       // Create initial version in history
       await this.firestore.collection(this.templateVersionsCollection).add({
@@ -5645,7 +6317,9 @@ export class FirestoreService {
     data: UpdateEmailTemplateData,
   ): Promise<EmailTemplate | null> {
     try {
-      const templateRef = this.firestore.collection(this.emailTemplatesCollection).doc(templateId);
+      const templateRef = this.firestore
+        .collection(this.emailTemplatesCollection)
+        .doc(templateId);
       const templateDoc = await templateRef.get();
 
       if (!templateDoc.exists) return null;
@@ -5677,7 +6351,8 @@ export class FirestoreService {
       };
 
       if (data.content) updatePayload.content = updatedContent;
-      if (data.triggerDays !== undefined) updatePayload.triggerDays = data.triggerDays;
+      if (data.triggerDays !== undefined)
+        updatePayload.triggerDays = data.triggerDays;
       if (data.enabled !== undefined) updatePayload.enabled = data.enabled;
       if (data.name) updatePayload.name = data.name;
       if (data.description) updatePayload.description = data.description;
@@ -5706,7 +6381,9 @@ export class FirestoreService {
   /**
    * Get template version history
    */
-  async getTemplateVersionHistory(templateId: string): Promise<TemplateVersion[]> {
+  async getTemplateVersionHistory(
+    templateId: string,
+  ): Promise<TemplateVersion[]> {
     try {
       const snapshot = await this.firestore
         .collection(this.templateVersionsCollection)
@@ -5729,7 +6406,9 @@ export class FirestoreService {
         } as TemplateVersion;
       });
     } catch (error) {
-      this.logger.error(`Error getting template version history: ${error.message}`);
+      this.logger.error(
+        `Error getting template version history: ${error.message}`,
+      );
       return [];
     }
   }
@@ -5775,7 +6454,9 @@ export class FirestoreService {
     try {
       const version = await this.getTemplateVersion(versionId);
       if (!version || version.templateId !== templateId) {
-        throw new Error('Version not found or does not belong to this template');
+        throw new Error(
+          'Version not found or does not belong to this template',
+        );
       }
 
       return this.updateEmailTemplate(templateId, {
@@ -5823,10 +6504,13 @@ export class FirestoreService {
   }): Promise<void> {
     try {
       const docId = `valuation_${snapshot.month.replace(/-/g, '')}`;
-      await this.firestore.collection(this.valuationsCollection).doc(docId).set({
-        ...snapshot,
-        calculatedAt: snapshot.calculatedAt,
-      });
+      await this.firestore
+        .collection(this.valuationsCollection)
+        .doc(docId)
+        .set({
+          ...snapshot,
+          calculatedAt: snapshot.calculatedAt,
+        });
       this.logger.log(`Saved valuation snapshot: ${docId}`);
     } catch (error) {
       this.logger.error(`Error saving valuation snapshot: ${error.message}`);
@@ -5837,30 +6521,32 @@ export class FirestoreService {
   /**
    * Obtiene el historial de valoraciones del negocio
    */
-  async getValuationHistory(months: number = 12): Promise<Array<{
-    month: string;
-    arr: number;
-    arrMxn: number;
-    mrr: number;
-    mrrMxn: number;
-    valuationLow: number;
-    valuationMid: number;
-    valuationHigh: number;
-    valuationLowMxn: number;
-    valuationMidMxn: number;
-    valuationHighMxn: number;
-    multipleLow: number;
-    multipleMid: number;
-    multipleHigh: number;
-    growthRate: number;
-    churnRate: number;
-    nrr: number;
-    profitMargin: number;
-    ruleOf40Score: number;
-    healthScore: number;
-    exchangeRate: number;
-    calculatedAt: Date;
-  }>> {
+  async getValuationHistory(months: number = 12): Promise<
+    Array<{
+      month: string;
+      arr: number;
+      arrMxn: number;
+      mrr: number;
+      mrrMxn: number;
+      valuationLow: number;
+      valuationMid: number;
+      valuationHigh: number;
+      valuationLowMxn: number;
+      valuationMidMxn: number;
+      valuationHighMxn: number;
+      multipleLow: number;
+      multipleMid: number;
+      multipleHigh: number;
+      growthRate: number;
+      churnRate: number;
+      nrr: number;
+      profitMargin: number;
+      ruleOf40Score: number;
+      healthScore: number;
+      exchangeRate: number;
+      calculatedAt: Date;
+    }>
+  > {
     try {
       const snapshot = await this.firestore
         .collection(this.valuationsCollection)
@@ -5892,7 +6578,9 @@ export class FirestoreService {
           ruleOf40Score: data.ruleOf40Score,
           healthScore: data.healthScore,
           exchangeRate: data.exchangeRate,
-          calculatedAt: data.calculatedAt?.toDate ? data.calculatedAt.toDate() : new Date(data.calculatedAt),
+          calculatedAt: data.calculatedAt?.toDate
+            ? data.calculatedAt.toDate()
+            : new Date(data.calculatedAt),
         };
       });
     } catch (error) {
@@ -5916,11 +6604,14 @@ export class FirestoreService {
     outputFormat: string;
   }): Promise<void> {
     try {
-      await this.firestore.collection(this.zplDebugCollection).doc(data.jobId).set({
-        ...data,
-        createdAt: new Date(),
-        result: 'pending',
-      });
+      await this.firestore
+        .collection(this.zplDebugCollection)
+        .doc(data.jobId)
+        .set({
+          ...data,
+          createdAt: new Date(),
+          result: 'pending',
+        });
       this.logger.debug(`ZPL debug file saved: ${data.jobId}`);
     } catch (error) {
       this.logger.error(`Error saving ZPL debug file: ${error.message}`);
@@ -5970,7 +6661,12 @@ export class FirestoreService {
       result: 'pending' | 'success' | 'error';
       errorCode?: string;
     }>;
-    pagination: { page: number; limit: number; total: number; totalPages: number };
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+    };
   }> {
     const page = options.page || 1;
     const limit = options.limit || 20;

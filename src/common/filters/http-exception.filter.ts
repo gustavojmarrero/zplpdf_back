@@ -7,7 +7,11 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
-import { ErrorCodes, ErrorHttpStatus, getErrorMessage, type ErrorCode } from '../constants/error-codes.js';
+import {
+  ErrorCodes,
+  getErrorMessage,
+  type ErrorCode,
+} from '../constants/error-codes.js';
 
 /**
  * Interfaz para respuestas de error estandarizadas
@@ -34,7 +38,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
 
     // Obtener requestId del header (inyectado por RequestIdInterceptor)
-    const requestId = request.headers['x-request-id'] as string || this.generateRequestId();
+    const requestId =
+      (request.headers['x-request-id'] as string) || this.generateRequestId();
 
     // Obtener idioma del header Accept-Language
     const language = this.getLanguage(request);
@@ -54,7 +59,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
         // Si ya tiene el formato con 'error' code, usarlo
         if (responseObj.error && typeof responseObj.error === 'string') {
           errorCode = responseObj.error;
-          message = responseObj.message || getErrorMessage(errorCode as ErrorCode, language);
+          message =
+            responseObj.message ||
+            getErrorMessage(errorCode as ErrorCode, language);
 
           // Extraer data correctamente
           if (responseObj.data) {
@@ -66,13 +73,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
         } else {
           // Mapear a código de error basado en status
           errorCode = this.getErrorCodeFromStatus(status);
-          message = responseObj.message || getErrorMessage(errorCode as ErrorCode, language);
+          message =
+            responseObj.message ||
+            getErrorMessage(errorCode as ErrorCode, language);
         }
       } else {
         errorCode = this.getErrorCodeFromStatus(status);
-        message = typeof exceptionResponse === 'string'
-          ? exceptionResponse
-          : getErrorMessage(errorCode as ErrorCode, language);
+        message =
+          typeof exceptionResponse === 'string'
+            ? exceptionResponse
+            : getErrorMessage(errorCode as ErrorCode, language);
       }
     } else {
       // Error no HTTP (error interno)

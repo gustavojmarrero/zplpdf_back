@@ -7,7 +7,6 @@ import type {
   ChurnData,
   LTVData,
   ProfitData,
-  StripeTransaction,
   BusinessValuationData,
   ValuationFactors,
   ValuationSnapshot,
@@ -62,12 +61,18 @@ export class FinanceService {
   /**
    * Obtiene métricas de ingresos por período
    */
-  async getRevenue(period: 'day' | 'week' | 'month' | 'year' = 'month'): Promise<RevenueData> {
+  async getRevenue(
+    period: 'day' | 'week' | 'month' | 'year' = 'month',
+  ): Promise<RevenueData> {
     const { startDate, endDate } = this.getPeriodDates(period);
-    const { previousStartDate, previousEndDate } = this.getPreviousPeriodDates(period);
+    const { previousStartDate, previousEndDate } =
+      this.getPreviousPeriodDates(period);
 
     // Obtener ingresos del período actual
-    const currentRevenue = await this.firestoreService.getRevenueByPeriod(startDate, endDate);
+    const currentRevenue = await this.firestoreService.getRevenueByPeriod(
+      startDate,
+      endDate,
+    );
 
     // Obtener ingresos del período anterior para calcular crecimiento
     const previousRevenue = await this.firestoreService.getRevenueByPeriod(
@@ -94,13 +99,18 @@ export class FinanceService {
     }
 
     // Calcular MRR (solo suscripciones activas)
-    const activeSubscribers = await this.firestoreService.getActiveSubscribersCount();
+    const activeSubscribers =
+      await this.firestoreService.getActiveSubscribersCount();
     const avgMrr = activeSubscribers > 0 ? totalMxn / activeSubscribers : 0;
     const mrr = avgMrr * activeSubscribers;
 
     // Calcular crecimiento vs período anterior
-    const previousTotalMxn = previousRevenue.totalMxn + previousRevenue.totalUsd * exchangeRate;
-    const growth = previousTotalMxn > 0 ? ((totalMxn - previousTotalMxn) / previousTotalMxn) * 100 : 0;
+    const previousTotalMxn =
+      previousRevenue.totalMxn + previousRevenue.totalUsd * exchangeRate;
+    const growth =
+      previousTotalMxn > 0
+        ? ((totalMxn - previousTotalMxn) / previousTotalMxn) * 100
+        : 0;
 
     return {
       total: currentRevenue.totalUsd + currentRevenue.totalMxn,
@@ -148,7 +158,10 @@ export class FinanceService {
       mxn: { amount: 0, amountMxn: 0, transactions: 0 },
     };
 
-    const countryMap = new Map<string, { amount: number; transactions: number }>();
+    const countryMap = new Map<
+      string,
+      { amount: number; transactions: number }
+    >();
 
     for (const tx of transactions) {
       const curr = tx.currency as 'usd' | 'mxn';
@@ -195,14 +208,23 @@ export class FinanceService {
     // Obtener tipo de cambio para conversión
     let exchangeRate = 20;
     try {
-      exchangeRate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+      exchangeRate = await this.exchangeRateService.getExchangeRate(
+        this.firestoreService,
+      );
     } catch {
       // Usar tasa por defecto
     }
 
     for (let i = 0; i < months; i++) {
       const monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
+      const monthEnd = new Date(
+        now.getFullYear(),
+        now.getMonth() - i + 1,
+        0,
+        23,
+        59,
+        59,
+      );
       const monthStr = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
 
       // Obtener eventos de suscripción del mes
@@ -219,13 +241,19 @@ export class FinanceService {
         if (event.eventType === 'started') {
           newMrr += event.mrrMxn;
           subscribers.add(event.userId);
-        } else if (event.eventType === 'canceled' || event.eventType === 'churned') {
+        } else if (
+          event.eventType === 'canceled' ||
+          event.eventType === 'churned'
+        ) {
           churnedMrr += event.mrrMxn;
         }
       }
 
       // Calcular MRR del mes
-      const revenue = await this.firestoreService.getRevenueByPeriod(monthDate, monthEnd);
+      const revenue = await this.firestoreService.getRevenueByPeriod(
+        monthDate,
+        monthEnd,
+      );
       let mrr = revenue.totalMxn;
 
       if (revenue.totalUsd > 0) {
@@ -251,7 +279,8 @@ export class FinanceService {
     }
 
     // Obtener datos actuales
-    const activeSubscribers = await this.firestoreService.getActiveSubscribersCount();
+    const activeSubscribers =
+      await this.firestoreService.getActiveSubscribersCount();
     const currentRevenue = await this.getRevenue('month');
 
     // Formatear respuesta para el frontend
@@ -277,15 +306,21 @@ export class FinanceService {
     const { startDate, endDate } = this.getPeriodDates(period);
 
     // Obtener usuarios churneados en el período
-    const churnedUsers = await this.firestoreService.getChurnedUsersInPeriod(startDate, endDate);
+    const churnedUsers = await this.firestoreService.getChurnedUsersInPeriod(
+      startDate,
+      endDate,
+    );
 
     // Obtener suscriptores activos al inicio del período
-    const activeSubscribers = await this.firestoreService.getActiveSubscribersCount();
+    const activeSubscribers =
+      await this.firestoreService.getActiveSubscribersCount();
 
     // Calcular churn rate
     const totalSubscribersAtStart = activeSubscribers + churnedUsers;
     const churnRate =
-      totalSubscribersAtStart > 0 ? (churnedUsers / totalSubscribersAtStart) * 100 : 0;
+      totalSubscribersAtStart > 0
+        ? (churnedUsers / totalSubscribersAtStart) * 100
+        : 0;
 
     // Obtener eventos de cancelación para MRR churneado
     const cancelEvents = await this.firestoreService.getSubscriptionEvents({
@@ -308,11 +343,22 @@ export class FinanceService {
 
     for (let i = 5; i >= 0; i--) {
       const monthDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
+      const monthEnd = new Date(
+        now.getFullYear(),
+        now.getMonth() - i + 1,
+        0,
+        23,
+        59,
+        59,
+      );
       const monthStr = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
 
-      const monthChurned = await this.firestoreService.getChurnedUsersInPeriod(monthDate, monthEnd);
-      const monthActive = await this.firestoreService.getActiveSubscribersCount();
+      const monthChurned = await this.firestoreService.getChurnedUsersInPeriod(
+        monthDate,
+        monthEnd,
+      );
+      const monthActive =
+        await this.firestoreService.getActiveSubscribersCount();
       const monthTotal = monthActive + monthChurned;
       const monthRate = monthTotal > 0 ? (monthChurned / monthTotal) * 100 : 0;
 
@@ -340,7 +386,10 @@ export class FinanceService {
     // Obtener todos los eventos de suscripción
     const events = await this.firestoreService.getSubscriptionEvents({});
 
-    const userMrr = new Map<string, { total: number; months: number; plan: string }>();
+    const userMrr = new Map<
+      string,
+      { total: number; months: number; plan: string }
+    >();
 
     for (const event of events) {
       if (!userMrr.has(event.userId)) {
@@ -373,7 +422,12 @@ export class FinanceService {
         totalMonths += data.months;
         userCount++;
 
-        if (data.plan === 'lite' || data.plan === 'pro' || data.plan === 'promax' || data.plan === 'enterprise') {
+        if (
+          data.plan === 'lite' ||
+          data.plan === 'pro' ||
+          data.plan === 'promax' ||
+          data.plan === 'enterprise'
+        ) {
           byPlan[data.plan].ltv += userLtv;
           byPlan[data.plan].avgMonths += data.months;
           byPlan[data.plan].count++;
@@ -393,13 +447,17 @@ export class FinanceService {
     }
 
     // Convertir LTV a USD (aproximado)
-    const exchangeRate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+    const exchangeRate = await this.exchangeRateService.getExchangeRate(
+      this.firestoreService,
+    );
 
     // Calcular ingreso mensual promedio (LTV / meses de suscripción)
-    const avgMonthlyRevenue = avgMonths > 0 ? (avgLtv / avgMonths) / exchangeRate : 0;
+    const avgMonthlyRevenue =
+      avgMonths > 0 ? avgLtv / avgMonths / exchangeRate : 0;
 
     // Obtener total de suscriptores activos (misma fuente que churn)
-    const totalCustomers = await this.firestoreService.getActiveSubscribersCount();
+    const totalCustomers =
+      await this.firestoreService.getActiveSubscribersCount();
 
     return {
       avgLtv: avgLtv / exchangeRate,
@@ -431,11 +489,16 @@ export class FinanceService {
   /**
    * Obtiene margen de ganancia (ingresos - gastos)
    */
-  async getProfitMargin(period: 'month' | 'quarter' | 'year' = 'month'): Promise<ProfitData> {
+  async getProfitMargin(
+    period: 'month' | 'quarter' | 'year' = 'month',
+  ): Promise<ProfitData> {
     const { startDate, endDate } = this.getPeriodDates(period);
 
     // Obtener ingresos
-    const revenue = await this.firestoreService.getRevenueByPeriod(startDate, endDate);
+    const revenue = await this.firestoreService.getRevenueByPeriod(
+      startDate,
+      endDate,
+    );
     let revenueMxn = revenue.totalMxn;
 
     if (revenue.totalUsd > 0) {
@@ -451,14 +514,19 @@ export class FinanceService {
     }
 
     // Obtener gastos
-    const expenseSummary = await this.firestoreService.getExpenseSummary(startDate, endDate);
+    const expenseSummary = await this.firestoreService.getExpenseSummary(
+      startDate,
+      endDate,
+    );
 
     // Calcular profit
     const profitMxn = revenueMxn - expenseSummary.totalMxn;
     const profitMargin = revenueMxn > 0 ? (profitMxn / revenueMxn) * 100 : 0;
 
     // Convertir a USD
-    const exchangeRate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+    const exchangeRate = await this.exchangeRateService.getExchangeRate(
+      this.firestoreService,
+    );
 
     return {
       period,
@@ -488,20 +556,24 @@ export class FinanceService {
     subscribers: number;
   }> {
     // Verificar cache
-    if (this.metricsCache && Date.now() - this.metricsCache.cachedAt.getTime() < this.CACHE_TTL_MS) {
+    if (
+      this.metricsCache &&
+      Date.now() - this.metricsCache.cachedAt.getTime() < this.CACHE_TTL_MS
+    ) {
       this.logger.debug('Returning cached financial dashboard');
       return this.metricsCache.data;
     }
 
     // Ejecutar consultas en paralelo
-    const [revenue, mrrData, churn, ltv, profit, subscribers] = await Promise.all([
-      this.getRevenue('month'),
-      this.getMRRHistory(6),
-      this.getChurnRate('month'),
-      this.getLTV(),
-      this.getProfitMargin('month'),
-      this.firestoreService.getActiveSubscribersCount(),
-    ]);
+    const [revenue, mrrData, churn, ltv, profit, subscribers] =
+      await Promise.all([
+        this.getRevenue('month'),
+        this.getMRRHistory(6),
+        this.getChurnRate('month'),
+        this.getLTV(),
+        this.getProfitMargin('month'),
+        this.firestoreService.getActiveSubscribersCount(),
+      ]);
 
     const dashboard = {
       revenue,
@@ -529,7 +601,9 @@ export class FinanceService {
   // Helper Methods
   // ============================================
 
-  private getPeriodDates(period: 'day' | 'week' | 'month' | 'quarter' | 'year'): {
+  private getPeriodDates(
+    period: 'day' | 'week' | 'month' | 'quarter' | 'year',
+  ): {
     startDate: Date;
     endDate: Date;
   } {
@@ -540,7 +614,14 @@ export class FinanceService {
 
     switch (period) {
       case 'day':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+        startDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate(),
+          0,
+          0,
+          0,
+        );
         break;
       case 'week':
         startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -562,7 +643,9 @@ export class FinanceService {
     return { startDate, endDate };
   }
 
-  private getPreviousPeriodDates(period: 'day' | 'week' | 'month' | 'quarter' | 'year'): {
+  private getPreviousPeriodDates(
+    period: 'day' | 'week' | 'month' | 'quarter' | 'year',
+  ): {
     previousStartDate: Date;
     previousEndDate: Date;
   } {
@@ -587,7 +670,10 @@ export class FinanceService {
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    const revenue = await this.firestoreService.getRevenueByPeriod(thirtyDaysAgo, now);
+    const revenue = await this.firestoreService.getRevenueByPeriod(
+      thirtyDaysAgo,
+      now,
+    );
     let mrrMxn = revenue.totalMxn;
 
     let exchangeRate = 20;
@@ -604,7 +690,9 @@ export class FinanceService {
       }
     } else {
       try {
-        exchangeRate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+        exchangeRate = await this.exchangeRateService.getExchangeRate(
+          this.firestoreService,
+        );
       } catch {
         // Usar tasa por defecto
       }
@@ -624,7 +712,14 @@ export class FinanceService {
     this.logger.log('Calculating business valuation...');
 
     // 1. Obtener métricas base en paralelo
-    const [mrrLast30Days, mrrHistory, churnData, profit, exchangeRate, previousValuations] = await Promise.all([
+    const [
+      mrrLast30Days,
+      mrrHistory,
+      churnData,
+      profit,
+      exchangeRate,
+      previousValuations,
+    ] = await Promise.all([
       this.getMRRLast30Days(),
       this.getMRRHistory(12),
       this.getChurnRate('month'),
@@ -705,7 +800,9 @@ export class FinanceService {
     if (previousValuations && previousValuations.length > 0) {
       const prev = previousValuations[0];
       const change =
-        prev.valuationMid > 0 ? ((valuation.mid - prev.valuationMid) / prev.valuationMid) * 100 : 0;
+        prev.valuationMid > 0
+          ? ((valuation.mid - prev.valuationMid) / prev.valuationMid) * 100
+          : 0;
       previousMonth = {
         valuation: prev.valuationMid,
         valuationMxn: prev.valuationMidMxn,
@@ -718,7 +815,9 @@ export class FinanceService {
     // 11. Guardar snapshot histórico (solo si es un nuevo mes)
     const currentMonth = this.getCurrentMonth();
     const shouldSaveSnapshot =
-      !previousValuations || previousValuations.length === 0 || previousValuations[0].month !== currentMonth;
+      !previousValuations ||
+      previousValuations.length === 0 ||
+      previousValuations[0].month !== currentMonth;
 
     if (shouldSaveSnapshot) {
       await this.saveValuationSnapshot({
@@ -833,7 +932,9 @@ export class FinanceService {
   /**
    * Calcula la tasa de crecimiento anual basada en historial de MRR
    */
-  private calculateAnnualGrowthRate(history: Array<{ month: string; mrr: number }>): number {
+  private calculateAnnualGrowthRate(
+    history: Array<{ month: string; mrr: number }>,
+  ): number {
     if (history.length < 2) return 0;
 
     // Comparar MRR actual vs hace 12 meses (o el más antiguo disponible)
@@ -916,7 +1017,9 @@ export class FinanceService {
     return Math.max(0, Math.min(100, Math.round(score)));
   }
 
-  private getHealthLevel(score: number): 'excellent' | 'good' | 'fair' | 'poor' {
+  private getHealthLevel(
+    score: number,
+  ): 'excellent' | 'good' | 'fair' | 'poor' {
     if (score >= 80) return 'excellent';
     if (score >= 60) return 'good';
     if (score >= 40) return 'fair';
@@ -934,9 +1037,17 @@ export class FinanceService {
     return {
       growthRate: {
         value: Math.round(metrics.growthRate * 100) / 100,
-        impact: metrics.growthRate > 20 ? 'positive' : metrics.growthRate > 0 ? 'neutral' : 'negative',
+        impact:
+          metrics.growthRate > 20
+            ? 'positive'
+            : metrics.growthRate > 0
+              ? 'neutral'
+              : 'negative',
         weight: 3,
-        contribution: metrics.growthRate > 20 ? Math.floor((metrics.growthRate - 20) / 10) : 0,
+        contribution:
+          metrics.growthRate > 20
+            ? Math.floor((metrics.growthRate - 20) / 10)
+            : 0,
         explanation:
           metrics.growthRate > 20
             ? `Crecimiento ${metrics.growthRate.toFixed(1)}% anual agrega +${Math.floor((metrics.growthRate - 20) / 10)}x al multiplo`
@@ -944,9 +1055,15 @@ export class FinanceService {
       },
       churnRate: {
         value: Math.round(metrics.churnRate * 100) / 100,
-        impact: metrics.churnRate < 3 ? 'positive' : metrics.churnRate < 5 ? 'neutral' : 'negative',
+        impact:
+          metrics.churnRate < 3
+            ? 'positive'
+            : metrics.churnRate < 5
+              ? 'neutral'
+              : 'negative',
         weight: 2,
-        contribution: metrics.churnRate < 3 ? 1 : metrics.churnRate < 5 ? 0.5 : 0,
+        contribution:
+          metrics.churnRate < 3 ? 1 : metrics.churnRate < 5 ? 0.5 : 0,
         explanation:
           metrics.churnRate < 3
             ? `Churn ${metrics.churnRate.toFixed(2)}% excelente, agrega +1x`
@@ -954,7 +1071,12 @@ export class FinanceService {
       },
       nrr: {
         value: Math.round(metrics.nrr * 100) / 100,
-        impact: metrics.nrr > 110 ? 'positive' : metrics.nrr > 100 ? 'neutral' : 'negative',
+        impact:
+          metrics.nrr > 110
+            ? 'positive'
+            : metrics.nrr > 100
+              ? 'neutral'
+              : 'negative',
         weight: 2,
         contribution: metrics.nrr > 110 ? 1 : metrics.nrr > 100 ? 0.5 : 0,
         explanation:
@@ -964,9 +1086,15 @@ export class FinanceService {
       },
       profitMargin: {
         value: Math.round(metrics.profitMargin * 100) / 100,
-        impact: metrics.profitMargin > 20 ? 'positive' : metrics.profitMargin > 0 ? 'neutral' : 'negative',
+        impact:
+          metrics.profitMargin > 20
+            ? 'positive'
+            : metrics.profitMargin > 0
+              ? 'neutral'
+              : 'negative',
         weight: 2,
-        contribution: metrics.profitMargin > 20 ? 1 : metrics.profitMargin > 0 ? 0.5 : 0,
+        contribution:
+          metrics.profitMargin > 20 ? 1 : metrics.profitMargin > 0 ? 0.5 : 0,
         explanation:
           metrics.profitMargin > 20
             ? `Margen ${metrics.profitMargin.toFixed(1)}% saludable, agrega +1x`
@@ -989,7 +1117,9 @@ export class FinanceService {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   }
 
-  private async saveValuationSnapshot(snapshot: ValuationSnapshot): Promise<void> {
+  private async saveValuationSnapshot(
+    snapshot: ValuationSnapshot,
+  ): Promise<void> {
     try {
       await this.firestoreService.saveValuationSnapshot(snapshot);
       this.logger.log(`Saved valuation snapshot for month: ${snapshot.month}`);

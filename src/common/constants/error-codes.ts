@@ -98,18 +98,23 @@ export const ErrorMessagesEs: Record<ErrorCode, string> = {
   [ErrorCodes.INVALID_LABEL_SIZE]: 'El tamaño de etiqueta no es válido',
   [ErrorCodes.INVALID_INPUT]: 'Los datos de entrada no son válidos',
   [ErrorCodes.NO_FILES]: 'Se requiere al menos un archivo',
-  [ErrorCodes.LABEL_LIMIT_EXCEEDED]: 'Se excedió el límite de etiquetas por PDF',
-  [ErrorCodes.MONTHLY_LIMIT_EXCEEDED]: 'Se agotó la cuota mensual de conversiones',
-  [ErrorCodes.BATCH_LIMIT_EXCEEDED]: 'Se excedió el límite de archivos por batch',
+  [ErrorCodes.LABEL_LIMIT_EXCEEDED]:
+    'Se excedió el límite de etiquetas por PDF',
+  [ErrorCodes.MONTHLY_LIMIT_EXCEEDED]:
+    'Se agotó la cuota mensual de conversiones',
+  [ErrorCodes.BATCH_LIMIT_EXCEEDED]:
+    'Se excedió el límite de archivos por batch',
   [ErrorCodes.FILE_TOO_LARGE]: 'El archivo excede el tamaño máximo permitido',
-  [ErrorCodes.IMAGE_FORMAT_PRO_ONLY]: 'El formato de imagen seleccionado requiere plan Pro',
+  [ErrorCodes.IMAGE_FORMAT_PRO_ONLY]:
+    'El formato de imagen seleccionado requiere plan Pro',
   [ErrorCodes.BATCH_NOT_ALLOWED]: 'El procesamiento batch requiere plan Pro',
   [ErrorCodes.ACCESS_DENIED]: 'No tienes acceso a este recurso',
   [ErrorCodes.JOB_NOT_FOUND]: 'Trabajo no encontrado',
   [ErrorCodes.JOB_EXPIRED]: 'El trabajo ha expirado y ya no está disponible',
   [ErrorCodes.BATCH_NOT_FOUND]: 'Batch no encontrado',
   [ErrorCodes.USER_NOT_FOUND]: 'Usuario no encontrado',
-  [ErrorCodes.DOWNLOAD_NOT_AVAILABLE]: 'No hay archivos disponibles para descargar',
+  [ErrorCodes.DOWNLOAD_NOT_AVAILABLE]:
+    'No hay archivos disponibles para descargar',
   [ErrorCodes.BATCH_PROCESSING]: 'El batch aún está procesándose',
   [ErrorCodes.JOB_NOT_COMPLETE]: 'La conversión no está completa',
   [ErrorCodes.SERVER_ERROR]: 'Error interno del servidor',
@@ -151,7 +156,10 @@ export const ErrorMessagesEn: Record<ErrorCode, string> = {
 /**
  * Obtiene el mensaje de error según el idioma
  */
-export function getErrorMessage(code: ErrorCode, language: 'es' | 'en' = 'es'): string {
+export function getErrorMessage(
+  code: ErrorCode,
+  language: 'es' | 'en' = 'es',
+): string {
   return language === 'es' ? ErrorMessagesEs[code] : ErrorMessagesEn[code];
 }
 

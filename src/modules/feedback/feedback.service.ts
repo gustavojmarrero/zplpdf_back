@@ -29,7 +29,9 @@ export class FeedbackService {
     }
 
     const lastDate = new Date(last.createdAt);
-    const daysSinceLast = Math.floor((Date.now() - lastDate.getTime()) / DAY_MS);
+    const daysSinceLast = Math.floor(
+      (Date.now() - lastDate.getTime()) / DAY_MS,
+    );
 
     return {
       shouldShow: daysSinceLast >= ROLLING_DAYS,

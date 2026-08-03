@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
-import { CreateErrorDto, CreateErrorResponseDto } from './dto/create-error.dto.js';
+import {
+  CreateErrorDto,
+  CreateErrorResponseDto,
+} from './dto/create-error.dto.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 
 @Injectable()

@@ -8,7 +8,10 @@ export class ValuationFactorDto {
   @ApiProperty({ description: 'Valor actual de la metrica' })
   value: number;
 
-  @ApiProperty({ enum: ['positive', 'neutral', 'negative'], description: 'Impacto en el multiplo' })
+  @ApiProperty({
+    enum: ['positive', 'neutral', 'negative'],
+    description: 'Impacto en el multiplo',
+  })
   impact: 'positive' | 'neutral' | 'negative';
 
   @ApiProperty({ description: 'Peso del factor en el multiplo (1-5)' })
@@ -62,10 +65,16 @@ export class ValuationProjectionDto {
   @ApiProperty({ description: 'ARR proyectado a 12 meses (MXN)' })
   arr12MonthsMxn: number;
 
-  @ApiProperty({ type: ValuationRangeDto, description: 'Valoracion proyectada a 12 meses (USD)' })
+  @ApiProperty({
+    type: ValuationRangeDto,
+    description: 'Valoracion proyectada a 12 meses (USD)',
+  })
   valuation12Months: ValuationRangeDto;
 
-  @ApiProperty({ type: ValuationRangeDto, description: 'Valoracion proyectada a 12 meses (MXN)' })
+  @ApiProperty({
+    type: ValuationRangeDto,
+    description: 'Valoracion proyectada a 12 meses (MXN)',
+  })
   valuation12MonthsMxn: ValuationRangeDto;
 
   @ApiProperty({ description: 'Supuesto de crecimiento anual (%)' })
@@ -84,7 +93,10 @@ export class PreviousMonthComparisonDto {
   @ApiProperty({ description: 'Cambio porcentual vs mes anterior' })
   change: number;
 
-  @ApiProperty({ enum: ['up', 'down', 'stable'], description: 'Direccion del cambio' })
+  @ApiProperty({
+    enum: ['up', 'down', 'stable'],
+    description: 'Direccion del cambio',
+  })
   changeDirection: 'up' | 'down' | 'stable';
 
   @ApiProperty({ description: 'Mes de comparacion (YYYY-MM)' })
@@ -115,19 +127,31 @@ export class BusinessValuationDataDto {
   @ApiProperty({ description: 'Monthly Recurring Revenue (MXN)' })
   mrrMxn: number;
 
-  @ApiProperty({ type: ValuationFactorsDto, description: 'Desglose de factores' })
+  @ApiProperty({
+    type: ValuationFactorsDto,
+    description: 'Desglose de factores',
+  })
   factors: ValuationFactorsDto;
 
   @ApiProperty({ description: 'Puntuacion de salud del negocio (0-100)' })
   healthScore: number;
 
-  @ApiProperty({ enum: ['excellent', 'good', 'fair', 'poor'], description: 'Nivel de salud' })
+  @ApiProperty({
+    enum: ['excellent', 'good', 'fair', 'poor'],
+    description: 'Nivel de salud',
+  })
   healthLevel: 'excellent' | 'good' | 'fair' | 'poor';
 
-  @ApiProperty({ type: ValuationProjectionDto, description: 'Proyeccion a 12 meses' })
+  @ApiProperty({
+    type: ValuationProjectionDto,
+    description: 'Proyeccion a 12 meses',
+  })
   projection: ValuationProjectionDto;
 
-  @ApiPropertyOptional({ type: PreviousMonthComparisonDto, description: 'Comparacion con mes anterior' })
+  @ApiPropertyOptional({
+    type: PreviousMonthComparisonDto,
+    description: 'Comparacion con mes anterior',
+  })
   previousMonth?: PreviousMonthComparisonDto;
 
   @ApiProperty({ description: 'Fecha de calculo' })
@@ -192,7 +216,10 @@ export class ValuationHistoryResponseDto {
 // ==================== Query DTOs ====================
 
 export class GetValuationHistoryQueryDto {
-  @ApiPropertyOptional({ description: 'Numero de meses a obtener', default: 12 })
+  @ApiPropertyOptional({
+    description: 'Numero de meses a obtener',
+    default: 12,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()

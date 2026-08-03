@@ -5,7 +5,8 @@ import { OutputFormat } from '../enums/output-format.enum.js';
 
 export class ConvertZplDto {
   @ApiProperty({
-    description: 'Contenido ZPL a convertir a PDF (opcional si se envía archivo)',
+    description:
+      'Contenido ZPL a convertir a PDF (opcional si se envía archivo)',
     example: '^XA^FO50,50^A0N,50,50^FDHello World^FS^XZ',
     required: false,
   })
@@ -33,7 +34,8 @@ export class ConvertZplDto {
   language?: string;
 
   @ApiProperty({
-    description: 'Formato de salida (pdf, png, jpeg). PNG y JPEG solo disponibles para usuarios Pro y Enterprise',
+    description:
+      'Formato de salida (pdf, png, jpeg). PNG y JPEG solo disponibles para usuarios Pro y Enterprise',
     example: OutputFormat.PDF,
     enum: OutputFormat,
     default: OutputFormat.PDF,
@@ -42,4 +44,4 @@ export class ConvertZplDto {
   @IsEnum(OutputFormat)
   @IsOptional()
   outputFormat?: OutputFormat;
-} 
+}

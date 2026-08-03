@@ -13,7 +13,10 @@ export const GoogleAuthProvider: Provider = {
         const credentials = JSON.parse(credentialsStr);
         // Convertir \n literales a saltos de línea reales en la private_key
         if (credentials.private_key) {
-          credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
+          credentials.private_key = credentials.private_key.replace(
+            /\\n/g,
+            '\n',
+          );
         }
         return { credentials };
       } catch (error) {
@@ -26,4 +29,4 @@ export const GoogleAuthProvider: Provider = {
     return {};
   },
   inject: [ConfigService],
-}; 
+};

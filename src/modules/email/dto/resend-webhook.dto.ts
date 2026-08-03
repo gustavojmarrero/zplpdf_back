@@ -7,21 +7,33 @@ import { IsString, IsOptional, IsObject, IsArray } from 'class-validator';
  * "Cannot access before initialization" error with ESM decorators
  */
 export class ResendWebhookData {
-  @ApiProperty({ example: 'ae123456-1234-1234-1234-123456789012', description: 'Resend email ID' })
+  @ApiProperty({
+    example: 'ae123456-1234-1234-1234-123456789012',
+    description: 'Resend email ID',
+  })
   @IsString()
   email_id: string;
 
-  @ApiPropertyOptional({ example: 'ZPLPDF <noreply@zplpdf.com>', description: 'From address' })
+  @ApiPropertyOptional({
+    example: 'ZPLPDF <noreply@zplpdf.com>',
+    description: 'From address',
+  })
   @IsOptional()
   @IsString()
   from?: string;
 
-  @ApiPropertyOptional({ example: ['user@example.com'], description: 'To addresses' })
+  @ApiPropertyOptional({
+    example: ['user@example.com'],
+    description: 'To addresses',
+  })
   @IsOptional()
   @IsArray()
   to?: string[];
 
-  @ApiPropertyOptional({ example: 'Welcome to ZPLPDF!', description: 'Email subject' })
+  @ApiPropertyOptional({
+    example: 'Welcome to ZPLPDF!',
+    description: 'Email subject',
+  })
   @IsOptional()
   @IsString()
   subject?: string;
@@ -61,7 +73,10 @@ export class ResendWebhookDto {
   @IsString()
   type: string;
 
-  @ApiProperty({ example: '2024-01-15T10:30:00.000Z', description: 'Event timestamp' })
+  @ApiProperty({
+    example: '2024-01-15T10:30:00.000Z',
+    description: 'Event timestamp',
+  })
   @IsString()
   created_at: string;
 

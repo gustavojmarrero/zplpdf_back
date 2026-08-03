@@ -11,10 +11,14 @@ import { readFileSync } from 'fs';
 dotenv.config();
 
 // Initialize Firebase Admin
-const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.FIREBASE_CREDENTIALS;
+const credentialsPath =
+  process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+  process.env.FIREBASE_CREDENTIALS;
 
 if (!credentialsPath) {
-  console.error('Error: GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_CREDENTIALS environment variable is required');
+  console.error(
+    'Error: GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_CREDENTIALS environment variable is required',
+  );
   process.exit(1);
 }
 
@@ -85,7 +89,8 @@ const limit80Template = {
   templateType: 'conversion',
   templateKey: 'limit_80_percent',
   name: 'FREE User 80% Quota Warning',
-  description: 'Email sent to FREE users when they reach 80% of their monthly quota',
+  description:
+    'Email sent to FREE users when they reach 80% of their monthly quota',
   triggerDays: 0,
   enabled: false,
   content: {
@@ -170,7 +175,14 @@ const limit80Template = {
       </div>`,
     },
   },
-  variables: ['displayName', 'userName', 'pdfsUsed', 'limit', 'periodEnd', 'upgradeUrl'],
+  variables: [
+    'displayName',
+    'userName',
+    'pdfsUsed',
+    'limit',
+    'periodEnd',
+    'upgradeUrl',
+  ],
   version: 1,
 };
 
@@ -178,7 +190,8 @@ const limit100Template = {
   templateType: 'conversion',
   templateKey: 'limit_100_percent',
   name: 'FREE User 100% Quota Reached',
-  description: 'Email sent to FREE users when they reach 100% of their monthly quota',
+  description:
+    'Email sent to FREE users when they reach 100% of their monthly quota',
   triggerDays: 0,
   enabled: false,
   content: {
@@ -279,7 +292,15 @@ const limit100Template = {
       </div>`,
     },
   },
-  variables: ['displayName', 'userName', 'pdfsUsed', 'limit', 'periodEnd', 'discountCode', 'upgradeUrl'],
+  variables: [
+    'displayName',
+    'userName',
+    'pdfsUsed',
+    'limit',
+    'periodEnd',
+    'discountCode',
+    'upgradeUrl',
+  ],
   version: 1,
 };
 
@@ -309,7 +330,9 @@ async function migrateTemplates() {
     });
     console.log(`✓ Created limit_80_percent template with ID: ${docRef.id}`);
   } else {
-    console.log(`⚠ limit_80_percent template already exists (ID: ${limit80Snapshot.docs[0].id})`);
+    console.log(
+      `⚠ limit_80_percent template already exists (ID: ${limit80Snapshot.docs[0].id})`,
+    );
   }
 
   // Create limit_100_percent template
@@ -322,11 +345,15 @@ async function migrateTemplates() {
     });
     console.log(`✓ Created limit_100_percent template with ID: ${docRef.id}`);
   } else {
-    console.log(`⚠ limit_100_percent template already exists (ID: ${limit100Snapshot.docs[0].id})`);
+    console.log(
+      `⚠ limit_100_percent template already exists (ID: ${limit100Snapshot.docs[0].id})`,
+    );
   }
 
   console.log('\nMigration completed!');
-  console.log('\nNote: Templates are created with enabled=false. Use the frontend admin panel to enable them.');
+  console.log(
+    '\nNote: Templates are created with enabled=false. Use the frontend admin panel to enable them.',
+  );
 }
 
 migrateTemplates()

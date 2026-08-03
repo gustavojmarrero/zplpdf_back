@@ -14,7 +14,8 @@ export class FeedbackAdminController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Listado de feedback (admin)',
-    description: 'Devuelve respuestas paginadas, filtros y resumen por sentimiento.',
+    description:
+      'Devuelve respuestas paginadas, filtros y resumen por sentimiento.',
   })
   list(@Query() query: QueryFeedbackDto) {
     return this.feedbackService.getAdminList(query);

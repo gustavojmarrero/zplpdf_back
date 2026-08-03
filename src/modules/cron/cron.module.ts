@@ -7,7 +7,12 @@ import { AdminModule } from '../admin/admin.module.js';
 import { AnalyticsModule } from '../analytics/analytics.module.js';
 
 @Module({
-  imports: [CacheModule, PeriodModule, forwardRef(() => AdminModule), AnalyticsModule],
+  imports: [
+    CacheModule,
+    PeriodModule,
+    forwardRef(() => AdminModule),
+    AnalyticsModule,
+  ],
   controllers: [CronController],
   providers: [CronService],
 })

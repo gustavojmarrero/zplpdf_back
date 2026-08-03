@@ -1,11 +1,27 @@
-import { Injectable, Logger, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ForbiddenException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { FirebaseAdminService } from '../auth/firebase-admin.service.js';
-import { PeriodCalculatorService, PeriodInfo } from '../../common/services/period-calculator.service.js';
-import { DEFAULT_PLAN_LIMITS, PLAN_FEATURES } from '../../common/interfaces/user.interface.js';
-import type { User, PlanType, PlanLimits } from '../../common/interfaces/user.interface.js';
+import {
+  PeriodCalculatorService,
+  PeriodInfo,
+} from '../../common/services/period-calculator.service.js';
+import {
+  DEFAULT_PLAN_LIMITS,
+  PLAN_FEATURES,
+} from '../../common/interfaces/user.interface.js';
+import type {
+  User,
+  PlanType,
+  PlanLimits,
+} from '../../common/interfaces/user.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
@@ -64,10 +80,14 @@ export class UsersService {
       const fbUser = await this.firebaseAdminService.getUser(firebaseUser.uid);
       emailVerified = fbUser.emailVerified;
     } catch (error) {
-      this.logger.warn(`Could not fetch Firebase user for emailVerified: ${error.message}`);
+      this.logger.warn(
+        `Could not fetch Firebase user for emailVerified: ${error.message}`,
+      );
     }
 
-    const existingUser = await this.firestoreService.getUserById(firebaseUser.uid);
+    const existingUser = await this.firestoreService.getUserById(
+      firebaseUser.uid,
+    );
 
     if (existingUser) {
       // Update existing user
@@ -80,8 +100,10 @@ export class UsersService {
       // Detectar geolocalización si:
       // 1. No tiene país, O
       // 2. countrySource es 'ip' y han pasado 7 días (no actualizar si es 'stripe')
-      const shouldUpdateGeo = !existingUser.country ||
-        (existingUser.countrySource === 'ip' && this.geoService.shouldRefreshGeo(existingUser));
+      const shouldUpdateGeo =
+        !existingUser.country ||
+        (existingUser.countrySource === 'ip' &&
+          this.geoService.shouldRefreshGeo(existingUser));
 
       if (shouldUpdateGeo) {
         // Prioridad: 1. Vercel headers (edge), 2. ip.guide API (fallback)
@@ -90,7 +112,9 @@ export class UsersService {
           updates.city = vercelGeo.city;
           updates.countrySource = 'ip';
           updates.countryDetectedAt = new Date();
-          this.logger.log(`Using Vercel geo ${vercelGeo.country}/${vercelGeo.city || ''} for existing user ${firebaseUser.uid}`);
+          this.logger.log(
+            `Using Vercel geo ${vercelGeo.country}/${vercelGeo.city || ''} for existing user ${firebaseUser.uid}`,
+          );
         } else if (clientIP) {
           try {
             const geoData = await this.geoService.detectCountryByIP(clientIP);
@@ -99,10 +123,14 @@ export class UsersService {
               updates.city = geoData.city;
               updates.countrySource = 'ip';
               updates.countryDetectedAt = new Date();
-              this.logger.log(`Detected geo ${geoData.country}/${geoData.city} for existing user ${firebaseUser.uid}`);
+              this.logger.log(
+                `Detected geo ${geoData.country}/${geoData.city} for existing user ${firebaseUser.uid}`,
+              );
             }
           } catch (error) {
-            this.logger.warn(`Failed to detect geo for ${firebaseUser.uid}: ${error.message}`);
+            this.logger.warn(
+              `Failed to detect geo for ${firebaseUser.uid}: ${error.message}`,
+            );
           }
         }
       }
@@ -123,17 +151,23 @@ export class UsersService {
     if (vercelGeo?.country) {
       country = vercelGeo.country;
       city = vercelGeo.city;
-      this.logger.log(`Using Vercel geo ${country}/${city || ''} for new user ${firebaseUser.uid}`);
+      this.logger.log(
+        `Using Vercel geo ${country}/${city || ''} for new user ${firebaseUser.uid}`,
+      );
     } else if (clientIP) {
       try {
         const geoData = await this.geoService.detectCountryByIP(clientIP);
         if (geoData) {
           country = geoData.country;
           city = geoData.city;
-          this.logger.log(`Detected geo ${country}/${city} for new user ${firebaseUser.uid}`);
+          this.logger.log(
+            `Detected geo ${country}/${city} for new user ${firebaseUser.uid}`,
+          );
         }
       } catch (error) {
-        this.logger.warn(`Failed to detect geo for ${firebaseUser.uid}: ${error.message}`);
+        this.logger.warn(
+          `Failed to detect geo for ${firebaseUser.uid}: ${error.message}`,
+        );
       }
     }
 
@@ -164,7 +198,9 @@ export class UsersService {
         displayName: newUser.displayName,
         language: country ? this.detectLanguageFromCountry(country) : undefined,
       })
-      .catch((err) => this.logger.error(`Failed to queue welcome email: ${err.message}`));
+      .catch((err) =>
+        this.logger.error(`Failed to queue welcome email: ${err.message}`),
+      );
 
     return newUser;
   }
@@ -182,7 +218,9 @@ export class UsersService {
       const firebaseUser = await this.firebaseAdminService.getUser(userId);
       emailVerified = firebaseUser.emailVerified;
     } catch (error) {
-      this.logger.warn(`Could not fetch Firebase user for emailVerified: ${error.message}`);
+      this.logger.warn(
+        `Could not fetch Firebase user for emailVerified: ${error.message}`,
+      );
     }
 
     return {
@@ -214,8 +252,12 @@ export class UsersService {
     }
 
     // Calcular período basado en plan (Free: desde createdAt, Pro: desde Firestore)
-    const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
-    const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
+    const periodInfo =
+      this.periodCalculatorService.calculateCurrentPeriod(user);
+    const usage = await this.firestoreService.getOrCreateUsageWithPeriod(
+      userId,
+      periodInfo,
+    );
 
     // Usar límites efectivos (considera simulación para admins)
     const effectivePlan = this.getEffectivePlan(user);
@@ -223,17 +265,22 @@ export class UsersService {
     const batchLimits = BATCH_LIMITS[effectivePlan] || BATCH_LIMITS.free;
 
     // Admin sin simulación = ilimitado
-    const isAdminUnlimited = user.role === 'admin' && !this.isSimulationActive(user);
+    const isAdminUnlimited =
+      user.role === 'admin' && !this.isSimulationActive(user);
 
     // Get Stripe subscription status if user has a subscription
     let subscriptionStatus: string | null = null;
     if (user.stripeSubscriptionId && this.stripe) {
       try {
-        const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+        const subscription = await this.stripe.subscriptions.retrieve(
+          user.stripeSubscriptionId,
+        );
         subscriptionStatus = subscription.status; // 'active' | 'past_due' | 'unpaid' | 'canceled' | etc
       } catch (error) {
         // Subscription might not exist (e.g., test/live mode mismatch)
-        this.logger.warn(`Could not fetch subscription ${user.stripeSubscriptionId}: ${error.message}`);
+        this.logger.warn(
+          `Could not fetch subscription ${user.stripeSubscriptionId}: ${error.message}`,
+        );
       }
     }
 
@@ -245,7 +292,9 @@ export class UsersService {
         canDownloadImages: isAdminUnlimited ? true : limits.canDownloadImages,
         batchAllowed: isAdminUnlimited ? true : batchLimits.batchAllowed,
         maxFilesPerBatch: isAdminUnlimited ? 100 : batchLimits.maxFilesPerBatch,
-        maxFileSizeBytes: isAdminUnlimited ? 50 * 1024 * 1024 : batchLimits.maxFileSizeBytes,
+        maxFileSizeBytes: isAdminUnlimited
+          ? 50 * 1024 * 1024
+          : batchLimits.maxFileSizeBytes,
       },
       currentUsage: {
         pdfCount: usage.pdfCount,
@@ -275,32 +324,44 @@ export class UsersService {
     }
 
     // Admins sin simulación tienen acceso ilimitado
-    const isAdminUnlimited = user.role === 'admin' && !this.isSimulationActive(user);
+    const isAdminUnlimited =
+      user.role === 'admin' && !this.isSimulationActive(user);
 
     // Usar plan efectivo (considera simulación para admins)
     const effectivePlan = this.getEffectivePlan(user);
 
     // El historial es una feature premium: Free y Lite NO tienen acceso (solo Pro/Pro Max/Enterprise)
     if (!isAdminUnlimited && !PLAN_FEATURES[effectivePlan].canViewHistory) {
-      throw new ForbiddenException('History is only available for Pro, Pro Max and Enterprise plans');
+      throw new ForbiddenException(
+        'History is only available for Pro, Pro Max and Enterprise plans',
+      );
     }
 
     const offset = (page - 1) * limit;
-    const history = await this.firestoreService.getUserConversionHistory(userId, limit, offset);
+    const history = await this.firestoreService.getUserConversionHistory(
+      userId,
+      limit,
+      offset,
+    );
 
     // Regenerar URLs firmadas frescas para cada registro completado
     return Promise.all(
       history.map(async (record) => {
         if (record.fileUrl && record.status === 'completed') {
-          const { storagePath, downloadFilename } = this.extractStorageInfo(record.fileUrl);
+          const { storagePath, downloadFilename } = this.extractStorageInfo(
+            record.fileUrl,
+          );
           if (storagePath) {
             try {
-              record.fileUrl = await this.storageService.generateSignedUrlForPath(
-                storagePath,
-                downloadFilename,
-              );
+              record.fileUrl =
+                await this.storageService.generateSignedUrlForPath(
+                  storagePath,
+                  downloadFilename,
+                );
             } catch (error) {
-              this.logger.warn(`Failed to regenerate URL for ${record.jobId}: ${error.message}`);
+              this.logger.warn(
+                `Failed to regenerate URL for ${record.jobId}: ${error.message}`,
+              );
             }
           }
         }
@@ -314,7 +375,10 @@ export class UsersService {
    * @param signedUrl URL firmada completa
    * @returns Objeto con storagePath y downloadFilename
    */
-  private extractStorageInfo(signedUrl: string): { storagePath: string | null; downloadFilename: string | null } {
+  private extractStorageInfo(signedUrl: string): {
+    storagePath: string | null;
+    downloadFilename: string | null;
+  } {
     // Extraer path: https://storage.googleapis.com/bucket/label-xxx.pdf?X-Goog-...
     const pathMatch = signedUrl.match(/googleapis\.com\/[^/]+\/([^?]+)/);
     const storagePath = pathMatch ? pathMatch[1] : null;
@@ -362,7 +426,8 @@ export class UsersService {
 
     // Admins sin simulación activa tienen acceso ilimitado
     if (user.role === 'admin' && !this.isSimulationActive(user)) {
-      const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
+      const periodInfo =
+        this.periodCalculatorService.calculateCurrentPeriod(user);
       return { allowed: true, periodInfo, userEmail };
     }
 
@@ -389,8 +454,12 @@ export class UsersService {
     const limits = this.getEffectivePlanLimits(user);
 
     // Calcular período basado en plan (Free: desde createdAt, Pro: desde Firestore)
-    const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
-    const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
+    const periodInfo =
+      this.periodCalculatorService.calculateCurrentPeriod(user);
+    const usage = await this.firestoreService.getOrCreateUsageWithPeriod(
+      userId,
+      periodInfo,
+    );
 
     // Check labels per PDF limit
     if (labelCount > limits.maxLabelsPerPdf) {
@@ -454,7 +523,9 @@ export class UsersService {
         notifiedInactive7Days: false,
         notifiedInactive30Days: false,
       })
-      .catch((err) => this.logger.error(`Failed to update lastActivityAt: ${err.message}`));
+      .catch((err) =>
+        this.logger.error(`Failed to update lastActivityAt: ${err.message}`),
+      );
 
     // Get user plan if not provided
     let plan = userPlan;
@@ -466,7 +537,9 @@ export class UsersService {
     // Update daily stats (fire-and-forget for performance)
     this.firestoreService
       .incrementDailyStats(userId, plan, 1, labelCount, status)
-      .catch((err) => this.logger.error(`Failed to update daily stats: ${err.message}`));
+      .catch((err) =>
+        this.logger.error(`Failed to update daily stats: ${err.message}`),
+      );
 
     // Increment usage only for completed conversions
     if (status === 'completed') {
@@ -474,11 +547,17 @@ export class UsersService {
       if (!effectivePeriod) {
         const user = await this.firestoreService.getUserById(userId);
         if (user) {
-          effectivePeriod = this.periodCalculatorService.calculateCurrentPeriod(user);
+          effectivePeriod =
+            this.periodCalculatorService.calculateCurrentPeriod(user);
         }
       }
       if (effectivePeriod) {
-        await this.firestoreService.incrementUsageWithPeriod(userId, effectivePeriod, 1, labelCount);
+        await this.firestoreService.incrementUsageWithPeriod(
+          userId,
+          effectivePeriod,
+          1,
+          labelCount,
+        );
       }
 
       // Check and trigger limit emails (fire-and-forget)
@@ -494,7 +573,10 @@ export class UsersService {
    *
    * The template must be enabled in Firestore (controlled via frontend toggle).
    */
-  private async checkAndTriggerLimitEmails(userId: string, userPlan: PlanType): Promise<void> {
+  private async checkAndTriggerLimitEmails(
+    userId: string,
+    userPlan: PlanType,
+  ): Promise<void> {
     // Solo Free y Lite tienen cuota mensual baja y reciben avisos de límite.
     // Pro/Pro Max/Enterprise tienen cuotas altas y no se les notifica.
     if (userPlan !== 'free' && userPlan !== 'lite') {
@@ -506,12 +588,17 @@ export class UsersService {
       if (!user) return;
 
       // Get usage data for pdfCount and period dates (período actual del usuario)
-      const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
-      const usage = await this.firestoreService.getOrCreateUsageWithPeriod(userId, periodInfo);
+      const periodInfo =
+        this.periodCalculatorService.calculateCurrentPeriod(user);
+      const usage = await this.firestoreService.getOrCreateUsageWithPeriod(
+        userId,
+        periodInfo,
+      );
       const pdfCount = usage.pdfCount || 0;
-      const limit = user.planLimits?.maxPdfsPerMonth
-        || DEFAULT_PLAN_LIMITS[user.plan]?.maxPdfsPerMonth
-        || DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
+      const limit =
+        user.planLimits?.maxPdfsPerMonth ||
+        DEFAULT_PLAN_LIMITS[user.plan]?.maxPdfsPerMonth ||
+        DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
       const percentage = (pdfCount / limit) * 100;
 
       const periodStart = usage.periodStart;
@@ -554,7 +641,9 @@ export class UsersService {
         }
       }
     } catch (error) {
-      this.logger.error(`Error checking limit emails for ${userId}: ${error.message}`);
+      this.logger.error(
+        `Error checking limit emails for ${userId}: ${error.message}`,
+      );
     }
   }
 
@@ -587,7 +676,9 @@ export class UsersService {
   private getEffectivePlanLimits(user: User): PlanLimits {
     // Si es admin con simulación activa, usar límites del plan simulado
     if (this.isSimulationActive(user) && user.simulatedPlan) {
-      return DEFAULT_PLAN_LIMITS[user.simulatedPlan] || DEFAULT_PLAN_LIMITS.free;
+      return (
+        DEFAULT_PLAN_LIMITS[user.simulatedPlan] || DEFAULT_PLAN_LIMITS.free
+      );
     }
 
     return this.getPlanLimits(user);
@@ -610,8 +701,25 @@ export class UsersService {
     if (!country) return 'en';
 
     const spanishCountries = [
-      'MX', 'ES', 'AR', 'CO', 'PE', 'CL', 'VE', 'EC', 'GT', 'CU',
-      'BO', 'DO', 'HN', 'SV', 'NI', 'CR', 'PA', 'UY', 'PR',
+      'MX',
+      'ES',
+      'AR',
+      'CO',
+      'PE',
+      'CL',
+      'VE',
+      'EC',
+      'GT',
+      'CU',
+      'BO',
+      'DO',
+      'HN',
+      'SV',
+      'NI',
+      'CR',
+      'PA',
+      'UY',
+      'PR',
     ];
     const chineseCountries = ['CN', 'TW', 'HK', 'MO', 'SG'];
 

@@ -1,4 +1,9 @@
-import type { EmailType, AbVariant, EmailLanguage, EmailContent } from '../interfaces/email.interface.js';
+import type {
+  EmailType,
+  AbVariant,
+  EmailLanguage,
+  EmailContent,
+} from '../interfaces/email.interface.js';
 
 interface TemplateData {
   displayName: string;
@@ -29,7 +34,10 @@ interface TemplateData {
 }
 
 // Subject lines for each email type and variant
-const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string>>> = {
+const SUBJECTS: Record<
+  EmailType,
+  Record<AbVariant, Record<EmailLanguage, string>>
+> = {
   welcome: {
     A: {
       en: 'Welcome to ZPLPDF!',
@@ -103,7 +111,7 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
   // Conversion emails
   limit_80_percent: {
     A: {
-      en: '⚠️ You\'ve used 80% of your monthly PDFs',
+      en: "⚠️ You've used 80% of your monthly PDFs",
       es: '⚠️ Has usado el 80% de tus PDFs mensuales',
       zh: '⚠️ 您已使用本月PDF配额的80%',
       pt: '⚠️ Você usou 80% dos seus PDFs mensais',
@@ -117,7 +125,7 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
   },
   limit_100_percent: {
     A: {
-      en: '🚨 You\'ve reached your monthly limit - Get 20% OFF',
+      en: "🚨 You've reached your monthly limit - Get 20% OFF",
       es: '🚨 Has alcanzado tu límite mensual - Obtén 20% OFF',
       zh: '🚨 您已达到月度限制 - 享受8折优惠',
       pt: '🚨 Você atingiu seu limite mensal - Ganhe 20% OFF',
@@ -151,7 +159,7 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       pt: '🚀 Seu negócio está crescendo rápido!',
     },
     B: {
-      en: 'Projection: You\'ll run out of quota soon',
+      en: "Projection: You'll run out of quota soon",
       es: 'Proyección: Agotarás tu cuota pronto',
       zh: '预测：您的配额即将用完',
       pt: 'Projeção: Você esgotará sua cota em breve',
@@ -265,7 +273,7 @@ const SUBJECTS: Record<EmailType, Record<AbVariant, Record<EmailLanguage, string
       pt: '{name}, você encontrou o que procurava?',
     },
     B: {
-      en: 'We\'d love your feedback',
+      en: "We'd love your feedback",
       es: 'Nos encantaría saber tu opinión',
       zh: '我们很想听听您的反馈',
       pt: 'Adoraríamos seu feedback',
@@ -382,7 +390,11 @@ function ctaButton(text: string, url: string): string {
 }
 
 // Welcome email templates
-function getWelcomeContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getWelcomeContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://zplpdf.com';
 
   const content = {
@@ -494,7 +506,11 @@ function getWelcomeContent(variant: AbVariant, lang: EmailLanguage, data: Templa
 }
 
 // Tutorial email templates
-function getTutorialContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getTutorialContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://zplpdf.com';
 
   const content = {
@@ -611,7 +627,11 @@ function getTutorialContent(variant: AbVariant, lang: EmailLanguage, data: Templ
 }
 
 // Help email templates
-function getHelpContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getHelpContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://zplpdf.com';
   const docsUrl = 'https://zplpdf.com/docs';
 
@@ -741,7 +761,11 @@ function getHelpContent(variant: AbVariant, lang: EmailLanguage, data: TemplateD
 }
 
 // Success story email templates
-function getSuccessStoryContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getSuccessStoryContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const pricingUrl = 'https://zplpdf.com/pricing';
 
   const content = {
@@ -862,7 +886,11 @@ function getSuccessStoryContent(variant: AbVariant, lang: EmailLanguage, data: T
 }
 
 // Miss you email templates
-function getMissYouContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getMissYouContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://zplpdf.com';
 
   const content = {
@@ -966,9 +994,12 @@ function getMissYouContent(variant: AbVariant, lang: EmailLanguage, data: Templa
 function progressBar(used: number, limit: number): string {
   const percentage = Math.min((used / limit) * 100, 100);
   const usedWidth = Math.round(percentage);
-  const remainingWidth = 100 - usedWidth;
   const isUrgent = percentage >= 100;
-  const barColor = isUrgent ? '#dc2626' : percentage >= 80 ? '#f59e0b' : '#2563eb';
+  const barColor = isUrgent
+    ? '#dc2626'
+    : percentage >= 80
+      ? '#f59e0b'
+      : '#2563eb';
 
   return `
     <table role="presentation" style="width: 100%; margin: 16px 0; border-collapse: collapse;">
@@ -990,7 +1021,11 @@ function progressBar(used: number, limit: number): string {
 }
 
 // Limit 80% email templates
-function getLimit80Content(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getLimit80Content(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const pricingUrl = 'https://zplpdf.com/pricing';
   const used = data.pdfsUsed || 0;
   const limit = data.limit || 25;
@@ -1114,7 +1149,11 @@ function getLimit80Content(variant: AbVariant, lang: EmailLanguage, data: Templa
 }
 
 // Limit 100% email templates
-function getLimit100Content(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getLimit100Content(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const checkoutUrl = `https://zplpdf.com/pricing?code=${data.discountCode || 'UPGRADE20'}`;
   const used = data.pdfsUsed || 0;
   const limit = data.limit || 25;
@@ -1254,7 +1293,11 @@ function getLimit100Content(variant: AbVariant, lang: EmailLanguage, data: Templ
 }
 
 // Conversion blocked email templates
-function getBlockedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getBlockedContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const checkoutUrl = `https://zplpdf.com/pricing?code=${data.discountCode || 'UPGRADE20'}`;
 
   const content = {
@@ -1360,7 +1403,11 @@ function getBlockedContent(variant: AbVariant, lang: EmailLanguage, data: Templa
 }
 
 // High usage email templates
-function getHighUsageContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getHighUsageContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const pricingUrl = 'https://zplpdf.com/pricing';
   const avgPerDay = data.avgPdfsPerDay || 3;
   const daysToLimit = data.projectedDaysToLimit || 5;
@@ -1568,7 +1615,11 @@ function getHighUsageContent(variant: AbVariant, lang: EmailLanguage, data: Temp
 // ============== PRO Retention Email Templates ==============
 
 // PRO Inactive 7 days email templates
-function getProInactive7DaysContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getProInactive7DaysContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://zplpdf.com';
   const name = data.displayName || 'there';
 
@@ -1699,7 +1750,11 @@ function getProInactive7DaysContent(variant: AbVariant, lang: EmailLanguage, dat
 }
 
 // PRO Inactive 14 days email templates
-function getProInactive14DaysContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getProInactive14DaysContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const supportEmail = 'support@zplpdf.com';
   const name = data.displayName || 'there';
 
@@ -1830,7 +1885,11 @@ function getProInactive14DaysContent(variant: AbVariant, lang: EmailLanguage, da
 }
 
 // PRO Inactive 30 days email templates
-function getProInactive30DaysContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getProInactive30DaysContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const supportEmail = 'support@zplpdf.com';
   const name = data.displayName || 'there';
 
@@ -1937,8 +1996,13 @@ function getProInactive30DaysContent(variant: AbVariant, lang: EmailLanguage, da
 }
 
 // PRO Power User email templates
-function getProPowerUserContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
-  const testimonialUrl = 'mailto:testimonials@zplpdf.com?subject=I want to share my ZPLPDF story';
+function getProPowerUserContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
+  const testimonialUrl =
+    'mailto:testimonials@zplpdf.com?subject=I want to share my ZPLPDF story';
   const name = data.displayName || 'there';
   const pdfsThisMonth = data.pdfsThisMonth || 50;
 
@@ -2058,10 +2122,16 @@ function getProPowerUserContent(variant: AbVariant, lang: EmailLanguage, data: T
 
 // ============== FREE Reactivation Email Content ==============
 
-function getFreeNeverUsed7dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getFreeNeverUsed7dContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://www.zplpdf.com';
   const examplesUrl = 'https://www.zplpdf.com/examples';
-  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const name =
+    data.displayName ||
+    (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
 
   const content = {
     A: {
@@ -2213,11 +2283,17 @@ function getFreeNeverUsed7dContent(variant: AbVariant, lang: EmailLanguage, data
   return content[variant][lang];
 }
 
-function getFreeNeverUsed14dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getFreeNeverUsed14dContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://www.zplpdf.com';
   const faqUrl = 'https://www.zplpdf.com/faq';
   const examplesUrl = 'https://www.zplpdf.com/examples';
-  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const name =
+    data.displayName ||
+    (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
 
   const content = {
     A: {
@@ -2353,11 +2429,17 @@ function getFreeNeverUsed14dContent(variant: AbVariant, lang: EmailLanguage, dat
   return content[variant][lang];
 }
 
-function getFreeTriedAbandonedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getFreeTriedAbandonedContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://www.zplpdf.com';
-  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const name =
+    data.displayName ||
+    (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
   const pdfCount = data.pdfCount || 1;
-  const pdfsAvailable = data.pdfsAvailable || (25 - pdfCount);
+  const pdfsAvailable = data.pdfsAvailable || 25 - pdfCount;
 
   const content = {
     A: {
@@ -2497,10 +2579,16 @@ function getFreeTriedAbandonedContent(variant: AbVariant, lang: EmailLanguage, d
   return content[variant][lang];
 }
 
-function getFreeDormant30dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getFreeDormant30dContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const surveyUrl = 'https://forms.gle/zplpdf-feedback';
   const appUrl = 'https://www.zplpdf.com';
-  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const name =
+    data.displayName ||
+    (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
   const pdfsAvailable = data.pdfsAvailable || 25;
 
   const content = {
@@ -2653,9 +2741,15 @@ function getFreeDormant30dContent(variant: AbVariant, lang: EmailLanguage, data:
   return content[variant][lang];
 }
 
-function getFreeAbandoned60dContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getFreeAbandoned60dContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const appUrl = 'https://www.zplpdf.com';
-  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const name =
+    data.displayName ||
+    (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
 
   const content = {
     A: {
@@ -2759,7 +2853,7 @@ function getFreeAbandoned60dContent(variant: AbVariant, lang: EmailLanguage, dat
           <li>Improved mobile experience</li>
           <li>More ZPL commands supported</li>
         </ul>
-        ${ctaButton('SEE WHAT\'S NEW →', appUrl)}
+        ${ctaButton("SEE WHAT'S NEW →", appUrl)}
         <p style="margin: 24px 0 0; color: #6b7280; font-size: 14px;">
           Your account is waiting for you.
         </p>
@@ -2829,9 +2923,15 @@ function getFreeAbandoned60dContent(variant: AbVariant, lang: EmailLanguage, dat
 
 // ============== Payment Notification Emails ==============
 
-function getPaymentFailedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getPaymentFailedContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const portalUrl = 'https://www.zplpdf.com/dashboard/billing';
-  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const name =
+    data.displayName ||
+    (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
   const attemptCount = data.attemptCount || 1;
   const nextRetryDate = data.nextRetryDate || '';
 
@@ -2973,9 +3073,15 @@ function getPaymentFailedContent(variant: AbVariant, lang: EmailLanguage, data: 
   return content[variant][lang];
 }
 
-function getSubscriptionDowngradedContent(variant: AbVariant, lang: EmailLanguage, data: TemplateData): string {
+function getSubscriptionDowngradedContent(
+  variant: AbVariant,
+  lang: EmailLanguage,
+  data: TemplateData,
+): string {
   const pricingUrl = 'https://www.zplpdf.com/pricing';
-  const name = data.displayName || (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
+  const name =
+    data.displayName ||
+    (lang === 'es' ? 'Hola' : lang === 'zh' ? '您好' : 'there');
   const previousPlan = data.previousPlan || 'PRO';
   const reason = data.reason || 'canceled';
 
@@ -3000,7 +3106,8 @@ function getSubscriptionDowngradedContent(variant: AbVariant, lang: EmailLanguag
     },
   };
 
-  const reasonMessage = reasonText[reason as keyof typeof reasonText] || reasonText.canceled;
+  const reasonMessage =
+    reasonText[reason as keyof typeof reasonText] || reasonText.canceled;
 
   const content = {
     A: {

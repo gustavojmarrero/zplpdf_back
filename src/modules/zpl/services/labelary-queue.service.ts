@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import {
   QueueItem,
-  QueueItemStatus,
   QueuePriority,
   QueuePositionResponse,
   QueueStats,
@@ -65,7 +64,9 @@ export class LabelaryQueueService {
   ): Promise<Buffer> {
     return new Promise<Buffer>((resolve, reject) => {
       // Prioridad alta es una feature premium: solo Pro/Pro Max/Enterprise. Free y Lite van en 'normal'.
-      const priority: QueuePriority = PLAN_FEATURES[userPlan].hasHighPriority ? 'high' : 'normal';
+      const priority: QueuePriority = PLAN_FEATURES[userPlan].hasHighPriority
+        ? 'high'
+        : 'normal';
 
       const item: QueueItem = {
         id: uuidv4(),
@@ -297,7 +298,10 @@ export class LabelaryQueueService {
       }
 
       // Error final o error no-429
-      await this.labelaryAnalyticsService.trackError(responseTime, error.message);
+      await this.labelaryAnalyticsService.trackError(
+        responseTime,
+        error.message,
+      );
       item.status = 'failed';
       this.releaseSlot(item);
       reject(error);
@@ -457,7 +461,9 @@ export class LabelaryQueueService {
         responseTime,
         error.message,
       );
-      throw new Error(`Error al obtener imagen de Labelary API: ${error.message}`);
+      throw new Error(
+        `Error al obtener imagen de Labelary API: ${error.message}`,
+      );
     }
   }
 }

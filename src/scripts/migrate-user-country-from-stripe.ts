@@ -49,7 +49,9 @@ interface UserData {
   stripeCustomerId?: string;
 }
 
-async function getCardCountryFromSubscription(subscriptionId: string): Promise<string | null> {
+async function getCardCountryFromSubscription(
+  subscriptionId: string,
+): Promise<string | null> {
   try {
     // Obtener la suscripción
     const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
@@ -65,15 +67,22 @@ async function getCardCountryFromSubscription(subscriptionId: string): Promise<s
     // Si no hay default_payment_method, intentar con el customer
     if (subscription.customer) {
       const customerId =
-        typeof subscription.customer === 'string' ? subscription.customer : subscription.customer.id;
+        typeof subscription.customer === 'string'
+          ? subscription.customer
+          : subscription.customer.id;
 
       const customer = await stripe.customers.retrieve(customerId, {
         expand: ['invoice_settings.default_payment_method'],
       });
 
       if (customer && !customer.deleted) {
-        const defaultPm = (customer as Stripe.Customer).invoice_settings?.default_payment_method;
-        if (defaultPm && typeof defaultPm === 'object' && defaultPm.card?.country) {
+        const defaultPm = (customer as Stripe.Customer).invoice_settings
+          ?.default_payment_method;
+        if (
+          defaultPm &&
+          typeof defaultPm === 'object' &&
+          defaultPm.card?.country
+        ) {
           return defaultPm.card.country;
         }
       }
@@ -81,16 +90,24 @@ async function getCardCountryFromSubscription(subscriptionId: string): Promise<s
 
     return null;
   } catch (error) {
-    console.log(`  ⚠️  Error obteniendo suscripción ${subscriptionId}:`, (error as Error).message);
+    console.log(
+      `  ⚠️  Error obteniendo suscripción ${subscriptionId}:`,
+      (error as Error).message,
+    );
     return null;
   }
 }
 
 async function migrateUserCountries() {
-  console.log('🚀 Iniciando migración de países de usuarios Pro desde Stripe...\n');
+  console.log(
+    '🚀 Iniciando migración de países de usuarios Pro desde Stripe...\n',
+  );
 
   // Obtener usuarios Pro con countrySource='ip' o sin country
-  const usersSnapshot = await db.collection('users').where('plan', '==', 'pro').get();
+  const usersSnapshot = await db
+    .collection('users')
+    .where('plan', '==', 'pro')
+    .get();
 
   console.log(`📊 Total usuarios Pro: ${usersSnapshot.size}\n`);
 
@@ -104,7 +121,9 @@ async function migrateUserCountries() {
 
     // Si ya tiene countrySource='stripe', saltar
     if (user.countrySource === 'stripe') {
-      console.log(`  ⏭️  ${user.email} ya tiene countrySource='stripe' (${user.country})`);
+      console.log(
+        `  ⏭️  ${user.email} ya tiene countrySource='stripe' (${user.country})`,
+      );
       alreadyStripe++;
       continue;
     }
@@ -117,7 +136,9 @@ async function migrateUserCountries() {
     }
 
     // Obtener el país de la tarjeta desde Stripe
-    const cardCountry = await getCardCountryFromSubscription(user.stripeSubscriptionId);
+    const cardCountry = await getCardCountryFromSubscription(
+      user.stripeSubscriptionId,
+    );
 
     if (!cardCountry) {
       console.log(`  ⚠️  ${user.email} - No se pudo obtener país de Stripe`);

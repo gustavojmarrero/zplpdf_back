@@ -58,8 +58,16 @@ export const DEFAULT_PLAN_LIMITS: Record<PlanType, PlanLimits> = {
   free: { maxLabelsPerPdf: 75, maxPdfsPerMonth: 10, canDownloadImages: false },
   lite: { maxLabelsPerPdf: 100, maxPdfsPerMonth: 25, canDownloadImages: false },
   pro: { maxLabelsPerPdf: 500, maxPdfsPerMonth: 500, canDownloadImages: true },
-  promax: { maxLabelsPerPdf: 1000, maxPdfsPerMonth: 1000, canDownloadImages: true },
-  enterprise: { maxLabelsPerPdf: 999999, maxPdfsPerMonth: 999999, canDownloadImages: true },
+  promax: {
+    maxLabelsPerPdf: 1000,
+    maxPdfsPerMonth: 1000,
+    canDownloadImages: true,
+  },
+  enterprise: {
+    maxLabelsPerPdf: 999999,
+    maxPdfsPerMonth: 999999,
+    canDownloadImages: true,
+  },
 };
 
 /**
@@ -67,11 +75,31 @@ export const DEFAULT_PLAN_LIMITS: Record<PlanType, PlanLimits> = {
  * (Lite solo compra más cuota). Pro/Pro Max/Enterprise desbloquean todas.
  */
 export const PLAN_FEATURES: Record<PlanType, PlanFeatures> = {
-  free: { canViewHistory: false, hasHighPriority: false, preservesOriginalFilename: false },
-  lite: { canViewHistory: false, hasHighPriority: false, preservesOriginalFilename: false },
-  pro: { canViewHistory: true, hasHighPriority: true, preservesOriginalFilename: true },
-  promax: { canViewHistory: true, hasHighPriority: true, preservesOriginalFilename: true },
-  enterprise: { canViewHistory: true, hasHighPriority: true, preservesOriginalFilename: true },
+  free: {
+    canViewHistory: false,
+    hasHighPriority: false,
+    preservesOriginalFilename: false,
+  },
+  lite: {
+    canViewHistory: false,
+    hasHighPriority: false,
+    preservesOriginalFilename: false,
+  },
+  pro: {
+    canViewHistory: true,
+    hasHighPriority: true,
+    preservesOriginalFilename: true,
+  },
+  promax: {
+    canViewHistory: true,
+    hasHighPriority: true,
+    preservesOriginalFilename: true,
+  },
+  enterprise: {
+    canViewHistory: true,
+    hasHighPriority: true,
+    preservesOriginalFilename: true,
+  },
 };
 
 /** Orden jerárquico de planes (para comparar upgrades/downgrades). */

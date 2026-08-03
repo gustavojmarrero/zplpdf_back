@@ -79,7 +79,8 @@ export const messagesES: ErrorMessages = {
   largeCoords: 'Coordenadas muy grandes pueden estar fuera de la etiqueta',
   suggestFoFormat: 'Use el formato ^FOx,y (ej: ^FO50,100)',
   suggestFtFormat: 'Use el formato ^FTx,y (ej: ^FT50,100)',
-  suggestPositiveCoords: 'Use coordenadas positivas dentro del area de impresion',
+  suggestPositiveCoords:
+    'Use coordenadas positivas dentro del area de impresion',
   suggestCheckLabelSize:
     'Verifique que las coordenadas esten dentro del tamano de etiqueta',
 
@@ -90,7 +91,8 @@ export const messagesES: ErrorMessages = {
   invalidBarWidth: 'Ancho de barra fuera de rango (1-10)',
   emptyBarcodeData: 'Codigo de barras sin datos',
   suggestSupportedBarcodes: 'Use: ^BC (Code128), ^BQ (QR), ^B3 (Code39)',
-  suggestOrientations: 'Orientaciones validas: N (normal), R (90), I (180), B (270)',
+  suggestOrientations:
+    'Orientaciones validas: N (normal), R (90), I (180), B (270)',
   suggestQRModels: 'Use modelo 2 para mejor compatibilidad',
   suggestBarWidth: 'Ancho recomendado: 2-4',
   suggestAddBarcodeData:
@@ -142,7 +144,8 @@ export const messagesEN: ErrorMessages = {
   invalidBarWidth: 'Bar width out of range (1-10)',
   emptyBarcodeData: 'Barcode without data',
   suggestSupportedBarcodes: 'Use: ^BC (Code128), ^BQ (QR), ^B3 (Code39)',
-  suggestOrientations: 'Valid orientations: N (normal), R (90), I (180), B (270)',
+  suggestOrientations:
+    'Valid orientations: N (normal), R (90), I (180), B (270)',
   suggestQRModels: 'Use model 2 for better compatibility',
   suggestBarWidth: 'Recommended width: 2-4',
   suggestAddBarcodeData: 'Add data in ^FD after barcode command',

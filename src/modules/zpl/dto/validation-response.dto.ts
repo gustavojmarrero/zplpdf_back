@@ -14,7 +14,9 @@ export class ValidationIssueDto implements ValidationIssue {
   @ApiProperty({ example: 'error' })
   severity: 'error' | 'warning' | 'info';
 
-  @ApiProperty({ example: 'Desequilibrio de campos: 3 ^FD encontrados pero 2 ^FS' })
+  @ApiProperty({
+    example: 'Desequilibrio de campos: 3 ^FD encontrados pero 2 ^FS',
+  })
   message: string;
 
   @ApiProperty({ example: 1, required: false })

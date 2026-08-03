@@ -13,12 +13,23 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiParam,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
-import type { EmailTemplate, TemplateVersion, TemplatePreview, EmailLanguage } from './interfaces/email.interface.js';
+import type {
+  EmailTemplate,
+  TemplateVersion,
+  TemplatePreview,
+} from './interfaces/email.interface.js';
 import {
   UpdateEmailTemplateDto,
   RollbackTemplateDto,
@@ -44,9 +55,13 @@ export class EmailTemplatesController {
     private readonly firestoreService: FirestoreService,
     private readonly configService: ConfigService,
   ) {
-    const featureEnabled = this.configService.get<string>('EMAIL_TEMPLATES_ADMIN_ENABLED') === 'true';
+    const featureEnabled =
+      this.configService.get<string>('EMAIL_TEMPLATES_ADMIN_ENABLED') ===
+      'true';
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
-    this.fromEmail = this.configService.get<string>('RESEND_FROM_EMAIL') || 'ZPLPDF <noreply@zplpdf.com>';
+    this.fromEmail =
+      this.configService.get<string>('RESEND_FROM_EMAIL') ||
+      'ZPLPDF <noreply@zplpdf.com>';
     this.isEnabled = featureEnabled;
 
     if (apiKey) {
@@ -55,7 +70,9 @@ export class EmailTemplatesController {
       this.resend = null;
     }
 
-    this.logger.log(`Email Templates Admin feature: ${featureEnabled ? 'enabled' : 'disabled'}`);
+    this.logger.log(
+      `Email Templates Admin feature: ${featureEnabled ? 'enabled' : 'disabled'}`,
+    );
   }
 
   // ============== List All Templates ==============
@@ -74,8 +91,12 @@ export class EmailTemplatesController {
     const templates = await this.firestoreService.getEmailTemplates();
 
     const groupedBy = {
-      pro_retention: templates.filter((t) => t.templateType === 'pro_retention'),
-      free_reactivation: templates.filter((t) => t.templateType === 'free_reactivation'),
+      pro_retention: templates.filter(
+        (t) => t.templateType === 'pro_retention',
+      ),
+      free_reactivation: templates.filter(
+        (t) => t.templateType === 'free_reactivation',
+      ),
       onboarding: templates.filter((t) => t.templateType === 'onboarding'),
       conversion: templates.filter((t) => t.templateType === 'conversion'),
     };
@@ -110,7 +131,8 @@ export class EmailTemplatesController {
   @Put(':id')
   @ApiOperation({
     summary: 'Update email template',
-    description: 'Updates template content and creates a new version in history',
+    description:
+      'Updates template content and creates a new version in history',
   })
   @ApiParam({ name: 'id', description: 'Template ID' })
   @ApiResponse({
@@ -124,7 +146,8 @@ export class EmailTemplatesController {
     @Body() updateDto: UpdateEmailTemplateDto,
     @AdminUser() admin: { email: string },
   ): Promise<EmailTemplate> {
-    const changeDescription = updateDto.changeDescription || 'Updated via admin panel';
+    const changeDescription =
+      updateDto.changeDescription || 'Updated via admin panel';
 
     const template = await this.firestoreService.updateEmailTemplate(id, {
       ...updateDto,
@@ -136,7 +159,9 @@ export class EmailTemplatesController {
       throw new NotFoundException(`Template with ID ${id} not found`);
     }
 
-    this.logger.log(`Template ${id} updated by ${admin.email}: ${changeDescription}`);
+    this.logger.log(
+      `Template ${id} updated by ${admin.email}: ${changeDescription}`,
+    );
     return template;
   }
 
@@ -194,7 +219,9 @@ export class EmailTemplatesController {
         throw new NotFoundException(`Template with ID ${id} not found`);
       }
 
-      this.logger.log(`Template ${id} rolled back to version ${rollbackDto.versionId} by ${admin.email}`);
+      this.logger.log(
+        `Template ${id} rolled back to version ${rollbackDto.versionId} by ${admin.email}`,
+      );
       return template;
     } catch (error) {
       if (error.message.includes('not found')) {
@@ -229,7 +256,7 @@ export class EmailTemplatesController {
       throw new NotFoundException(`Template with ID ${id} not found`);
     }
 
-    const { subject, body, sampleData } = this.generatePreview(template, testDto.language);
+    const { subject, body } = this.generatePreview(template, testDto.language);
 
     if (!this.resend) {
       this.logger.warn('Resend not configured, test email not sent');
@@ -270,7 +297,11 @@ export class EmailTemplatesController {
     description: 'Returns rendered template with sample data',
   })
   @ApiParam({ name: 'id', description: 'Template ID' })
-  @ApiQuery({ name: 'language', enum: ['en', 'es', 'zh', 'pt'], required: false })
+  @ApiQuery({
+    name: 'language',
+    enum: ['en', 'es', 'zh', 'pt'],
+    required: false,
+  })
   @ApiResponse({
     status: 200,
     description: 'Preview generated successfully',

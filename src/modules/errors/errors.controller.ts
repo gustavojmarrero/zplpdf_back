@@ -19,7 +19,10 @@ import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { ErrorsService } from './errors.service.js';
-import { CreateErrorDto, CreateErrorResponseDto } from './dto/create-error.dto.js';
+import {
+  CreateErrorDto,
+  CreateErrorResponseDto,
+} from './dto/create-error.dto.js';
 
 @ApiTags('errors')
 @ApiBearerAuth()

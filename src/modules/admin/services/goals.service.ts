@@ -1,4 +1,9 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { FirestoreService } from '../../cache/firestore.service.js';
 import { ExchangeRateService } from './exchange-rate.service.js';
 import {
@@ -57,7 +62,9 @@ export class GoalsService {
     // Validar que todos los targets sean no negativos
     for (const [key, value] of Object.entries(data.targets)) {
       if (typeof value !== 'number' || value < 0) {
-        throw new BadRequestException(`Target "${key}" must be a non-negative number`);
+        throw new BadRequestException(
+          `Target "${key}" must be a non-negative number`,
+        );
       }
     }
 
@@ -69,7 +76,8 @@ export class GoalsService {
 
     // Usar métricas proporcionadas o defaults filtrados por los targets enviados
     // Convertir a objetos planos para Firestore (no acepta objetos con prototipos)
-    const rawMetrics = data.metrics || this.getRelevantDefaultMetrics(Object.keys(data.targets));
+    const rawMetrics =
+      data.metrics || this.getRelevantDefaultMetrics(Object.keys(data.targets));
     const metrics = rawMetrics.map((m) => ({ ...m }));
 
     // Inicializar actual con las métricas definidas
@@ -80,7 +88,9 @@ export class GoalsService {
 
     // Calcular baseline para métricas acumulativas
     // Si ya existe la meta, preservar el baseline original
-    const baseline = existing?.baseline || (await this.getBaselineForMonth(data.month, Object.keys(data.targets)));
+    const baseline =
+      existing?.baseline ||
+      (await this.getBaselineForMonth(data.month, Object.keys(data.targets)));
 
     const goal: MonthlyGoal = {
       id: goalId,
@@ -96,7 +106,9 @@ export class GoalsService {
     };
 
     await this.firestoreService.saveGoal(goal);
-    this.logger.log(`Set goals for ${data.month}: ${JSON.stringify(data.targets)}, baseline: ${JSON.stringify(baseline)}`);
+    this.logger.log(
+      `Set goals for ${data.month}: ${JSON.stringify(data.targets)}, baseline: ${JSON.stringify(baseline)}`,
+    );
 
     return goal;
   }
@@ -121,18 +133,25 @@ export class GoalsService {
     }
 
     // Calcular días transcurridos y restantes
-    const { daysElapsed, daysRemaining, totalDays } = this.getMonthProgress(targetMonth);
+    const { daysElapsed, daysRemaining, totalDays } =
+      this.getMonthProgress(targetMonth);
 
     // Obtener valores actuales del mes
-    const current = await this.calculateActuals(targetMonth, Object.keys(goal.targets));
+    const current = await this.calculateActuals(
+      targetMonth,
+      Object.keys(goal.targets),
+    );
 
     // Usar métricas guardadas o defaults
-    const metrics = goal.metrics || this.getRelevantDefaultMetrics(Object.keys(goal.targets));
+    const metrics =
+      goal.metrics || this.getRelevantDefaultMetrics(Object.keys(goal.targets));
 
     // Si no hay baseline guardado, calcularlo (retrocompatibilidad)
     // Verificar si el objeto baseline tiene keys, no solo si existe
     const hasBaseline = goal.baseline && Object.keys(goal.baseline).length > 0;
-    const baseline = hasBaseline ? goal.baseline : await this.getBaselineForMonth(targetMonth, Object.keys(goal.targets));
+    const baseline = hasBaseline
+      ? goal.baseline
+      : await this.getBaselineForMonth(targetMonth, Object.keys(goal.targets));
 
     // Calcular ritmo esperado según tipo de métrica
     const paceMultiplier = daysElapsed / totalDays;
@@ -174,10 +193,14 @@ export class GoalsService {
         // Progreso = (actual - baseline) / (target - baseline)
         const deltaAchieved = currentValue - baselineValue;
         const deltaRequired = target - baselineValue;
-        progress[key] = deltaRequired > 0 ? Math.round((deltaAchieved / deltaRequired) * 10000) / 100 : 0;
+        progress[key] =
+          deltaRequired > 0
+            ? Math.round((deltaAchieved / deltaRequired) * 10000) / 100
+            : 0;
       } else {
         // Métricas mensuales y point_in_time: progreso normal
-        progress[key] = target > 0 ? Math.round((currentValue / target) * 10000) / 100 : 0;
+        progress[key] =
+          target > 0 ? Math.round((currentValue / target) * 10000) / 100 : 0;
       }
     }
 
@@ -191,10 +214,12 @@ export class GoalsService {
 
       if (behavior === 'point_in_time') {
         // Para métricas puntuales, comparar con la meta directa
-        alerts[`belowPace_${key}`] = currentValue < goal.targets[key] * this.ALERT_THRESHOLD;
+        alerts[`belowPace_${key}`] =
+          currentValue < goal.targets[key] * this.ALERT_THRESHOLD;
       } else {
         // Para todas las demás, comparar con expectedPace
-        alerts[`belowPace_${key}`] = currentValue < expectedValue * this.ALERT_THRESHOLD;
+        alerts[`belowPace_${key}`] =
+          currentValue < expectedValue * this.ALERT_THRESHOLD;
       }
     }
 
@@ -207,13 +232,18 @@ export class GoalsService {
       return currentValue > 0 || targetValue === 0;
     });
 
-    const relevantAlertCount = metricsWithData.filter((key) => alerts[`belowPace_${key}`]).length;
+    const relevantAlertCount = metricsWithData.filter(
+      (key) => alerts[`belowPace_${key}`],
+    ).length;
     const totalRelevantMetrics = metricsWithData.length;
 
     let status: 'on_track' | 'at_risk' | 'behind';
     if (relevantAlertCount === 0) {
       status = 'on_track';
-    } else if (totalRelevantMetrics > 0 && relevantAlertCount <= Math.ceil(totalRelevantMetrics / 3)) {
+    } else if (
+      totalRelevantMetrics > 0 &&
+      relevantAlertCount <= Math.ceil(totalRelevantMetrics / 3)
+    ) {
       status = 'at_risk';
     } else {
       status = 'behind';
@@ -247,12 +277,18 @@ export class GoalsService {
   /**
    * Obtiene historial de metas de los últimos N meses
    */
-  async getHistory(monthsCount: number = 6): Promise<{ history: GoalHistoryItem[] }> {
+  async getHistory(
+    monthsCount: number = 6,
+  ): Promise<{ history: GoalHistoryItem[] }> {
     const history: GoalHistoryItem[] = [];
     const currentDate = new Date();
 
     for (let i = 0; i < monthsCount; i++) {
-      const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+      const date = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth() - i,
+        1,
+      );
       const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 
       const goal = await this.firestoreService.getGoal(month);
@@ -292,7 +328,9 @@ export class GoalsService {
 
     // Si no hay baseline guardado, calcularlo (retrocompatibilidad)
     const hasBaseline = goal.baseline && Object.keys(goal.baseline).length > 0;
-    const baseline = hasBaseline ? goal.baseline : await this.getBaselineForMonth(currentMonth, metricKeys);
+    const baseline = hasBaseline
+      ? goal.baseline
+      : await this.getBaselineForMonth(currentMonth, metricKeys);
 
     // Calcular alertas con la lógica correcta según tipo de métrica
     const { daysElapsed, totalDays } = this.getMonthProgress(currentMonth);
@@ -322,14 +360,18 @@ export class GoalsService {
       }
 
       if (behavior === 'point_in_time') {
-        alerts[`belowPace_${key}`] = currentValue < target * this.ALERT_THRESHOLD;
+        alerts[`belowPace_${key}`] =
+          currentValue < target * this.ALERT_THRESHOLD;
       } else {
-        alerts[`belowPace_${key}`] = currentValue < expectedValue * this.ALERT_THRESHOLD;
+        alerts[`belowPace_${key}`] =
+          currentValue < expectedValue * this.ALERT_THRESHOLD;
       }
     }
 
     await this.firestoreService.updateGoalActuals(currentMonth, actual, alerts);
-    this.logger.log(`Updated goal actuals for ${currentMonth}: ${JSON.stringify(actual)}`);
+    this.logger.log(
+      `Updated goal actuals for ${currentMonth}: ${JSON.stringify(actual)}`,
+    );
   }
 
   /**
@@ -380,25 +422,31 @@ export class GoalsService {
   // Helper Methods
   // ============================================
 
-  private async calculateActuals(month: string, metricKeys: string[]): Promise<GoalTargets> {
+  private async calculateActuals(
+    month: string,
+    metricKeys: string[],
+  ): Promise<GoalTargets> {
     const { startDate, endDate } = this.getMonthDates(month);
     const actual: GoalTargets = {};
 
     // Obtener métricas base en paralelo
     // NOTA: newUsers y proConversions son TOTALES acumulados, no del período
-    const [revenueData, totalUsers, usersByPlan, expenseSummary] = await Promise.all([
-      this.firestoreService.getRevenueByPeriod(startDate, endDate), // Revenue del mes
-      this.firestoreService.getUsersCount(), // Total usuarios actuales
-      this.firestoreService.getUsersByPlan(), // { free, pro, enterprise }
-      this.firestoreService.getExpenseSummary(startDate, endDate), // Gastos del mes
-    ]);
+    const [revenueData, totalUsers, usersByPlan, expenseSummary] =
+      await Promise.all([
+        this.firestoreService.getRevenueByPeriod(startDate, endDate), // Revenue del mes
+        this.firestoreService.getUsersCount(), // Total usuarios actuales
+        this.firestoreService.getUsersByPlan(), // { free, pro, enterprise }
+        this.firestoreService.getExpenseSummary(startDate, endDate), // Gastos del mes
+      ]);
 
     // Calcular revenue en USD (convertir MXN a USD si es necesario)
     let revenueUsd = revenueData.totalUsd;
     if (revenueData.totalMxn > 0) {
       try {
         // Obtener tipo de cambio y convertir MXN a USD
-        const rate = await this.exchangeRateService.getExchangeRate(this.firestoreService);
+        const rate = await this.exchangeRateService.getExchangeRate(
+          this.firestoreService,
+        );
         revenueUsd += revenueData.totalMxn / rate;
       } catch {
         revenueUsd += revenueData.totalMxn / 20; // Fallback rate
@@ -406,7 +454,11 @@ export class GoalsService {
     }
 
     // Total de suscriptores de pago (lite + pro + promax + enterprise)
-    const totalProSubscribers = usersByPlan.lite + usersByPlan.pro + usersByPlan.promax + usersByPlan.enterprise;
+    const totalProSubscribers =
+      usersByPlan.lite +
+      usersByPlan.pro +
+      usersByPlan.promax +
+      usersByPlan.enterprise;
 
     // Mapear métricas disponibles
     for (const key of metricKeys) {
@@ -425,7 +477,10 @@ export class GoalsService {
           break;
         case 'conversionRate':
           // Tasa de conversión = (suscriptores pro / total usuarios) * 100
-          actual[key] = totalUsers > 0 ? Math.round((totalProSubscribers / totalUsers) * 10000) / 100 : 0;
+          actual[key] =
+            totalUsers > 0
+              ? Math.round((totalProSubscribers / totalUsers) * 10000) / 100
+              : 0;
           break;
         case 'profit':
           // Utilidad en USD = Ingresos USD - Gastos convertidos a USD
@@ -451,7 +506,9 @@ export class GoalsService {
   }
 
   private getRelevantDefaultMetrics(targetKeys: string[]): GoalMetricConfig[] {
-    const relevantMetrics = DEFAULT_GOAL_METRICS.filter((m) => targetKeys.includes(m.key));
+    const relevantMetrics = DEFAULT_GOAL_METRICS.filter((m) =>
+      targetKeys.includes(m.key),
+    );
 
     // Si hay métricas que no están en los defaults, crear configuración básica
     for (const key of targetKeys) {
@@ -565,7 +622,10 @@ export class GoalsService {
    * Para métricas acumulativas: usa el target del mes anterior
    * Para enero 2026 (primer mes): usa valores hardcodeados
    */
-  private async getBaselineForMonth(month: string, metricKeys: string[]): Promise<GoalTargets> {
+  private async getBaselineForMonth(
+    month: string,
+    metricKeys: string[],
+  ): Promise<GoalTargets> {
     const baseline: GoalTargets = {};
 
     // Obtener mes anterior
@@ -586,7 +646,8 @@ export class GoalsService {
         } else {
           // Primer mes o no hay meta anterior: usar hardcoded para enero 2026
           if (month === '2026-01') {
-            baseline[key] = key === 'newUsers' ? 283 : key === 'proConversions' ? 22 : 0;
+            baseline[key] =
+              key === 'newUsers' ? 283 : key === 'proConversions' ? 22 : 0;
           } else {
             baseline[key] = 0; // Fallback
           }

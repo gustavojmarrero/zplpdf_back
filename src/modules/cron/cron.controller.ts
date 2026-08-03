@@ -1,4 +1,10 @@
-import { Controller, Post, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiHeader } from '@nestjs/swagger';
 import {
   CronService,
@@ -21,7 +27,9 @@ export class CronController {
   @Post('reset-usage')
   @UseGuards(CronAuthGuard)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Reset expired user usage periods (Cloud Scheduler)' })
+  @ApiOperation({
+    summary: 'Reset expired user usage periods (Cloud Scheduler)',
+  })
   @ApiHeader({
     name: 'X-Cron-Secret',
     description: 'Secret key for cron authentication',
@@ -50,7 +58,8 @@ export class CronController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Delete errors older than 90 days (Cloud Scheduler)',
-    description: 'Removes error logs that are older than 90 days to maintain database hygiene.',
+    description:
+      'Removes error logs that are older than 90 days to maintain database hygiene.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -80,7 +89,8 @@ export class CronController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Update USD/MXN exchange rate from Banxico (Cloud Scheduler)',
-    description: 'Fetches the latest exchange rate from Banxico API and caches it. Should run daily at 6:00 AM (GMT-6).',
+    description:
+      'Fetches the latest exchange rate from Banxico API and caches it. Should run daily at 6:00 AM (GMT-6).',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -112,7 +122,8 @@ export class CronController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Generate recurring expenses (Cloud Scheduler)',
-    description: 'Auto-generates charges for recurring expenses that are due today. Should run daily at 00:05 (GMT-6).',
+    description:
+      'Auto-generates charges for recurring expenses that are due today. Should run daily at 00:05 (GMT-6).',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -142,7 +153,8 @@ export class CronController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Update monthly goals progress (Cloud Scheduler)',
-    description: 'Updates the actual values for the current month goals. Should run every hour.',
+    description:
+      'Updates the actual values for the current month goals. Should run every hour.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',

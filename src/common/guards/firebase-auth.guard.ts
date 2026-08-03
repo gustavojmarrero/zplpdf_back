@@ -26,7 +26,9 @@ export class FirebaseAuthGuard implements CanActivate {
     const authHeader = request.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing or invalid authorization header');
+      throw new UnauthorizedException(
+        'Missing or invalid authorization header',
+      );
     }
 
     const token = authHeader.split(' ')[1];
@@ -48,7 +50,8 @@ export class FirebaseAuthGuard implements CanActivate {
         const newUser: User = {
           id: decodedToken.uid,
           email: decodedToken.email || '',
-          displayName: decodedToken.name || decodedToken.email?.split('@')[0] || 'Usuario',
+          displayName:
+            decodedToken.name || decodedToken.email?.split('@')[0] || 'Usuario',
           emailVerified: decodedToken.email_verified || false,
           plan: 'free',
           role: 'user',
@@ -73,7 +76,8 @@ export class FirebaseAuthGuard implements CanActivate {
       request.user = {
         uid: decodedToken.uid,
         email: decodedToken.email,
-        name: decodedToken.name || decodedToken.email?.split('@')[0] || 'Usuario',
+        name:
+          decodedToken.name || decodedToken.email?.split('@')[0] || 'Usuario',
         picture: decodedToken.picture,
       };
       return true;

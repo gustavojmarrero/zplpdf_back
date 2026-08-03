@@ -12,11 +12,19 @@
 import admin from 'firebase-admin';
 import { readFileSync } from 'fs';
 import { getEmailTemplate } from '../modules/email/templates/email-templates.js';
-import type { EmailType, AbVariant, EmailLanguage, TemplateType } from '../modules/email/interfaces/email.interface.js';
+import type {
+  EmailType,
+  AbVariant,
+  EmailLanguage,
+  TemplateType,
+} from '../modules/email/interfaces/email.interface.js';
 
 // Initialize Firebase
 const serviceAccount = JSON.parse(
-  readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS || './firebase-credentials.json', 'utf-8')
+  readFileSync(
+    process.env.GOOGLE_APPLICATION_CREDENTIALS || './firebase-credentials.json',
+    'utf-8',
+  ),
 );
 
 admin.initializeApp({
@@ -26,13 +34,16 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // Template metadata for all 20 email types
-const TEMPLATE_METADATA: Record<EmailType, {
-  templateType: TemplateType;
-  name: string;
-  description: string;
-  triggerDays: number;
-  variables: string[];
-}> = {
+const TEMPLATE_METADATA: Record<
+  EmailType,
+  {
+    templateType: TemplateType;
+    name: string;
+    description: string;
+    triggerDays: number;
+    variables: string[];
+  }
+> = {
   // Onboarding emails
   welcome: {
     templateType: 'onboarding',
@@ -44,14 +55,14 @@ const TEMPLATE_METADATA: Record<EmailType, {
   tutorial: {
     templateType: 'onboarding',
     name: 'Tutorial Email',
-    description: 'Quick tutorial for new users who haven\'t converted yet',
+    description: "Quick tutorial for new users who haven't converted yet",
     triggerDays: 1,
     variables: ['userName', 'appUrl'],
   },
   help: {
     templateType: 'onboarding',
     name: 'Help Email',
-    description: 'Offer help to users who haven\'t started converting',
+    description: "Offer help to users who haven't started converting",
     triggerDays: 3,
     variables: ['userName', 'appUrl', 'docsUrl'],
   },
@@ -96,7 +107,12 @@ const TEMPLATE_METADATA: Record<EmailType, {
     name: 'High Usage Alert',
     description: 'Proactive alert for users with high conversion rate',
     triggerDays: 0,
-    variables: ['userName', 'avgPdfsPerDay', 'projectedDaysToLimit', 'pricingUrl'],
+    variables: [
+      'userName',
+      'avgPdfsPerDay',
+      'projectedDaysToLimit',
+      'pricingUrl',
+    ],
   },
   // PRO Retention emails
   pro_inactive_7_days: {
@@ -176,7 +192,13 @@ const TEMPLATE_METADATA: Record<EmailType, {
     name: 'Subscription Downgraded',
     description: 'Notification when subscription is downgraded to free',
     triggerDays: 0,
-    variables: ['displayName', 'previousPlan', 'reason', 'newLimits', 'pricingUrl'],
+    variables: [
+      'displayName',
+      'previousPlan',
+      'reason',
+      'newLimits',
+      'pricingUrl',
+    ],
   },
 };
 
@@ -226,22 +248,42 @@ interface TemplateContent {
 
 function replacePlaceholders(text: string): string {
   let result = text;
-  for (const [marker, placeholder] of Object.entries(PLACEHOLDER_REPLACEMENTS)) {
-    result = result.replace(new RegExp(marker.replace(/[{}]/g, '\\$&'), 'g'), placeholder);
+  for (const [marker, placeholder] of Object.entries(
+    PLACEHOLDER_REPLACEMENTS,
+  )) {
+    result = result.replace(
+      new RegExp(marker.replace(/[{}]/g, '\\$&'), 'g'),
+      placeholder,
+    );
   }
   return result;
 }
 
-async function generateTemplateContent(emailType: EmailType): Promise<TemplateContent> {
+async function generateTemplateContent(
+  emailType: EmailType,
+): Promise<TemplateContent> {
   const content: TemplateContent = {
-    A: { en: { subject: '', body: '' }, es: { subject: '', body: '' }, zh: { subject: '', body: '' } },
-    B: { en: { subject: '', body: '' }, es: { subject: '', body: '' }, zh: { subject: '', body: '' } },
+    A: {
+      en: { subject: '', body: '' },
+      es: { subject: '', body: '' },
+      zh: { subject: '', body: '' },
+    },
+    B: {
+      en: { subject: '', body: '' },
+      es: { subject: '', body: '' },
+      zh: { subject: '', body: '' },
+    },
   };
 
   for (const variant of VARIANTS) {
     for (const lang of LANGUAGES) {
       try {
-        const emailContent = getEmailTemplate(emailType, variant, lang, PLACEHOLDER_DATA);
+        const emailContent = getEmailTemplate(
+          emailType,
+          variant,
+          lang,
+          PLACEHOLDER_DATA,
+        );
 
         // Replace placeholder markers with actual placeholders
         const subject = replacePlaceholders(emailContent.subject);
@@ -253,7 +295,10 @@ async function generateTemplateContent(emailType: EmailType): Promise<TemplateCo
           content[variant][lang] = { subject, body };
         }
       } catch (error) {
-        console.error(`Error generating content for ${emailType} ${variant} ${lang}:`, error);
+        console.error(
+          `Error generating content for ${emailType} ${variant} ${lang}:`,
+          error,
+        );
       }
     }
   }
@@ -302,7 +347,9 @@ async function migrateTemplate(emailType: EmailType): Promise<void> {
       updatedAt: new Date(),
     });
 
-    console.log(`✅ Updated: ${emailType} (preserved enabled: ${templateData.enabled})`);
+    console.log(
+      `✅ Updated: ${emailType} (preserved enabled: ${templateData.enabled})`,
+    );
   } else {
     // Create new template
     await db.collection('email_templates').add(templateData);
@@ -311,7 +358,9 @@ async function migrateTemplate(emailType: EmailType): Promise<void> {
 }
 
 async function main() {
-  console.log('🚀 Starting migration of all email templates to Firestore with A/B support...\n');
+  console.log(
+    '🚀 Starting migration of all email templates to Firestore with A/B support...\n',
+  );
 
   const emailTypes = Object.keys(TEMPLATE_METADATA) as EmailType[];
 

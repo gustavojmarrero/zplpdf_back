@@ -30,7 +30,9 @@ export class GA4Service {
     this.apiSecret = this.configService.get<string>('GA4_API_SECRET');
 
     if (!this.measurementId || !this.apiSecret) {
-      this.logger.warn('GA4 Measurement Protocol not configured. Server-side tracking disabled.');
+      this.logger.warn(
+        'GA4 Measurement Protocol not configured. Server-side tracking disabled.',
+      );
     } else {
       this.logger.log('GA4 Measurement Protocol configured successfully');
     }
@@ -81,11 +83,15 @@ export class GA4Service {
       });
 
       if (!response.ok) {
-        this.logger.error(`GA4 tracking failed: ${response.status} ${response.statusText}`);
+        this.logger.error(
+          `GA4 tracking failed: ${response.status} ${response.statusText}`,
+        );
         return false;
       }
 
-      this.logger.log(`GA4 purchase tracked: ${params.transactionId} (${params.planName}, ${params.price} ${params.currency || 'USD'})`);
+      this.logger.log(
+        `GA4 purchase tracked: ${params.transactionId} (${params.planName}, ${params.price} ${params.currency || 'USD'})`,
+      );
       return true;
     } catch (error) {
       this.logger.error(`GA4 tracking error: ${error.message}`);
@@ -108,7 +114,10 @@ export class GA4Service {
       const url = `${this.endpoint}?measurement_id=${this.measurementId}&api_secret=${this.apiSecret}`;
 
       // Event name based on days inactive
-      const eventName = params.daysInactive === 7 ? 'user_inactive_7_days' : 'user_inactive_30_days';
+      const eventName =
+        params.daysInactive === 7
+          ? 'user_inactive_7_days'
+          : 'user_inactive_30_days';
 
       const payload = {
         client_id: params.userId,
@@ -134,11 +143,15 @@ export class GA4Service {
       });
 
       if (!response.ok) {
-        this.logger.error(`GA4 inactivity tracking failed: ${response.status} ${response.statusText}`);
+        this.logger.error(
+          `GA4 inactivity tracking failed: ${response.status} ${response.statusText}`,
+        );
         return false;
       }
 
-      this.logger.log(`GA4 inactivity tracked: ${eventName} for user ${params.userId} (${params.userEmail})`);
+      this.logger.log(
+        `GA4 inactivity tracked: ${eventName} for user ${params.userId} (${params.userEmail})`,
+      );
       return true;
     } catch (error) {
       this.logger.error(`GA4 inactivity tracking error: ${error.message}`);

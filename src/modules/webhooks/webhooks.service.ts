@@ -14,7 +14,9 @@ export class WebhooksService {
     private readonly paymentsService: PaymentsService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
-    this.webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
+    this.webhookSecret = this.configService.get<string>(
+      'STRIPE_WEBHOOK_SECRET',
+    );
 
     if (!stripeSecretKey) {
       this.logger.warn('Stripe secret key not configured. Webhooks disabled.');
@@ -38,7 +40,9 @@ export class WebhooksService {
         this.webhookSecret,
       );
     } catch (err) {
-      this.logger.error(`Webhook signature verification failed: ${err.message}`);
+      this.logger.error(
+        `Webhook signature verification failed: ${err.message}`,
+      );
       throw new BadRequestException('Invalid webhook signature');
     }
 

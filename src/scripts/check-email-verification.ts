@@ -56,9 +56,9 @@ async function main() {
 
   // Filter users with email/password provider and sort by creation date
   const emailPasswordUsers = listUsersResult.users
-    .filter(user => {
+    .filter((user) => {
       const hasEmailProvider = user.providerData.some(
-        provider => provider.providerId === 'password'
+        (provider) => provider.providerId === 'password',
       );
       return hasEmailProvider;
     })
@@ -69,14 +69,16 @@ async function main() {
     });
 
   console.log('='.repeat(100));
-  console.log('USUARIOS REGISTRADOS CON EMAIL/PASSWORD (más recientes primero)');
+  console.log(
+    'USUARIOS REGISTRADOS CON EMAIL/PASSWORD (más recientes primero)',
+  );
   console.log('='.repeat(100));
   console.log('');
   console.log(
     'Email'.padEnd(40) +
-    'Verificado'.padEnd(12) +
-    'Fecha Creación'.padEnd(25) +
-    'Último Acceso'
+      'Verificado'.padEnd(12) +
+      'Fecha Creación'.padEnd(25) +
+      'Último Acceso',
   );
   console.log('-'.repeat(100));
 
@@ -85,12 +87,15 @@ async function main() {
 
   for (const user of emailPasswordUsers) {
     const email = user.email || 'N/A';
-    const verified = user.emailVerified ? 'SI' : 'NO';
     const createdAt = user.metadata.creationTime
-      ? new Date(user.metadata.creationTime).toLocaleString('es-MX', { timeZone: 'America/Merida' })
+      ? new Date(user.metadata.creationTime).toLocaleString('es-MX', {
+          timeZone: 'America/Merida',
+        })
       : 'N/A';
     const lastSignIn = user.metadata.lastSignInTime
-      ? new Date(user.metadata.lastSignInTime).toLocaleString('es-MX', { timeZone: 'America/Merida' })
+      ? new Date(user.metadata.lastSignInTime).toLocaleString('es-MX', {
+          timeZone: 'America/Merida',
+        })
       : 'Nunca';
 
     if (user.emailVerified) {
@@ -99,14 +104,11 @@ async function main() {
       unverifiedCount++;
     }
 
-    // Highlight unverified users
-    const verifiedDisplay = user.emailVerified ? 'SI' : '\x1b[31mNO\x1b[0m';
-
     console.log(
       email.padEnd(40) +
-      (user.emailVerified ? 'SI' : 'NO').padEnd(12) +
-      createdAt.padEnd(25) +
-      lastSignIn
+        (user.emailVerified ? 'SI' : 'NO').padEnd(12) +
+        createdAt.padEnd(25) +
+        lastSignIn,
     );
   }
 

@@ -7,7 +7,12 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { RawBodyRequest } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiExcludeEndpoint } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiExcludeEndpoint,
+} from '@nestjs/swagger';
 import { Request } from 'express';
 import { WebhooksService } from './webhooks.service.js';
 

@@ -31,13 +31,12 @@ import {
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { LabelSize } from './enums/label-size.enum.js';
 import { OutputFormat } from './enums/output-format.enum.js';
-import { ZplPreviewItemDto, ZplPreviewResponseDto } from './dto/zpl-preview.dto.js';
+import { ZplPreviewResponseDto } from './dto/zpl-preview.dto.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { ZplValidatorService } from './validation/zpl-validator.service.js';
 import {
-  BatchConvertDto,
   BatchConvertResponseDto,
   BatchStatusResponseDto,
   BatchDownloadResponseDto,
@@ -68,7 +67,8 @@ export class ZplController {
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Iniciar conversion de ZPL a PDF/PNG/JPEG',
-    description: 'Recibe codigo ZPL (como texto o archivo) y comienza un proceso asincrono de conversion. PDF disponible para todos los usuarios. PNG y JPEG solo para usuarios Pro y Enterprise. Requiere autenticacion.',
+    description:
+      'Recibe codigo ZPL (como texto o archivo) y comienza un proceso asincrono de conversion. PDF disponible para todos los usuarios. PNG y JPEG solo para usuarios Pro y Enterprise. Requiere autenticacion.',
   })
   @ApiBody({
     schema: {
@@ -81,11 +81,17 @@ export class ZplController {
         },
         zplContent: {
           type: 'string',
-          description: 'Contenido ZPL a convertir (opcional si se envia archivo)',
+          description:
+            'Contenido ZPL a convertir (opcional si se envia archivo)',
         },
         labelSize: {
           type: 'string',
-          enum: [LabelSize.TWO_BY_ONE, LabelSize.TWO_BY_FOUR, LabelSize.FOUR_BY_TWO, LabelSize.FOUR_BY_SIX],
+          enum: [
+            LabelSize.TWO_BY_ONE,
+            LabelSize.TWO_BY_FOUR,
+            LabelSize.FOUR_BY_TWO,
+            LabelSize.FOUR_BY_SIX,
+          ],
           default: LabelSize.TWO_BY_ONE,
           description: 'Tamano de la etiqueta (2x1, 2x4, 4x2 o 4x6 pulgadas)',
         },
@@ -98,7 +104,8 @@ export class ZplController {
           type: 'string',
           enum: [OutputFormat.PDF, OutputFormat.PNG, OutputFormat.JPEG],
           default: OutputFormat.PDF,
-          description: 'Formato de salida (pdf, png, jpeg). PNG y JPEG solo para Pro/Enterprise',
+          description:
+            'Formato de salida (pdf, png, jpeg). PNG y JPEG solo para Pro/Enterprise',
         },
       },
     },
@@ -114,7 +121,8 @@ export class ZplController {
         },
         message: {
           type: 'string',
-          example: 'Conversion iniciada. Use el endpoint /status para verificar el estado.',
+          example:
+            'Conversion iniciada. Use el endpoint /status para verificar el estado.',
         },
         statusUrl: {
           type: 'string',
@@ -137,7 +145,10 @@ export class ZplController {
     schema: {
       properties: {
         error: { type: 'string', example: 'LABEL_LIMIT_EXCEEDED' },
-        message: { type: 'string', example: 'Your plan allows 100 labels per PDF' },
+        message: {
+          type: 'string',
+          example: 'Your plan allows 100 labels per PDF',
+        },
         data: {
           type: 'object',
           properties: {
@@ -158,7 +169,8 @@ export class ZplController {
         ],
         fileIsRequired: false,
       }),
-    ) file?: Express.Multer.File,
+    )
+    file?: Express.Multer.File,
   ) {
     // Si se proporciona un archivo, usar su contenido
     const zplContent = file
@@ -209,7 +221,8 @@ export class ZplController {
       warnings?: typeof validation.warnings;
     } = {
       jobId,
-      message: 'Conversion iniciada. Use el endpoint /status para verificar el estado.',
+      message:
+        'Conversion iniciada. Use el endpoint /status para verificar el estado.',
       statusUrl: `/api/zpl/status/${jobId}`,
     };
 
@@ -227,7 +240,7 @@ export class ZplController {
           error: ErrorCodes.INVALID_ZPL,
           message: 'El contenido ZPL es requerido y debe ser texto',
         },
-        HttpStatus.BAD_REQUEST
+        HttpStatus.BAD_REQUEST,
       );
     }
 
@@ -235,12 +248,13 @@ export class ZplController {
       throw new HttpException(
         {
           error: ErrorCodes.INVALID_ZPL,
-          message: 'El contenido ZPL no es valido. Debe contener al menos una etiqueta con ^XA y ^XZ',
+          message:
+            'El contenido ZPL no es valido. Debe contener al menos una etiqueta con ^XA y ^XZ',
           data: {
             detail: 'Missing ^XA or ^XZ markers',
           },
         },
-        HttpStatus.BAD_REQUEST
+        HttpStatus.BAD_REQUEST,
       );
     }
   }
@@ -248,7 +262,8 @@ export class ZplController {
   @Post('process')
   @ApiOperation({
     summary: 'Procesar conversion ZPL (uso interno)',
-    description: 'Endpoint para uso interno que realiza la conversion efectiva del ZPL a PDF',
+    description:
+      'Endpoint para uso interno que realiza la conversion efectiva del ZPL a PDF',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -283,7 +298,8 @@ export class ZplController {
   @Get('status/:jobId')
   @ApiOperation({
     summary: 'Verificar estado de conversion',
-    description: 'Consulta el estado actual de un trabajo de conversion de ZPL a PDF',
+    description:
+      'Consulta el estado actual de un trabajo de conversion de ZPL a PDF',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -317,7 +333,8 @@ export class ZplController {
   @Get('queue-position/:jobId')
   @ApiOperation({
     summary: 'Obtener posición en cola de Labelary',
-    description: 'Consulta la posición actual de un trabajo en la cola de procesamiento de Labelary',
+    description:
+      'Consulta la posición actual de un trabajo en la cola de procesamiento de Labelary',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -361,7 +378,8 @@ export class ZplController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Descargar PDF convertido',
-    description: 'Obtiene la URL y nombre del archivo PDF generado para su descarga. Requiere autenticación.',
+    description:
+      'Obtiene la URL y nombre del archivo PDF generado para su descarga. Requiere autenticación.',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -387,7 +405,10 @@ export class ZplController {
     @CurrentUser() user: FirebaseUser,
     @Param('jobId') jobId: string,
   ) {
-    const { url, filename } = await this.zplService.getPdfDownloadUrl(jobId, user.uid);
+    const { url, filename } = await this.zplService.getPdfDownloadUrl(
+      jobId,
+      user.uid,
+    );
     return { url, filename };
   }
 
@@ -398,7 +419,8 @@ export class ZplController {
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Contar etiquetas en archivo ZPL',
-    description: 'Recibe un archivo ZPL y devuelve el numero total de etiquetas que contiene. Requiere autenticación.',
+    description:
+      'Recibe un archivo ZPL y devuelve el numero total de etiquetas que contiene. Requiere autenticación.',
   })
   @ApiBody({
     schema: {
@@ -411,7 +433,8 @@ export class ZplController {
         },
         zplContent: {
           type: 'string',
-          description: 'Contenido ZPL a analizar (opcional si se envia archivo)',
+          description:
+            'Contenido ZPL a analizar (opcional si se envia archivo)',
         },
       },
     },
@@ -437,12 +460,14 @@ export class ZplController {
             totalUniqueLabels: {
               type: 'number',
               example: 10,
-              description: 'Numero de etiquetas unicas en el archivo (sin contar copias)',
+              description:
+                'Numero de etiquetas unicas en el archivo (sin contar copias)',
             },
             totalLabels: {
               type: 'number',
               example: 25,
-              description: 'Numero total de etiquetas incluyendo copias (considerando el comando ^PQ)',
+              description:
+                'Numero total de etiquetas incluyendo copias (considerando el comando ^PQ)',
             },
           },
         },
@@ -458,11 +483,10 @@ export class ZplController {
         ],
         fileIsRequired: false,
       }),
-    ) file?: Express.Multer.File,
+    )
+    file?: Express.Multer.File,
   ) {
-    const zplContent = file
-      ? file.buffer.toString('utf-8')
-      : body.zplContent;
+    const zplContent = file ? file.buffer.toString('utf-8') : body.zplContent;
 
     this.validateZplContent(zplContent);
 
@@ -476,7 +500,8 @@ export class ZplController {
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Obtener vista previa de etiquetas ZPL',
-    description: 'Recibe codigo ZPL y devuelve imagenes PNG de las etiquetas unicas con sus cantidades. Requiere autenticación.',
+    description:
+      'Recibe codigo ZPL y devuelve imagenes PNG de las etiquetas unicas con sus cantidades. Requiere autenticación.',
   })
   @ApiBody({
     schema: {
@@ -489,11 +514,17 @@ export class ZplController {
         },
         zplContent: {
           type: 'string',
-          description: 'Contenido ZPL a previsualizar (opcional si se envia archivo)',
+          description:
+            'Contenido ZPL a previsualizar (opcional si se envia archivo)',
         },
         labelSize: {
           type: 'string',
-          enum: [LabelSize.TWO_BY_ONE, LabelSize.TWO_BY_FOUR, LabelSize.FOUR_BY_TWO, LabelSize.FOUR_BY_SIX],
+          enum: [
+            LabelSize.TWO_BY_ONE,
+            LabelSize.TWO_BY_FOUR,
+            LabelSize.FOUR_BY_TWO,
+            LabelSize.FOUR_BY_SIX,
+          ],
           default: LabelSize.TWO_BY_ONE,
           description: 'Tamano de la etiqueta (2x1, 2x4, 4x2 o 4x6 pulgadas)',
         },
@@ -547,16 +578,18 @@ export class ZplController {
         ],
         fileIsRequired: false,
       }),
-    ) file?: Express.Multer.File,
+    )
+    file?: Express.Multer.File,
   ): Promise<ZplPreviewResponseDto> {
-    const zplContent = file
-      ? file.buffer.toString('utf-8')
-      : body.zplContent;
+    const zplContent = file ? file.buffer.toString('utf-8') : body.zplContent;
 
     this.validateZplContent(zplContent);
 
     const size = body.labelSize || LabelSize.TWO_BY_ONE;
-    const previews = await this.zplService.getLabelsPreview(zplContent, size as LabelSize);
+    const previews = await this.zplService.getLabelsPreview(
+      zplContent,
+      size as LabelSize,
+    );
 
     return {
       success: true,
@@ -629,9 +662,10 @@ export class ZplController {
       throw new HttpException(
         {
           error: ErrorCodes.INVALID_INPUT,
-          message: validateDto.language === 'en'
-            ? 'ZPL content is required'
-            : 'El contenido ZPL es requerido',
+          message:
+            validateDto.language === 'en'
+              ? 'ZPL content is required'
+              : 'El contenido ZPL es requerido',
         },
         HttpStatus.BAD_REQUEST,
       );
@@ -670,7 +704,8 @@ export class ZplController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @ApiOperation({
     summary: 'Public font preview (no auth required)',
-    description: 'Generates a single PNG preview from ZPL content. Rate limited to 5 requests per minute per IP. No authentication required.',
+    description:
+      'Generates a single PNG preview from ZPL content. Rate limited to 5 requests per minute per IP. No authentication required.',
   })
   @ApiBody({ type: FontPreviewPublicDto })
   @ApiResponse({
@@ -725,7 +760,8 @@ export class ZplController {
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
     summary: 'Iniciar conversion batch de multiples archivos ZPL',
-    description: 'Recibe multiples archivos ZPL y comienza un proceso asincrono de conversion. Solo disponible para usuarios Pro y Enterprise.',
+    description:
+      'Recibe multiples archivos ZPL y comienza un proceso asincrono de conversion. Solo disponible para usuarios Pro y Enterprise.',
   })
   @ApiBody({
     schema: {
@@ -766,7 +802,10 @@ export class ZplController {
     schema: {
       properties: {
         error: { type: 'string', example: 'BATCH_NOT_ALLOWED' },
-        message: { type: 'string', example: 'El procesamiento batch no esta disponible para tu plan' },
+        message: {
+          type: 'string',
+          example: 'El procesamiento batch no esta disponible para tu plan',
+        },
       },
     },
   })
@@ -777,12 +816,20 @@ export class ZplController {
   async batchConvert(
     @CurrentUser() user: FirebaseUser,
     @UploadedFiles() files: Express.Multer.File[],
-    @Body() body: { fileIds?: string | string[]; labelSize: string; outputFormat?: string },
+    @Body()
+    body: {
+      fileIds?: string | string[];
+      labelSize: string;
+      outputFormat?: string;
+    },
   ): Promise<BatchConvertResponseDto> {
     // Validar que hay archivos
     if (!files || files.length === 0) {
       throw new HttpException(
-        { error: ErrorCodes.NO_FILES, message: 'Se requiere al menos un archivo' },
+        {
+          error: ErrorCodes.NO_FILES,
+          message: 'Se requiere al menos un archivo',
+        },
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -828,7 +875,8 @@ export class ZplController {
   @Get('batch/status/:batchId')
   @ApiOperation({
     summary: 'Verificar estado de conversion batch',
-    description: 'Consulta el estado actual de un trabajo de conversion batch. Requiere autenticación.',
+    description:
+      'Consulta el estado actual de un trabajo de conversion batch. Requiere autenticación.',
   })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -865,7 +913,8 @@ export class ZplController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Descargar archivos del batch completado',
-    description: 'Obtiene la URL y nombre del archivo ZIP con todos los archivos convertidos. Requiere autenticación.',
+    description:
+      'Obtiene la URL y nombre del archivo ZIP con todos los archivos convertidos. Requiere autenticación.',
   })
   @ApiResponse({
     status: HttpStatus.OK,

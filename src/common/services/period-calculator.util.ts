@@ -19,10 +19,18 @@ export function generatePeriodId(userId: string, periodStart: Date): string {
   return `${userId}_${year}${month}${day}`;
 }
 
-export function calculateFreePeriod(userId: string, createdAt: Date, now: Date = new Date()): PeriodInfo {
+export function calculateFreePeriod(
+  userId: string,
+  createdAt: Date,
+  now: Date = new Date(),
+): PeriodInfo {
   const registrationDay = createdAt.getDate();
 
-  let periodStart = new Date(now.getFullYear(), now.getMonth(), registrationDay);
+  const periodStart = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    registrationDay,
+  );
   if (periodStart > now) {
     periodStart.setMonth(periodStart.getMonth() - 1);
   }
@@ -38,18 +46,23 @@ export function calculateFreePeriod(userId: string, createdAt: Date, now: Date =
   };
 }
 
-export function calculateCurrentPeriod(user: UserForPeriod, now: Date = new Date()): PeriodInfo {
+export function calculateCurrentPeriod(
+  user: UserForPeriod,
+  now: Date = new Date(),
+): PeriodInfo {
   if (user.plan === 'free') {
     return calculateFreePeriod(user.id, user.createdAt, now);
   }
 
   if (user.subscriptionPeriodStart && user.subscriptionPeriodEnd) {
-    const periodStart = user.subscriptionPeriodStart instanceof Date
-      ? user.subscriptionPeriodStart
-      : new Date(user.subscriptionPeriodStart);
-    const periodEnd = user.subscriptionPeriodEnd instanceof Date
-      ? user.subscriptionPeriodEnd
-      : new Date(user.subscriptionPeriodEnd);
+    const periodStart =
+      user.subscriptionPeriodStart instanceof Date
+        ? user.subscriptionPeriodStart
+        : new Date(user.subscriptionPeriodStart);
+    const periodEnd =
+      user.subscriptionPeriodEnd instanceof Date
+        ? user.subscriptionPeriodEnd
+        : new Date(user.subscriptionPeriodEnd);
 
     return {
       periodStart,

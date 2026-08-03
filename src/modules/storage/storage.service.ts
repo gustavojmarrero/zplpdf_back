@@ -31,7 +31,7 @@ export class StorageService {
         .bucket(this.bucketName)
         .file(`zpl-pdfs/${zplHash}.pdf`)
         .exists();
-      
+
       return exists;
     } catch (error) {
       this.logger.error(`Error al verificar archivo: ${error.message}`);
@@ -43,20 +43,20 @@ export class StorageService {
     const file = this.storage
       .bucket(this.bucketName)
       .file(`zpl-pdfs/${zplHash}.pdf`);
-    
+
     await file.save(pdfBuffer, {
       metadata: {
         contentType: 'application/pdf',
         cacheControl: 'public, max-age=86400',
       },
     });
-    
+
     // Generar URL firmada válida por 7 días
     const [url] = await file.getSignedUrl({
       action: 'read',
       expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
     });
-    
+
     return url;
   }
 
@@ -102,4 +102,4 @@ export class StorageService {
 
     return url;
   }
-} 
+}

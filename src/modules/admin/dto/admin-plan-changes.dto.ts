@@ -1,5 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsDateString, IsInt, Min, Max } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsDateString,
+  IsInt,
+  Min,
+  Max,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class GetPlanChangesQueryDto {
@@ -41,16 +48,25 @@ class PlanChangeItemDto {
   @ApiProperty({ description: 'User email' })
   userEmail: string;
 
-  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'], description: 'Previous plan' })
+  @ApiProperty({
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
+    description: 'Previous plan',
+  })
   previousPlan: string;
 
-  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'], description: 'New plan' })
+  @ApiProperty({
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
+    description: 'New plan',
+  })
   newPlan: string;
 
   @ApiProperty({ description: 'When the change occurred' })
   changedAt: string;
 
-  @ApiProperty({ enum: ['upgrade', 'downgrade', 'admin_change'], description: 'Reason for change' })
+  @ApiProperty({
+    enum: ['upgrade', 'downgrade', 'admin_change'],
+    description: 'Reason for change',
+  })
   reason: 'upgrade' | 'downgrade' | 'admin_change';
 
   @ApiPropertyOptional({ description: 'Admin email who made the change' })

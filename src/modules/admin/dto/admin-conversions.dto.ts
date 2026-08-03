@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsDateString, IsEnum, IsInt, Min, Max } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsDateString,
+  IsEnum,
+  IsInt,
+  Min,
+  Max,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaginationDto } from '../../../common/dto/pagination.dto.js';
 
@@ -145,7 +153,10 @@ export class GetConversionsListQueryDto {
   @IsDateString()
   endDate?: string;
 
-  @ApiPropertyOptional({ enum: ['completed', 'failed'], description: 'Filter by status' })
+  @ApiPropertyOptional({
+    enum: ['completed', 'failed'],
+    description: 'Filter by status',
+  })
   @IsOptional()
   @IsEnum(['completed', 'failed'])
   status?: 'completed' | 'failed';
@@ -170,7 +181,10 @@ class ConversionItemDto {
   @ApiProperty({ description: 'Label size (e.g., "4x6")' })
   labelSize: string;
 
-  @ApiProperty({ enum: ['completed', 'failed'], description: 'Conversion status' })
+  @ApiProperty({
+    enum: ['completed', 'failed'],
+    description: 'Conversion status',
+  })
   status: 'completed' | 'failed';
 
   @ApiProperty({ enum: ['pdf', 'png', 'jpeg'], description: 'Output format' })

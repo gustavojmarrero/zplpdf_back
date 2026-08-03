@@ -28,7 +28,9 @@ export class GetUsersQueryDto {
   @Max(100)
   limit?: number = 50;
 
-  @ApiPropertyOptional({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'] })
+  @ApiPropertyOptional({
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
+  })
   @IsOptional()
   @IsString()
   plan?: string;
@@ -38,7 +40,10 @@ export class GetUsersQueryDto {
   @IsString()
   search?: string;
 
-  @ApiPropertyOptional({ enum: ['createdAt', 'lastActiveAt', 'pdfCount'], default: 'createdAt' })
+  @ApiPropertyOptional({
+    enum: ['createdAt', 'lastActiveAt', 'pdfCount'],
+    default: 'createdAt',
+  })
   @IsOptional()
   @IsString()
   sortBy?: string = 'createdAt';
@@ -48,12 +53,16 @@ export class GetUsersQueryDto {
   @IsEnum(['asc', 'desc'])
   sortOrder?: 'asc' | 'desc' = 'desc';
 
-  @ApiPropertyOptional({ description: 'Filter by registration date from (ISO 8601)' })
+  @ApiPropertyOptional({
+    description: 'Filter by registration date from (ISO 8601)',
+  })
   @IsOptional()
   @IsDateString()
   dateFrom?: string;
 
-  @ApiPropertyOptional({ description: 'Filter by registration date to (ISO 8601)' })
+  @ApiPropertyOptional({
+    description: 'Filter by registration date to (ISO 8601)',
+  })
   @IsOptional()
   @IsDateString()
   dateTo?: string;
@@ -150,7 +159,14 @@ class UsageHistoryItemDto {
 class SubscriptionInfoDto {
   @ApiProperty({
     description: 'Subscription status',
-    enum: ['active', 'canceled', 'past_due', 'unpaid', 'trialing', 'incomplete'],
+    enum: [
+      'active',
+      'canceled',
+      'past_due',
+      'unpaid',
+      'trialing',
+      'incomplete',
+    ],
   })
   status: string;
 
@@ -183,7 +199,10 @@ class UserDetailDataDto {
   @ApiProperty({ type: UserUsageDetailDto })
   usage: UserUsageDetailDto;
 
-  @ApiProperty({ type: [UsageHistoryItemDto], description: 'Usage history for the last 30 days' })
+  @ApiProperty({
+    type: [UsageHistoryItemDto],
+    description: 'Usage history for the last 30 days',
+  })
   usageHistory: UsageHistoryItemDto[];
 
   @ApiPropertyOptional({ type: SubscriptionInfoDto })
@@ -240,10 +259,15 @@ class UpdatePlanResultDto {
   @ApiProperty()
   effectiveAt: string;
 
-  @ApiPropertyOptional({ description: 'Whether Stripe subscription was canceled' })
+  @ApiPropertyOptional({
+    description: 'Whether Stripe subscription was canceled',
+  })
   stripeCanceled?: boolean;
 
-  @ApiPropertyOptional({ description: 'Warnings during the process', type: [String] })
+  @ApiPropertyOptional({
+    description: 'Warnings during the process',
+    type: [String],
+  })
   warnings?: string[];
 }
 

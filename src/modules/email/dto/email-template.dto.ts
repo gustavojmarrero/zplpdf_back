@@ -4,8 +4,6 @@ import {
   IsNumber,
   IsBoolean,
   IsOptional,
-  IsArray,
-  IsObject,
   ValidateNested,
   IsEnum,
   Min,
@@ -52,13 +50,19 @@ export class LanguageContentDto {
 }
 
 export class TemplateContentDto {
-  @ApiPropertyOptional({ type: LanguageContentDto, description: 'Variant A content by language' })
+  @ApiPropertyOptional({
+    type: LanguageContentDto,
+    description: 'Variant A content by language',
+  })
   @IsOptional()
   @ValidateNested()
   @Type(() => LanguageContentDto)
   A?: LanguageContentDto;
 
-  @ApiPropertyOptional({ type: LanguageContentDto, description: 'Variant B content by language' })
+  @ApiPropertyOptional({
+    type: LanguageContentDto,
+    description: 'Variant B content by language',
+  })
   @IsOptional()
   @ValidateNested()
   @Type(() => LanguageContentDto)
@@ -68,25 +72,37 @@ export class TemplateContentDto {
 // ============== Update Template DTO ==============
 
 export class UpdateEmailTemplateDto {
-  @ApiPropertyOptional({ type: TemplateContentDto, description: 'Email content by language' })
+  @ApiPropertyOptional({
+    type: TemplateContentDto,
+    description: 'Email content by language',
+  })
   @IsOptional()
   @ValidateNested()
   @Type(() => TemplateContentDto)
   content?: TemplateContentDto;
 
-  @ApiPropertyOptional({ example: 7, description: 'Days of inactivity to trigger email' })
+  @ApiPropertyOptional({
+    example: 7,
+    description: 'Days of inactivity to trigger email',
+  })
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Max(365)
   triggerDays?: number;
 
-  @ApiPropertyOptional({ example: true, description: 'Whether template is enabled' })
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Whether template is enabled',
+  })
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
 
-  @ApiPropertyOptional({ example: 'Retention 7 Days', description: 'Template name' })
+  @ApiPropertyOptional({
+    example: 'Retention 7 Days',
+    description: 'Template name',
+  })
   @IsOptional()
   @IsString()
   name?: string;
@@ -96,7 +112,10 @@ export class UpdateEmailTemplateDto {
   @IsString()
   description?: string;
 
-  @ApiPropertyOptional({ example: 'Updated subject line for better engagement', description: 'Description of the change' })
+  @ApiPropertyOptional({
+    example: 'Updated subject line for better engagement',
+    description: 'Description of the change',
+  })
   @IsOptional()
   @IsString()
   changeDescription?: string;
@@ -105,7 +124,10 @@ export class UpdateEmailTemplateDto {
 // ============== Rollback DTO ==============
 
 export class RollbackTemplateDto {
-  @ApiProperty({ example: 'abc123xyz', description: 'Version ID to rollback to' })
+  @ApiProperty({
+    example: 'abc123xyz',
+    description: 'Version ID to rollback to',
+  })
   @IsString()
   versionId: string;
 }
@@ -113,7 +135,11 @@ export class RollbackTemplateDto {
 // ============== Test Email DTO ==============
 
 export class TestEmailDto {
-  @ApiProperty({ enum: ['en', 'es', 'zh', 'pt'], example: 'en', description: 'Language for test email' })
+  @ApiProperty({
+    enum: ['en', 'es', 'zh', 'pt'],
+    example: 'en',
+    description: 'Language for test email',
+  })
   @IsEnum(['en', 'es', 'zh', 'pt'])
   language: 'en' | 'es' | 'zh' | 'pt';
 }
@@ -133,7 +159,9 @@ export class EmailTemplateResponseDto {
   @ApiProperty({ example: 'PRO Retention 7 Days' })
   name: string;
 
-  @ApiProperty({ example: 'Email sent to PRO users after 7 days of inactivity' })
+  @ApiProperty({
+    example: 'Email sent to PRO users after 7 days of inactivity',
+  })
   description: string;
 
   @ApiProperty({ example: 7 })

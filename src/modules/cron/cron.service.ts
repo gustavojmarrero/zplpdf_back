@@ -73,7 +73,9 @@ export class CronService {
   ) {
     const stripeKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     if (stripeKey) {
-      this.stripe = new Stripe(stripeKey, { apiVersion: '2025-11-17.clover' as Stripe.LatestApiVersion });
+      this.stripe = new Stripe(stripeKey, {
+        apiVersion: '2025-11-17.clover' as Stripe.LatestApiVersion,
+      });
     }
   }
 
@@ -86,7 +88,9 @@ export class CronService {
 
       // Obtener todos los usos expirados
       const expiredUsages = await this.firestoreService.getExpiredUsages(now);
-      this.logger.log(`Found ${expiredUsages.length} expired usage(s) to process`);
+      this.logger.log(
+        `Found ${expiredUsages.length} expired usage(s) to process`,
+      );
 
       for (const usage of expiredUsages) {
         try {
@@ -99,15 +103,23 @@ export class CronService {
           }
 
           // Calcular nuevo período basado en el plan del usuario
-          const newPeriodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
+          const newPeriodInfo =
+            this.periodCalculatorService.calculateCurrentPeriod(user);
 
           // Crear nuevo documento de uso con el período calculado
-          await this.firestoreService.getOrCreateUsageWithPeriod(user.id, newPeriodInfo);
+          await this.firestoreService.getOrCreateUsageWithPeriod(
+            user.id,
+            newPeriodInfo,
+          );
 
-          this.logger.log(`Reset usage for user ${user.id}: ${usage.odId} -> ${newPeriodInfo.periodId}`);
+          this.logger.log(
+            `Reset usage for user ${user.id}: ${usage.odId} -> ${newPeriodInfo.periodId}`,
+          );
           resetCount++;
         } catch (userError) {
-          this.logger.error(`Error processing user ${usage.userId}: ${userError.message}`);
+          this.logger.error(
+            `Error processing user ${usage.userId}: ${userError.message}`,
+          );
         }
       }
 
@@ -134,9 +146,12 @@ export class CronService {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
 
-      const deletedCount = await this.firestoreService.deleteOldErrors(cutoffDate);
+      const deletedCount =
+        await this.firestoreService.deleteOldErrors(cutoffDate);
 
-      this.logger.log(`Error cleanup completed. Deleted ${deletedCount} error(s) older than ${retentionDays} days.`);
+      this.logger.log(
+        `Error cleanup completed. Deleted ${deletedCount} error(s) older than ${retentionDays} days.`,
+      );
 
       return {
         deletedCount,
@@ -156,9 +171,13 @@ export class CronService {
     this.logger.log('Starting exchange rate update cron job...');
 
     try {
-      const result = await this.exchangeRateService.updateRateCache(this.firestoreService);
+      const result = await this.exchangeRateService.updateRateCache(
+        this.firestoreService,
+      );
 
-      this.logger.log(`Exchange rate update completed: ${result.rate} (${result.source})`);
+      this.logger.log(
+        `Exchange rate update completed: ${result.rate} (${result.source})`,
+      );
 
       return {
         success: true,
@@ -167,7 +186,9 @@ export class CronService {
         executedAt: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Error in exchange rate update cron job: ${error.message}`);
+      this.logger.error(
+        `Error in exchange rate update cron job: ${error.message}`,
+      );
       return {
         success: false,
         executedAt: new Date(),
@@ -185,14 +206,18 @@ export class CronService {
     try {
       const result = await this.expenseService.generateRecurringExpenses();
 
-      this.logger.log(`Recurring expenses generation completed. Generated ${result.generated} expense(s).`);
+      this.logger.log(
+        `Recurring expenses generation completed. Generated ${result.generated} expense(s).`,
+      );
 
       return {
         generated: result.generated,
         executedAt: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Error in recurring expenses cron job: ${error.message}`);
+      this.logger.error(
+        `Error in recurring expenses cron job: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -237,8 +262,13 @@ export class CronService {
 
     try {
       // Check 7-day inactive users
-      const inactive7Days = await this.firestoreService.getInactiveUsers(7, 'notifiedInactive7Days');
-      this.logger.log(`Found ${inactive7Days.length} users inactive for 7 days`);
+      const inactive7Days = await this.firestoreService.getInactiveUsers(
+        7,
+        'notifiedInactive7Days',
+      );
+      this.logger.log(
+        `Found ${inactive7Days.length} users inactive for 7 days`,
+      );
 
       for (const user of inactive7Days) {
         try {
@@ -252,16 +282,26 @@ export class CronService {
           });
 
           // Mark as notified
-          await this.firestoreService.markUserInactiveNotified(user.id, 'notifiedInactive7Days');
+          await this.firestoreService.markUserInactiveNotified(
+            user.id,
+            'notifiedInactive7Days',
+          );
           notified7Days++;
         } catch (error) {
-          this.logger.error(`Error processing 7-day inactive user ${user.id}: ${error.message}`);
+          this.logger.error(
+            `Error processing 7-day inactive user ${user.id}: ${error.message}`,
+          );
         }
       }
 
       // Check 30-day inactive users
-      const inactive30Days = await this.firestoreService.getInactiveUsers(30, 'notifiedInactive30Days');
-      this.logger.log(`Found ${inactive30Days.length} users inactive for 30 days`);
+      const inactive30Days = await this.firestoreService.getInactiveUsers(
+        30,
+        'notifiedInactive30Days',
+      );
+      this.logger.log(
+        `Found ${inactive30Days.length} users inactive for 30 days`,
+      );
 
       for (const user of inactive30Days) {
         try {
@@ -275,10 +315,15 @@ export class CronService {
           });
 
           // Mark as notified
-          await this.firestoreService.markUserInactiveNotified(user.id, 'notifiedInactive30Days');
+          await this.firestoreService.markUserInactiveNotified(
+            user.id,
+            'notifiedInactive30Days',
+          );
           notified30Days++;
         } catch (error) {
-          this.logger.error(`Error processing 30-day inactive user ${user.id}: ${error.message}`);
+          this.logger.error(
+            `Error processing 30-day inactive user ${user.id}: ${error.message}`,
+          );
         }
       }
 
@@ -292,7 +337,9 @@ export class CronService {
         executedAt: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Error in inactive users check cron job: ${error.message}`);
+      this.logger.error(
+        `Error in inactive users check cron job: ${error.message}`,
+      );
       return {
         notified7Days,
         notified30Days,
@@ -319,7 +366,9 @@ export class CronService {
     try {
       // Get all paid users with Stripe billing periods (Lite/Pro/Pro Max)
       const allUsers = await this.firestoreService.getAllUsers();
-      const proUsers = allUsers.filter(u => u.plan === 'lite' || u.plan === 'pro' || u.plan === 'promax');
+      const proUsers = allUsers.filter(
+        (u) => u.plan === 'lite' || u.plan === 'pro' || u.plan === 'promax',
+      );
 
       this.logger.log(`Found ${proUsers.length} Lite/Pro/Pro Max users`);
 
@@ -340,14 +389,22 @@ export class CronService {
 
         try {
           // Fetch subscription from Stripe
-          const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+          const subscription = await this.stripe.subscriptions.retrieve(
+            user.stripeSubscriptionId,
+          );
 
           // Extract period from subscription items
-          const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
-          const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+          const periodStart = (
+            subscription as unknown as { current_period_start: number }
+          ).current_period_start;
+          const periodEnd = (
+            subscription as unknown as { current_period_end: number }
+          ).current_period_end;
 
           if (!periodStart || !periodEnd) {
-            this.logger.warn(`User ${user.email}: No period data in subscription`);
+            this.logger.warn(
+              `User ${user.email}: No period data in subscription`,
+            );
             skipped++;
             continue;
           }
@@ -358,8 +415,12 @@ export class CronService {
             subscriptionPeriodEnd: new Date(periodEnd * 1000),
           });
 
-          const startDate = new Date(periodStart * 1000).toISOString().split('T')[0];
-          const endDate = new Date(periodEnd * 1000).toISOString().split('T')[0];
+          const startDate = new Date(periodStart * 1000)
+            .toISOString()
+            .split('T')[0];
+          const endDate = new Date(periodEnd * 1000)
+            .toISOString()
+            .split('T')[0];
           this.logger.log(`✅ ${user.email}: ${startDate} → ${endDate}`);
           updated++;
         } catch (error) {
@@ -368,10 +429,12 @@ export class CronService {
         }
 
         // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
-      this.logger.log(`Migration completed: ${updated} updated, ${skipped} skipped, ${errors} errors`);
+      this.logger.log(
+        `Migration completed: ${updated} updated, ${skipped} skipped, ${errors} errors`,
+      );
 
       return {
         updated,
@@ -403,10 +466,12 @@ export class CronService {
       // Get all users with country "US" that have Ashburn or no city
       const allUsers = await this.firestoreService.getAllUsers();
       const usUsers = allUsers.filter(
-        u => u.country === 'US' && (!u.city || u.city === 'Ashburn'),
+        (u) => u.country === 'US' && (!u.city || u.city === 'Ashburn'),
       );
 
-      this.logger.log(`Found ${usUsers.length} US users with Ashburn or no city (to be reset)`);
+      this.logger.log(
+        `Found ${usUsers.length} US users with Ashburn or no city (to be reset)`,
+      );
 
       // Log city distribution for documentation
       const cityStats = new Map<string, number>();
@@ -414,7 +479,9 @@ export class CronService {
         const city = user.city || 'sin ciudad';
         cityStats.set(city, (cityStats.get(city) || 0) + 1);
       }
-      this.logger.log(`City distribution: ${JSON.stringify(Object.fromEntries(cityStats))}`);
+      this.logger.log(
+        `City distribution: ${JSON.stringify(Object.fromEntries(cityStats))}`,
+      );
 
       for (const user of usUsers) {
         try {
@@ -425,10 +492,14 @@ export class CronService {
             countryDetectedAt: null,
           });
 
-          this.logger.log(`✅ Reset country for user ${user.email}: US → unknown`);
+          this.logger.log(
+            `✅ Reset country for user ${user.email}: US → unknown`,
+          );
           updated++;
         } catch (error) {
-          this.logger.error(`❌ Error resetting country for ${user.email}: ${error.message}`);
+          this.logger.error(
+            `❌ Error resetting country for ${user.email}: ${error.message}`,
+          );
         }
       }
 
