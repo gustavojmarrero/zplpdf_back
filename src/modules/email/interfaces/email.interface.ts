@@ -183,6 +183,34 @@ export interface ScheduleEmailsResult {
 
 // ============== Eligibility Checks ==============
 
+/** Candidato que superó el filtrado de elegibilidad. */
+export interface EligibleEmailUser {
+  userId: string;
+  userEmail: string;
+  displayName?: string;
+  language: string;
+  pdfCount: number;
+  createdAt: Date;
+}
+
+/**
+ * Candidatos descartados durante el filtrado, desglosados por motivo. Sin este
+ * desglose no se puede distinguir "no había candidatos" de "todos ya habían
+ * recibido el email", que es justo lo que hace falta para diagnosticar un
+ * envío que programó menos correos de los esperados.
+ */
+export interface EmailSkipReasons {
+  /** Ya tenía ese tipo de email en la cola. */
+  alreadyReceived: number;
+  /** Su pdfCount quedó fuera del rango pedido. */
+  pdfCountOutOfRange: number;
+}
+
+export interface EligibleEmailUsersResult {
+  users: EligibleEmailUser[];
+  skipped: EmailSkipReasons;
+}
+
 export interface UserEmailEligibility {
   userId: string;
   userEmail: string;
