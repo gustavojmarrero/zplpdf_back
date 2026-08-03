@@ -14,7 +14,7 @@ import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
-import { getStartOfDayInTimezone, getDateStringInTimezone } from '../../utils/timezone.util.js';
+import { getDateStringInTimezone } from '../../utils/timezone.util.js';
 import type {
   ExchangeRate,
   StripeTransaction,

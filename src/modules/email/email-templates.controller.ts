@@ -18,7 +18,7 @@ import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
-import type { EmailTemplate, TemplateVersion, TemplatePreview, EmailLanguage } from './interfaces/email.interface.js';
+import type { EmailTemplate, TemplateVersion, TemplatePreview } from './interfaces/email.interface.js';
 import {
   UpdateEmailTemplateDto,
   RollbackTemplateDto,
@@ -229,7 +229,7 @@ export class EmailTemplatesController {
       throw new NotFoundException(`Template with ID ${id} not found`);
     }
 
-    const { subject, body, sampleData } = this.generatePreview(template, testDto.language);
+    const { subject, body } = this.generatePreview(template, testDto.language);
 
     if (!this.resend) {
       this.logger.warn('Resend not configured, test email not sent');

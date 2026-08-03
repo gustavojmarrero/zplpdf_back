@@ -966,7 +966,6 @@ function getMissYouContent(variant: AbVariant, lang: EmailLanguage, data: Templa
 function progressBar(used: number, limit: number): string {
   const percentage = Math.min((used / limit) * 100, 100);
   const usedWidth = Math.round(percentage);
-  const remainingWidth = 100 - usedWidth;
   const isUrgent = percentage >= 100;
   const barColor = isUrgent ? '#dc2626' : percentage >= 80 ? '#f59e0b' : '#2563eb';
 

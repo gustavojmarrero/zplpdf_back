@@ -7,7 +7,6 @@ import { GA4Service } from '../analytics/ga4.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import { EmailService } from '../email/email.service.js';
 import type { StripeTransaction, SubscriptionEvent } from '../../common/interfaces/finance.interface.js';
-import type { PlanType } from '../../common/interfaces/user.interface.js';
 import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
 
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
@@ -284,7 +283,7 @@ export class PaymentsService {
     if (customerId) {
       try {
         await this.stripe.customers.retrieve(customerId);
-      } catch (error) {
+      } catch {
         // Customer doesn't exist in current mode, create new one
         this.logger.warn(`Customer ${customerId} not found in current Stripe mode, creating new one`);
         customerId = null;

@@ -31,13 +31,12 @@ import {
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { LabelSize } from './enums/label-size.enum.js';
 import { OutputFormat } from './enums/output-format.enum.js';
-import { ZplPreviewItemDto, ZplPreviewResponseDto } from './dto/zpl-preview.dto.js';
+import { ZplPreviewResponseDto } from './dto/zpl-preview.dto.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { ZplValidatorService } from './validation/zpl-validator.service.js';
 import {
-  BatchConvertDto,
   BatchConvertResponseDto,
   BatchStatusResponseDto,
   BatchDownloadResponseDto,

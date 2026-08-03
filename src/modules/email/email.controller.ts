@@ -9,7 +9,6 @@ import {
   HttpStatus,
   Headers,
   Logger,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiTags, ApiOperation, ApiResponse, ApiHeader, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
@@ -19,7 +18,7 @@ import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { ResendWebhookDto } from './dto/resend-webhook.dto.js';
 import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto, OnboardingFunnelDto } from './dto/email-metrics.dto.js';
-import type { ProcessQueueResult, ScheduleEmailsResult, ProInactiveUser, ProPowerUser, FreeReactivationResult, FreeInactiveUser, FreeInactiveUsersResponse, InactiveUsersResponse, PowerUsersResponse } from './interfaces/email.interface.js';
+import type { ProcessQueueResult, ScheduleEmailsResult, FreeReactivationResult, FreeInactiveUsersResponse, InactiveUsersResponse, PowerUsersResponse } from './interfaces/email.interface.js';
 
 @ApiTags('email')
 @Controller()

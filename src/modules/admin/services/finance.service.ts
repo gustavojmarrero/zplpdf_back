@@ -7,7 +7,6 @@ import type {
   ChurnData,
   LTVData,
   ProfitData,
-  StripeTransaction,
   BusinessValuationData,
   ValuationFactors,
   ValuationSnapshot,

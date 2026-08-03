@@ -7,7 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
-import { ErrorCodes, ErrorHttpStatus, getErrorMessage, type ErrorCode } from '../constants/error-codes.js';
+import { ErrorCodes, getErrorMessage, type ErrorCode } from '../constants/error-codes.js';
 
 /**
  * Interfaz para respuestas de error estandarizadas

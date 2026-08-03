@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import {
   QueueItem,
-  QueueItemStatus,
   QueuePriority,
   QueuePositionResponse,
   QueueStats,

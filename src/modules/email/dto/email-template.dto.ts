@@ -4,8 +4,6 @@ import {
   IsNumber,
   IsBoolean,
   IsOptional,
-  IsArray,
-  IsObject,
   ValidateNested,
   IsEnum,
   Min,

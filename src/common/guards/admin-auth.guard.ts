@@ -46,7 +46,6 @@ export class AdminAuthGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
     const adminEmailHeader = request.headers['x-admin-email'];
-    const firebaseUidHeader = request.headers['x-firebase-uid'];
 
     // 1. Verificar header Authorization
     if (!authHeader || !authHeader.startsWith('Bearer ')) {

@@ -74,7 +74,7 @@ async function migrateUserData() {
           updates.stripeCustomerId = stripeCustomerId;
           console.log(`  stripeCustomerId desde PI: ${stripeCustomerId}`);
         }
-      } catch (e) {
+      } catch {
         console.log(`  No se pudo obtener PaymentIntent ${doc.id}`);
       }
     }
@@ -94,7 +94,7 @@ async function migrateUserData() {
             console.log(`  plan desde users: ${updates.plan}`);
           }
         }
-      } catch (e) {
+      } catch {
         console.log(`  No se pudo obtener usuario ${tx.userId}`);
       }
     }
@@ -107,7 +107,7 @@ async function migrateUserData() {
           updates.userEmail = customer.email;
           console.log(`  userEmail desde Stripe: ${customer.email}`);
         }
-      } catch (e) {
+      } catch {
         console.log(`  No se pudo obtener customer de Stripe ${stripeCustomerId}`);
       }
     }

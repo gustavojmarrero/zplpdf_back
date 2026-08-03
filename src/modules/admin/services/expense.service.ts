@@ -151,7 +151,7 @@ export class ExpenseService {
           );
           amountMxn = conversion.amountMxn;
           exchangeRate = conversion.rate;
-        } catch (error) {
+        } catch {
           exchangeRate = 20;
           amountMxn = newAmount * exchangeRate;
         }

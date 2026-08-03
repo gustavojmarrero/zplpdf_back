@@ -5,7 +5,6 @@ import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
 import type {
-  EmailType,
   AbVariant,
   EmailLanguage,
   ProcessQueueResult,

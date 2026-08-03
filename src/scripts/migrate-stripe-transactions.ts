@@ -56,7 +56,7 @@ async function getExchangeRate(): Promise<number> {
     if (doc.exists) {
       return doc.data()?.rate || 20;
     }
-  } catch (e) {
+  } catch {
     console.log('Using default exchange rate');
   }
   return 20; // Default rate
@@ -122,7 +122,7 @@ async function migrateTransactions() {
         try {
           const pm = await stripe.paymentMethods.retrieve(pi.payment_method as string);
           billingCountry = pm.card?.country || undefined;
-        } catch (e) {
+        } catch {
           // Ignorar error, intentar con charge
         }
       }
@@ -135,7 +135,7 @@ async function migrateTransactions() {
             charge.billing_details?.address?.country ||
             (charge.payment_method_details as any)?.card?.country ||
             undefined;
-        } catch (e) {
+        } catch {
           // Ignorar error
         }
       }
@@ -157,7 +157,7 @@ async function migrateTransactions() {
               billingCountry = userData.country || undefined;
             }
           }
-        } catch (e) {
+        } catch {
           console.log(`  ⚠️  No se pudo buscar usuario para ${pi.customer}`);
         }
       }

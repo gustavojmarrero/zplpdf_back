@@ -53,7 +53,6 @@ import {
   StopSimulationResponseDto,
 } from './dto/admin-simulate-plan.dto.js';
 import {
-  GetRevenueQueryDto,
   GetTransactionsQueryDto,
   CreateExpenseDto,
   UpdateExpenseDto,
@@ -63,7 +62,6 @@ import {
   GetGoalsHistoryQueryDto,
   GetGeoRevenueQueryDto,
   GetChurnQueryDto,
-  GetProfitQueryDto,
 } from './dto/admin-finance.dto.js';
 import {
   BusinessValuationResponseDto,

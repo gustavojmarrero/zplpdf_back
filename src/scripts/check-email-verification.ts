@@ -85,7 +85,6 @@ async function main() {
 
   for (const user of emailPasswordUsers) {
     const email = user.email || 'N/A';
-    const verified = user.emailVerified ? 'SI' : 'NO';
     const createdAt = user.metadata.creationTime
       ? new Date(user.metadata.creationTime).toLocaleString('es-MX', { timeZone: 'America/Merida' })
       : 'N/A';
@@ -98,9 +97,6 @@ async function main() {
     } else {
       unverifiedCount++;
     }
-
-    // Highlight unverified users
-    const verifiedDisplay = user.emailVerified ? 'SI' : '\x1b[31mNO\x1b[0m';
 
     console.log(
       email.padEnd(40) +

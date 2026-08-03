@@ -1,20 +1,18 @@
 import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef, ForbiddenException, Optional } from '@nestjs/common';
 import { ErrorCodes, getErrorTypeFromCode } from '../../common/constants/error-codes.js';
-import axios from 'axios';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
-import PDFMerger from 'pdf-merger-js';
 import { PDFDocument } from 'pdf-lib';
 import { Storage } from '@google-cloud/storage';
 import { ConfigService } from '@nestjs/config';
 import archiver from 'archiver';
 import { Writable } from 'stream';
 import { pdfToPng, PngPageOutput } from 'pdf-to-png-converter';
-import { FirestoreService, ConversionStatus, ErrorLogData } from '../cache/firestore.service.js';
+import { FirestoreService, ConversionStatus } from '../cache/firestore.service.js';
 import { UsersService } from '../users/users.service.js';
 import type { PeriodInfo } from '../../common/services/period-calculator.service.js';
 import { OutputFormat } from './enums/output-format.enum.js';
-import type { BatchJob, BatchFileJob, BatchLimits } from './interfaces/batch.interface.js';
+import type { BatchJob, BatchFileJob } from './interfaces/batch.interface.js';
 import { BATCH_LIMITS } from './interfaces/batch.interface.js';
 import { LabelaryQueueService } from './services/labelary-queue.service.js';
 import type { UserPlan, QueuePositionResponse } from './interfaces/queue.interface.js';
@@ -42,11 +40,6 @@ interface ConversionJob {
   createdAt: Date;
   originalFilename?: string;
   userPlan?: string;
-}
-
-interface ZplBlock {
-  content: string;
-  index: number;
 }
 
 // Nuevo tipo para guardar contenido sin ^PQ y la cantidad de copias
@@ -274,7 +267,10 @@ export class ZplService {
   async startZplConversion(
     zplContent: string,
     labelSize: string,
-    language = 'en',
+    // Aceptado por compatibilidad con la firma posicional que usa el
+    // controller, pero la conversión no depende del idioma. No se puede
+    // eliminar sin desplazar `userId` en todos los llamadores.
+    _language = 'en',
     userId: string,
     outputFormat: OutputFormat = OutputFormat.PDF,
     originalFilename?: string,

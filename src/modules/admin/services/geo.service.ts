@@ -311,7 +311,6 @@ export class GeoService {
 
       // Potencial de crecimiento: países con muchos free users y baja conversión
       const freeUsers = country.byPlan.free;
-      const paidUsers = country.byPlan.lite + country.byPlan.pro + country.byPlan.promax + country.byPlan.enterprise;
       const growthPotential = freeUsers > 0 && conversionRate < avgConversionRate ? 40 : 20;
 
       const score = Math.round(userScore + conversionScore + growthPotential);
