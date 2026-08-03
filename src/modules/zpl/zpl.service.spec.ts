@@ -208,3 +208,197 @@ describe('ZplService — registro de errores de Labelary', () => {
     expect(err.loggedToDashboard).toBeUndefined();
   });
 });
+
+/**
+ * Los rechazos de cuota/acceso deben registrarse con `userEmail`, no solo con
+ * `userId`. El dashboard admin enlaza a la ficha del usuario vía
+ * /admin/users?search=<email>, y esa búsqueda matchea por email o displayName
+ * pero nunca por uid: sin el email el admin no puede saber quién agotó su cuota.
+ */
+describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
+  const SIMPLE_ZPL = '^XA^FO50,50^A0,30^FDtest^FS^XZ';
+
+  function buildService(saveErrorLog: jest.Mock, checkCanConvert: jest.Mock) {
+    const configService: any = { get: jest.fn(() => 'test-bucket') };
+    return new ZplService(
+      configService,
+      { saveErrorLog } as any,
+      { checkCanConvert, getUserById: jest.fn(), getEffectivePlan: jest.fn() } as any,
+      {} as any,
+      {} as any,
+    );
+  }
+
+  it('registra el email que devuelve checkCanConvert al rechazar por cuota mensual', async () => {
+    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-1' });
+    const checkCanConvert = jest.fn().mockResolvedValue({
+      allowed: false,
+      error: "You've reached your monthly limit",
+      errorCode: 'MONTHLY_LIMIT_EXCEEDED',
+      data: { current: 10, allowed: 10, resetsAt: '2026-07-02' },
+      userEmail: 'usuario@ejemplo.com',
+    });
+    const service = buildService(saveErrorLog, checkCanConvert);
+
+    await expect(
+      service.startZplConversion(SIMPLE_ZPL, '4x6', 'es', 'uid-123'),
+    ).rejects.toThrow();
+
+    expect(saveErrorLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'MONTHLY_LIMIT_EXCEEDED',
+        severity: 'warning',
+        userId: 'uid-123',
+        userEmail: 'usuario@ejemplo.com',
+      }),
+    );
+  });
+
+  it('no rompe el registro si el email no se pudo resolver', async () => {
+    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-2' });
+    const checkCanConvert = jest.fn().mockResolvedValue({
+      allowed: false,
+      error: 'User not found',
+      errorCode: 'USER_NOT_FOUND',
+      userEmail: null,
+    });
+    const service = buildService(saveErrorLog, checkCanConvert);
+
+    await expect(
+      service.startZplConversion(SIMPLE_ZPL, '4x6', 'es', 'uid-fantasma'),
+    ).rejects.toThrow();
+
+    // `null` se normaliza a undefined: Firestore rechaza los undefined pero
+    // saveErrorLog ya los omite; lo importante es que el registro se guarde.
+    expect(saveErrorLog).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'uid-fantasma', userEmail: undefined }),
+    );
+  });
+
+  /**
+   * Los rechazos que ocurren ANTES del checkCanConvert (plan sin batch, exceso
+   * de archivos, archivo demasiado grande) también son eventos de acceso/cuota
+   * y deben quedar registrados con el email del usuario.
+   */
+  describe('rechazos previos al gate de cuota', () => {
+    function buildBatchService(saveErrorLog: jest.Mock, plan: string, email = 'batch@ejemplo.com') {
+      const configService: any = { get: jest.fn(() => 'test-bucket') };
+      const usersService: any = {
+        getUserById: jest.fn().mockResolvedValue({ id: 'uid-b', email, plan }),
+        getEffectivePlan: jest.fn().mockReturnValue(plan),
+        checkCanConvert: jest.fn().mockResolvedValue({ allowed: true, userEmail: email }),
+      };
+      return new ZplService(
+        configService,
+        { saveErrorLog } as any,
+        usersService,
+        {} as any,
+        {} as any,
+      );
+    }
+
+    it('registra BATCH_NOT_ALLOWED con el email cuando el plan no incluye batch', async () => {
+      const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-4' });
+      const service = buildBatchService(saveErrorLog, 'free');
+
+      await expect(
+        service.startBatchConversion(
+          'uid-b',
+          [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
+          '4x6',
+        ),
+      ).rejects.toThrow();
+
+      expect(saveErrorLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // Fricción de acceso (upsell), no presión de cuota.
+          type: 'ACCESS_DENIED',
+          code: 'BATCH_NOT_ALLOWED',
+          severity: 'warning',
+          userId: 'uid-b',
+          userEmail: 'batch@ejemplo.com',
+        }),
+      );
+    });
+
+    it('registra BATCH_LIMIT_EXCEEDED con el email al exceder los archivos por batch', async () => {
+      const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-5' });
+      const service = buildBatchService(saveErrorLog, 'pro');
+      // BATCH_LIMITS.pro permite 10 archivos; enviamos 11.
+      const files = Array.from({ length: 11 }, (_, i) => ({
+        id: `f${i}`,
+        fileName: `a${i}.zpl`,
+        content: SIMPLE_ZPL,
+      }));
+
+      await expect(
+        service.startBatchConversion('uid-b', files, '4x6'),
+      ).rejects.toThrow();
+
+      expect(saveErrorLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'LIMIT_EXCEEDED',
+          code: 'BATCH_LIMIT_EXCEEDED',
+          userId: 'uid-b',
+          userEmail: 'batch@ejemplo.com',
+        }),
+      );
+    });
+
+    it('registra USER_NOT_FOUND aunque no haya email que resolver', async () => {
+      const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-6' });
+      const service = buildBatchService(saveErrorLog, 'pro');
+      (service as any).usersService.getUserById = jest.fn().mockResolvedValue(null);
+
+      await expect(
+        service.startBatchConversion(
+          'uid-fantasma',
+          [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
+          '4x6',
+        ),
+      ).rejects.toThrow();
+
+      expect(saveErrorLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'ACCESS_DENIED',
+          code: 'USER_NOT_FOUND',
+          userId: 'uid-fantasma',
+          userEmail: undefined,
+        }),
+      );
+    });
+  });
+
+  it('registra también el rechazo de un batch (antes no se guardaba nada)', async () => {
+    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-3' });
+    const checkCanConvert = jest.fn().mockResolvedValue({
+      allowed: false,
+      error: "You've reached your monthly limit",
+      errorCode: 'MONTHLY_LIMIT_EXCEEDED',
+      data: { current: 500, allowed: 500 },
+      userEmail: 'pro@ejemplo.com',
+    });
+    const service = buildService(saveErrorLog, checkCanConvert);
+    (service as any).usersService.getUserById = jest
+      .fn()
+      .mockResolvedValue({ id: 'uid-pro', email: 'pro@ejemplo.com', plan: 'pro' });
+    (service as any).usersService.getEffectivePlan = jest.fn().mockReturnValue('pro');
+
+    await expect(
+      service.startBatchConversion(
+        'uid-pro',
+        [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
+        '4x6',
+      ),
+    ).rejects.toThrow();
+
+    expect(saveErrorLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'MONTHLY_LIMIT_EXCEEDED',
+        severity: 'warning',
+        userId: 'uid-pro',
+        userEmail: 'pro@ejemplo.com',
+      }),
+    );
+  });
+});

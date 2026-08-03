@@ -187,6 +187,40 @@ export class ZplService {
   }
 
   /**
+   * Registra un rechazo de batch en `error_logs` y devuelve la excepción a
+   * lanzar (`throw await this.batchRejection(...)`).
+   *
+   * Centraliza todas las salidas de rechazo de `startBatchConversion` para que
+   * ninguna rama de cuota/acceso quede invisible en el dashboard admin. El
+   * `throw` se deja al llamador para que la terminación del flujo sea explícita
+   * en cada rama (el proyecto compila con `strictNullChecks: false`, así que un
+   * helper que lanzara por dentro no estrecharía tipos ni se leería como salida).
+   *
+   * `body` se pasa tal cual a la HttpException para no alterar el contrato que
+   * ya consume el frontend; `logCode` existe porque el código registrado no
+   * siempre coincide con el del body (checkCanConvert puede no traer código).
+   */
+  private async batchRejection(
+    userId: string,
+    userEmail: string | null | undefined,
+    logCode: string,
+    body: { error: string; message: string; data?: Record<string, any> },
+    status: HttpStatus,
+    logContext?: Record<string, any>,
+  ): Promise<HttpException> {
+    await this.logError(
+      getErrorTypeFromCode(logCode),
+      logCode,
+      body.message,
+      'warning',
+      { ...logContext, ...body.data },
+      userId,
+      userEmail ?? undefined,
+    );
+    return new HttpException(body, status);
+  }
+
+  /**
    * Guarda el archivo ZPL original para debugging (asíncrono, no bloquea conversión)
    */
   private async saveZplForDebug(
@@ -271,6 +305,10 @@ export class ZplService {
           'warning',
           { labelCount, ...canConvert.data },
           userId,
+          // El email viene de checkCanConvert (que ya cargó el usuario). Sin él
+          // el dashboard no puede identificar quién agotó la cuota: /admin/users
+          // busca por email o displayName, nunca por uid.
+          canConvert.userEmail ?? undefined,
         );
         throw new HttpException(
           {
@@ -1695,31 +1733,52 @@ export class ZplService {
       // Validar plan del usuario
       const user = await this.usersService.getUserById(userId);
       if (!user) {
-        throw new HttpException(
+        // Sin documento de usuario no hay email que registrar, pero el evento
+        // sí debe quedar: es un rechazo de acceso como los demás.
+        throw await this.batchRejection(
+          userId,
+          null,
+          ErrorCodes.USER_NOT_FOUND,
           { error: ErrorCodes.USER_NOT_FOUND, message: 'Usuario no encontrado' },
           HttpStatus.NOT_FOUND,
+          { fileCount: files.length },
         );
       }
+
+      // A partir de aquí el usuario existe: su email acompaña a todo rechazo
+      // para que el dashboard admin pueda enlazar a su ficha.
+      const userEmail = user.email || null;
 
       // Usar plan efectivo (considera simulación para admins)
       const effectivePlan = this.usersService.getEffectivePlan(user);
       const planLimits = BATCH_LIMITS[effectivePlan] || BATCH_LIMITS.free;
 
       if (!planLimits.batchAllowed) {
-        throw new HttpException(
-          { error: ErrorCodes.BATCH_NOT_ALLOWED, message: 'El procesamiento batch no está disponible para tu plan' },
+        throw await this.batchRejection(
+          userId,
+          userEmail,
+          ErrorCodes.BATCH_NOT_ALLOWED,
+          {
+            error: ErrorCodes.BATCH_NOT_ALLOWED,
+            message: 'El procesamiento batch no está disponible para tu plan',
+          },
           HttpStatus.FORBIDDEN,
+          { plan: effectivePlan, fileCount: files.length },
         );
       }
 
       if (files.length > planLimits.maxFilesPerBatch) {
-        throw new HttpException(
+        throw await this.batchRejection(
+          userId,
+          userEmail,
+          ErrorCodes.BATCH_LIMIT_EXCEEDED,
           {
             error: ErrorCodes.BATCH_LIMIT_EXCEEDED,
             message: `Excedes el límite de ${planLimits.maxFilesPerBatch} archivos por batch`,
-            data: { maxFiles: planLimits.maxFilesPerBatch, requestedFiles: files.length }
+            data: { maxFiles: planLimits.maxFilesPerBatch, requestedFiles: files.length },
           },
           HttpStatus.FORBIDDEN,
+          { plan: effectivePlan },
         );
       }
 
@@ -1727,13 +1786,17 @@ export class ZplService {
       for (const file of files) {
         const fileSize = Buffer.byteLength(file.content, 'utf8');
         if (fileSize > planLimits.maxFileSizeBytes) {
-          throw new HttpException(
+          throw await this.batchRejection(
+            userId,
+            userEmail,
+            ErrorCodes.FILE_TOO_LARGE,
             {
               error: ErrorCodes.FILE_TOO_LARGE,
               message: `El archivo ${file.fileName} excede el límite de ${planLimits.maxFileSizeBytes / (1024 * 1024)}MB`,
-              data: { fileName: file.fileName, size: fileSize, maxSize: planLimits.maxFileSizeBytes }
+              data: { fileName: file.fileName, size: fileSize, maxSize: planLimits.maxFileSizeBytes },
             },
             HttpStatus.PAYLOAD_TOO_LARGE,
+            { plan: effectivePlan },
           );
         }
       }
@@ -1754,7 +1817,10 @@ export class ZplService {
       // Verificar límites de usuario
       const userLimits = await this.usersService.checkCanConvert(userId, totalLabels);
       if (!userLimits.allowed) {
-        throw new HttpException(
+        throw await this.batchRejection(
+          userId,
+          userLimits.userEmail ?? userEmail,
+          userLimits.errorCode || ErrorCodes.MONTHLY_LIMIT_EXCEEDED,
           {
             error: userLimits.errorCode || 'LIMIT_EXCEEDED',
             message: userLimits.error,
@@ -1764,6 +1830,7 @@ export class ZplService {
             },
           },
           HttpStatus.FORBIDDEN,
+          { fileCount: files.length },
         );
       }
 
