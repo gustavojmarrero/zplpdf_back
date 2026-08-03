@@ -180,9 +180,17 @@ Uses Firebase Auth ID tokens. Guards:
 
 ### Google Cloud Project
 
-- **Project ID:** `intranet-guatever`
+⚠️ **El proyecto NO es el mismo para todo.** Los recursos están repartidos en dos:
+
+| Recurso | Project ID |
+|---------|------------|
+| Cloud Run, Cloud Build, Container Registry | `intranet-guatever` |
+| **Firestore** | `zplpdf-guatever` |
+
 - **Cloud Run Service:** `zplpdf-service`
 - **Region:** `us-central1`
+
+Pasar SIEMPRE `--project` explícito en los comandos de `gcloud`: el proyecto activo por defecto puede ser otro distinto y los errores resultantes despistan (un build en el proyecto equivocado falla con `Permission 'artifactregistry.repositories.uploadArtifacts' denied`, que parece un problema de IAM). Ojo especialmente con `gcloud firestore ...`: contra `intranet-guatever` devuelve `NOT_FOUND: database '(default)' does not exist` porque ahí no hay Firestore.
 
 ### Environment Variables
 
