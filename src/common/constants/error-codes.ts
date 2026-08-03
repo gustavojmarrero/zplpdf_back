@@ -174,6 +174,9 @@ export function getErrorTypeFromCode(code: string): string {
     case 'BLOCKED_EMAIL_DOMAIN':
     case ErrorCodes.ACCESS_DENIED:
     case ErrorCodes.USER_NOT_FOUND:
+    // El batch bloqueado por plan es fricción de acceso (señal de upsell), no
+    // presión de cuota: el usuario no agotó nada, su plan no incluye la feature.
+    case ErrorCodes.BATCH_NOT_ALLOWED:
       return 'ACCESS_DENIED';
     default:
       // Fallback conservador: mantiene el comportamiento previo para códigos
