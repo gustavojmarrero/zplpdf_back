@@ -23,6 +23,12 @@ export interface CheckCanConvertResult {
   errorCode?: string;
   data?: Record<string, any>;
   periodInfo?: PeriodInfo;
+  /**
+   * Email del usuario evaluado (null si no se pudo resolver). Se expone para
+   * que quien rechaza la conversión pueda registrar el evento en `error_logs`
+   * con `userEmail` sin releer el documento: el usuario ya se carga aquí.
+   */
+  userEmail?: string | null;
 }
 
 @Injectable()
@@ -348,13 +354,16 @@ export class UsersService {
         allowed: false,
         error: 'User not found',
         errorCode: 'USER_NOT_FOUND',
+        userEmail: null,
       };
     }
+
+    const userEmail = user.email || null;
 
     // Admins sin simulación activa tienen acceso ilimitado
     if (user.role === 'admin' && !this.isSimulationActive(user)) {
       const periodInfo = this.periodCalculatorService.calculateCurrentPeriod(user);
-      return { allowed: true, periodInfo };
+      return { allowed: true, periodInfo, userEmail };
     }
 
     // Check email verification (defense in depth - frontend should handle this)
@@ -363,6 +372,7 @@ export class UsersService {
         allowed: false,
         error: 'Please verify your email before using the service',
         errorCode: 'EMAIL_NOT_VERIFIED',
+        userEmail,
       };
     }
 
@@ -372,6 +382,7 @@ export class UsersService {
         allowed: false,
         error: 'Temporary/disposable email addresses are not allowed',
         errorCode: 'BLOCKED_EMAIL_DOMAIN',
+        userEmail,
       };
     }
 
@@ -391,6 +402,7 @@ export class UsersService {
           requested: labelCount,
           allowed: limits.maxLabelsPerPdf,
         },
+        userEmail,
       };
     }
 
@@ -405,10 +417,11 @@ export class UsersService {
           allowed: limits.maxPdfsPerMonth,
           resetsAt: usage.periodEnd.toISOString().split('T')[0],
         },
+        userEmail,
       };
     }
 
-    return { allowed: true, periodInfo };
+    return { allowed: true, periodInfo, userEmail };
   }
 
   async recordConversion(

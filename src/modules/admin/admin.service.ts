@@ -76,6 +76,32 @@ export class AdminService {
     }
   }
 
+  /**
+   * Rellena `userEmail` en los registros que tienen `userId` pero se guardaron
+   * sin email (eventos anteriores al fix del conversion-gate). Sin esto el
+   * dashboard no puede enlazar a la ficha del usuario, porque /admin/users
+   * busca por email o displayName y nunca por uid.
+   *
+   * Solo hace la lectura si hay huecos que rellenar.
+   */
+  private async fillMissingUserEmails<T extends { userId?: string; userEmail?: string }>(
+    items: T[],
+  ): Promise<T[]> {
+    const missingIds = items.filter((i) => i.userId && !i.userEmail).map((i) => i.userId);
+
+    if (missingIds.length === 0) {
+      return items;
+    }
+
+    const emails = await this.firestoreService.getUserEmailsByIds(missingIds);
+
+    return items.map((item) =>
+      item.userId && !item.userEmail && emails.has(item.userId)
+        ? { ...item, userEmail: emails.get(item.userId) }
+        : item,
+    );
+  }
+
   async getDashboardMetrics(
     startDate?: string,
     endDate?: string,
@@ -147,19 +173,22 @@ export class AdminService {
         failures: item.failures,
       }));
 
-      // Transform recent errors
-      const recentErrors = errorStats.recentErrors.map((error) => ({
-        id: error.id,
-        type: error.type,
-        code: error.code,
-        message: error.message,
-        userId: error.userId,
-        userEmail: error.userEmail,
-        jobId: error.jobId,
-        timestamp: error.createdAt,
-        severity: error.severity,
-        context: error.context,
-      }));
+      // Transform recent errors (resolviendo el email de los eventos antiguos
+      // que se guardaron solo con userId)
+      const recentErrors = await this.fillMissingUserEmails(
+        errorStats.recentErrors.map((error) => ({
+          id: error.id,
+          type: error.type,
+          code: error.code,
+          message: error.message,
+          userId: error.userId,
+          userEmail: error.userEmail,
+          jobId: error.jobId,
+          timestamp: error.createdAt,
+          severity: error.severity,
+          context: error.context,
+        })),
+      );
 
       // Transform recent registrations
       const formattedRegistrations = recentRegistrations.map((user) => ({
@@ -454,28 +483,31 @@ export class AdminService {
         errorId: query.errorId,
       });
 
-      // Transform errors with new fields
-      const errors = result.errors.map((error) => ({
-        id: error.id,
-        errorId: error.errorId,
-        type: error.type,
-        code: error.code,
-        message: error.message,
-        userId: error.userId,
-        userEmail: error.userEmail,
-        jobId: error.jobId,
-        createdAt: error.createdAt,
-        updatedAt: error.updatedAt,
-        severity: error.severity,
-        status: error.status,
-        source: error.source,
-        notes: error.notes,
-        resolvedAt: error.resolvedAt,
-        url: error.url,
-        stackTrace: error.stackTrace,
-        userAgent: error.userAgent,
-        context: error.context,
-      }));
+      // Transform errors with new fields (resolviendo el email de los eventos
+      // antiguos que se guardaron solo con userId)
+      const errors = await this.fillMissingUserEmails(
+        result.errors.map((error) => ({
+          id: error.id,
+          errorId: error.errorId,
+          type: error.type,
+          code: error.code,
+          message: error.message,
+          userId: error.userId,
+          userEmail: error.userEmail,
+          jobId: error.jobId,
+          createdAt: error.createdAt,
+          updatedAt: error.updatedAt,
+          severity: error.severity,
+          status: error.status,
+          source: error.source,
+          notes: error.notes,
+          resolvedAt: error.resolvedAt,
+          url: error.url,
+          stackTrace: error.stackTrace,
+          userAgent: error.userAgent,
+          context: error.context,
+        })),
+      );
 
       return {
         success: true,

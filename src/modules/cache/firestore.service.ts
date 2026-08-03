@@ -370,6 +370,42 @@ export class FirestoreService {
     }
   }
 
+  /**
+   * Resuelve los emails de varios usuarios en una sola lectura batch.
+   *
+   * Sirve para enriquecer al leer los registros históricos de `error_logs` que
+   * se guardaron con `userId` pero sin `userEmail`. Las listas son cortas
+   * (10-20 docs por request), así que el coste es despreciable; aun así los
+   * ids se deduplican y un fallo se degrada a un Map vacío en vez de tumbar la
+   * respuesta del dashboard: el email es un adorno, no el dato principal.
+   */
+  async getUserEmailsByIds(userIds: string[]): Promise<Map<string, string>> {
+    const emails = new Map<string, string>();
+    const uniqueIds = [...new Set(userIds.filter(Boolean))];
+
+    if (uniqueIds.length === 0) {
+      return emails;
+    }
+
+    try {
+      const refs = uniqueIds.map((id) =>
+        this.firestore.collection(this.usersCollection).doc(id),
+      );
+      const docs = await this.firestore.getAll(...refs);
+
+      for (const doc of docs) {
+        const email = doc.exists ? doc.data()?.email : null;
+        if (email) {
+          emails.set(doc.id, email);
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error al resolver emails por id: ${error.message}`);
+    }
+
+    return emails;
+  }
+
   // ============== Feedback (encuesta mensual de satisfacción) ==============
 
   async createFeedback(data: CreateFeedbackData): Promise<Feedback> {

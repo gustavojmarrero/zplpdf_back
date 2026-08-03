@@ -271,6 +271,10 @@ export class ZplService {
           'warning',
           { labelCount, ...canConvert.data },
           userId,
+          // El email viene de checkCanConvert (que ya cargó el usuario). Sin él
+          // el dashboard no puede identificar quién agotó la cuota: /admin/users
+          // busca por email o displayName, nunca por uid.
+          canConvert.userEmail ?? undefined,
         );
         throw new HttpException(
           {
@@ -1754,6 +1758,18 @@ export class ZplService {
       // Verificar límites de usuario
       const userLimits = await this.usersService.checkCanConvert(userId, totalLabels);
       if (!userLimits.allowed) {
+        // Mismo registro que el gate de conversión simple: el rechazo de un
+        // batch por cuota/acceso también debe aparecer en el dashboard admin.
+        const batchErrorCode = userLimits.errorCode || ErrorCodes.MONTHLY_LIMIT_EXCEEDED;
+        await this.logError(
+          getErrorTypeFromCode(batchErrorCode),
+          batchErrorCode,
+          userLimits.error,
+          'warning',
+          { totalLabelsInBatch: totalLabels, fileCount: files.length, ...userLimits.data },
+          userId,
+          userLimits.userEmail ?? undefined,
+        );
         throw new HttpException(
           {
             error: userLimits.errorCode || 'LIMIT_EXCEEDED',
