@@ -161,7 +161,9 @@ describe('ZplService — registro de errores de Labelary', () => {
   }
 
   it('registra el fallo de Labelary una vez con severidad "error" y marca la excepción', async () => {
-    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-1' });
+    const saveErrorLog = jest
+      .fn()
+      .mockResolvedValue({ id: 'x', errorId: 'ERR-1' });
     const enqueue = jest.fn().mockRejectedValue(new Error('Labelary 503'));
     const service = buildService(saveErrorLog, enqueue);
 
@@ -188,7 +190,9 @@ describe('ZplService — registro de errores de Labelary', () => {
   });
 
   it('no marca la excepción si el registro del error falló (deja actuar al fallback)', async () => {
-    const saveErrorLog = jest.fn().mockRejectedValue(new Error('Firestore down'));
+    const saveErrorLog = jest
+      .fn()
+      .mockRejectedValue(new Error('Firestore down'));
     const enqueue = jest.fn().mockRejectedValue(new Error('Labelary 503'));
     const service = buildService(saveErrorLog, enqueue);
 
@@ -223,14 +227,20 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
     return new ZplService(
       configService,
       { saveErrorLog } as any,
-      { checkCanConvert, getUserById: jest.fn(), getEffectivePlan: jest.fn() } as any,
+      {
+        checkCanConvert,
+        getUserById: jest.fn(),
+        getEffectivePlan: jest.fn(),
+      } as any,
       {} as any,
       {} as any,
     );
   }
 
   it('registra el email que devuelve checkCanConvert al rechazar por cuota mensual', async () => {
-    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-1' });
+    const saveErrorLog = jest
+      .fn()
+      .mockResolvedValue({ id: 'x', errorId: 'ERR-1' });
     const checkCanConvert = jest.fn().mockResolvedValue({
       allowed: false,
       error: "You've reached your monthly limit",
@@ -255,7 +265,9 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
   });
 
   it('no rompe el registro si el email no se pudo resolver', async () => {
-    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-2' });
+    const saveErrorLog = jest
+      .fn()
+      .mockResolvedValue({ id: 'x', errorId: 'ERR-2' });
     const checkCanConvert = jest.fn().mockResolvedValue({
       allowed: false,
       error: 'User not found',
@@ -281,12 +293,18 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
    * y deben quedar registrados con el email del usuario.
    */
   describe('rechazos previos al gate de cuota', () => {
-    function buildBatchService(saveErrorLog: jest.Mock, plan: string, email = 'batch@ejemplo.com') {
+    function buildBatchService(
+      saveErrorLog: jest.Mock,
+      plan: string,
+      email = 'batch@ejemplo.com',
+    ) {
       const configService: any = { get: jest.fn(() => 'test-bucket') };
       const usersService: any = {
         getUserById: jest.fn().mockResolvedValue({ id: 'uid-b', email, plan }),
         getEffectivePlan: jest.fn().mockReturnValue(plan),
-        checkCanConvert: jest.fn().mockResolvedValue({ allowed: true, userEmail: email }),
+        checkCanConvert: jest
+          .fn()
+          .mockResolvedValue({ allowed: true, userEmail: email }),
       };
       return new ZplService(
         configService,
@@ -298,7 +316,9 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
     }
 
     it('registra BATCH_NOT_ALLOWED con el email cuando el plan no incluye batch', async () => {
-      const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-4' });
+      const saveErrorLog = jest
+        .fn()
+        .mockResolvedValue({ id: 'x', errorId: 'ERR-4' });
       const service = buildBatchService(saveErrorLog, 'free');
 
       await expect(
@@ -322,7 +342,9 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
     });
 
     it('registra BATCH_LIMIT_EXCEEDED con el email al exceder los archivos por batch', async () => {
-      const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-5' });
+      const saveErrorLog = jest
+        .fn()
+        .mockResolvedValue({ id: 'x', errorId: 'ERR-5' });
       const service = buildBatchService(saveErrorLog, 'pro');
       // BATCH_LIMITS.pro permite 10 archivos; enviamos 11.
       const files = Array.from({ length: 11 }, (_, i) => ({
@@ -346,9 +368,13 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
     });
 
     it('registra USER_NOT_FOUND aunque no haya email que resolver', async () => {
-      const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-6' });
+      const saveErrorLog = jest
+        .fn()
+        .mockResolvedValue({ id: 'x', errorId: 'ERR-6' });
       const service = buildBatchService(saveErrorLog, 'pro');
-      (service as any).usersService.getUserById = jest.fn().mockResolvedValue(null);
+      (service as any).usersService.getUserById = jest
+        .fn()
+        .mockResolvedValue(null);
 
       await expect(
         service.startBatchConversion(
@@ -370,7 +396,9 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
   });
 
   it('registra también el rechazo de un batch (antes no se guardaba nada)', async () => {
-    const saveErrorLog = jest.fn().mockResolvedValue({ id: 'x', errorId: 'ERR-3' });
+    const saveErrorLog = jest
+      .fn()
+      .mockResolvedValue({ id: 'x', errorId: 'ERR-3' });
     const checkCanConvert = jest.fn().mockResolvedValue({
       allowed: false,
       error: "You've reached your monthly limit",
@@ -379,10 +407,14 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
       userEmail: 'pro@ejemplo.com',
     });
     const service = buildService(saveErrorLog, checkCanConvert);
-    (service as any).usersService.getUserById = jest
+    (service as any).usersService.getUserById = jest.fn().mockResolvedValue({
+      id: 'uid-pro',
+      email: 'pro@ejemplo.com',
+      plan: 'pro',
+    });
+    (service as any).usersService.getEffectivePlan = jest
       .fn()
-      .mockResolvedValue({ id: 'uid-pro', email: 'pro@ejemplo.com', plan: 'pro' });
-    (service as any).usersService.getEffectivePlan = jest.fn().mockReturnValue('pro');
+      .mockReturnValue('pro');
 
     await expect(
       service.startBatchConversion(

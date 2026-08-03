@@ -87,7 +87,9 @@ export function getStartOfDateInTimezone(dateStr: string): Date {
  */
 export function getEndOfDateInTimezone(dateStr: string): Date {
   const [year, month, day] = dateStr.slice(0, 10).split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day, GMT_OFFSET_HOURS + 23, 59, 59, 999));
+  return new Date(
+    Date.UTC(year, month - 1, day, GMT_OFFSET_HOURS + 23, 59, 59, 999),
+  );
 }
 
 /**
@@ -99,7 +101,7 @@ export function getCurrentMonthInTimezone(date: Date = new Date()): string {
 
   let year = date.getUTCFullYear();
   let month = date.getUTCMonth();
-  let day = date.getUTCDate();
+  const day = date.getUTCDate();
 
   // Si UTC es 00:00-05:59, en GMT-6 todavía es el día anterior
   if (utcHours < GMT_OFFSET_HOURS) {
@@ -117,16 +119,23 @@ export function getCurrentMonthInTimezone(date: Date = new Date()): string {
  * startDate: 00:00:00 GMT-6 del primer día (= 06:00:00 UTC)
  * endDate: 23:59:59 GMT-6 del último día (= 05:59:59 UTC del día siguiente)
  */
-export function getMonthDatesInTimezone(month: string): { startDate: Date; endDate: Date } {
+export function getMonthDatesInTimezone(month: string): {
+  startDate: Date;
+  endDate: Date;
+} {
   const [year, monthNum] = month.split('-').map(Number);
 
   // Inicio del mes: 00:00:00 GMT-6 = 06:00:00 UTC del día 1
-  const startDate = new Date(Date.UTC(year, monthNum - 1, 1, GMT_OFFSET_HOURS, 0, 0));
+  const startDate = new Date(
+    Date.UTC(year, monthNum - 1, 1, GMT_OFFSET_HOURS, 0, 0),
+  );
 
   // Fin del mes: 23:59:59 GMT-6 del último día
   // = 05:59:59 UTC del día 1 del mes siguiente
   const lastDay = new Date(year, monthNum, 0).getDate(); // Último día del mes
-  const endDate = new Date(Date.UTC(year, monthNum - 1, lastDay, GMT_OFFSET_HOURS + 23, 59, 59));
+  const endDate = new Date(
+    Date.UTC(year, monthNum - 1, lastDay, GMT_OFFSET_HOURS + 23, 59, 59),
+  );
 
   return { startDate, endDate };
 }
@@ -141,7 +150,9 @@ export function getCurrentDayInTimezone(date: Date = new Date()): number {
 
   // Si UTC es 00:00-05:59, en GMT-6 todavía es el día anterior
   if (utcHours < GMT_OFFSET_HOURS) {
-    const prevDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), day - 1));
+    const prevDay = new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), day - 1),
+    );
     day = prevDay.getUTCDate();
   }
 

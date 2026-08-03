@@ -1,11 +1,26 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsNumber, IsEnum, IsDateString, IsIn, IsObject, ValidateNested, Min, Max, IsBoolean } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsNumber,
+  IsEnum,
+  IsDateString,
+  IsIn,
+  IsObject,
+  ValidateNested,
+  Min,
+  Max,
+  IsBoolean,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 // ==================== Revenue ====================
 
 export class GetRevenueQueryDto {
-  @ApiPropertyOptional({ description: 'Period (day, week, month)', default: 'month' })
+  @ApiPropertyOptional({
+    description: 'Period (day, week, month)',
+    default: 'month',
+  })
   @IsOptional()
   @IsString()
   period?: string;
@@ -52,18 +67,41 @@ export class GetTransactionsQueryDto {
   @IsDateString()
   endDate?: string;
 
-  @ApiPropertyOptional({ enum: ['usd', 'mxn'], description: 'Filter by currency' })
+  @ApiPropertyOptional({
+    enum: ['usd', 'mxn'],
+    description: 'Filter by currency',
+  })
   @IsOptional()
   @IsEnum(['usd', 'mxn'])
   currency?: 'usd' | 'mxn';
 
   @ApiPropertyOptional({
-    enum: ['subscription', 'upgrade', 'renewal', 'one_time', 'refund', 'chargeback'],
+    enum: [
+      'subscription',
+      'upgrade',
+      'renewal',
+      'one_time',
+      'refund',
+      'chargeback',
+    ],
     description: 'Filter by type',
   })
   @IsOptional()
-  @IsEnum(['subscription', 'upgrade', 'renewal', 'one_time', 'refund', 'chargeback'])
-  type?: 'subscription' | 'upgrade' | 'renewal' | 'one_time' | 'refund' | 'chargeback';
+  @IsEnum([
+    'subscription',
+    'upgrade',
+    'renewal',
+    'one_time',
+    'refund',
+    'chargeback',
+  ])
+  type?:
+    | 'subscription'
+    | 'upgrade'
+    | 'renewal'
+    | 'one_time'
+    | 'refund'
+    | 'chargeback';
 }
 
 // ==================== Expenses ====================
@@ -82,7 +120,10 @@ export class CreateExpenseDto {
   @IsEnum(['recurring', 'one_time'])
   type: 'recurring' | 'one_time';
 
-  @ApiProperty({ enum: ['hosting', 'advertising', 'tools', 'other'], description: 'Category' })
+  @ApiProperty({
+    enum: ['hosting', 'advertising', 'tools', 'other'],
+    description: 'Category',
+  })
   @IsEnum(['hosting', 'advertising', 'tools', 'other'])
   category: 'hosting' | 'advertising' | 'tools' | 'other';
 
@@ -95,27 +136,38 @@ export class CreateExpenseDto {
   @IsString()
   vendor?: string;
 
-  @ApiPropertyOptional({ enum: ['monthly', 'annual'], description: 'Recurrence type (required if type is recurring)' })
+  @ApiPropertyOptional({
+    enum: ['monthly', 'annual'],
+    description: 'Recurrence type (required if type is recurring)',
+  })
   @IsOptional()
   @IsEnum(['monthly', 'annual'])
   recurrenceType?: 'monthly' | 'annual';
 
-  @ApiPropertyOptional({ description: 'Date of the expense (ISO string, defaults to now)' })
+  @ApiPropertyOptional({
+    description: 'Date of the expense (ISO string, defaults to now)',
+  })
   @IsOptional()
   @IsDateString()
   date?: string;
 
-  @ApiPropertyOptional({ description: 'Fecha de inicio de la suscripción del servicio' })
+  @ApiPropertyOptional({
+    description: 'Fecha de inicio de la suscripción del servicio',
+  })
   @IsOptional()
   @IsDateString()
   subscriptionStartDate?: string;
 
-  @ApiPropertyOptional({ description: 'Fecha de fin/vencimiento de la suscripción' })
+  @ApiPropertyOptional({
+    description: 'Fecha de fin/vencimiento de la suscripción',
+  })
   @IsOptional()
   @IsDateString()
   subscriptionEndDate?: string;
 
-  @ApiPropertyOptional({ description: 'Si la suscripción se renueva automáticamente' })
+  @ApiPropertyOptional({
+    description: 'Si la suscripción se renueva automáticamente',
+  })
   @IsOptional()
   @IsBoolean()
   autoRenewal?: boolean;
@@ -133,7 +185,10 @@ export class UpdateExpenseDto {
   @IsEnum(['usd', 'mxn'])
   currency?: 'usd' | 'mxn';
 
-  @ApiPropertyOptional({ enum: ['hosting', 'advertising', 'tools', 'other'], description: 'Category' })
+  @ApiPropertyOptional({
+    enum: ['hosting', 'advertising', 'tools', 'other'],
+    description: 'Category',
+  })
   @IsOptional()
   @IsEnum(['hosting', 'advertising', 'tools', 'other'])
   category?: 'hosting' | 'advertising' | 'tools' | 'other';
@@ -148,22 +203,31 @@ export class UpdateExpenseDto {
   @IsString()
   vendor?: string;
 
-  @ApiPropertyOptional({ enum: ['monthly', 'annual'], description: 'Recurrence type' })
+  @ApiPropertyOptional({
+    enum: ['monthly', 'annual'],
+    description: 'Recurrence type',
+  })
   @IsOptional()
   @IsEnum(['monthly', 'annual'])
   recurrenceType?: 'monthly' | 'annual';
 
-  @ApiPropertyOptional({ description: 'Fecha de inicio de la suscripción del servicio' })
+  @ApiPropertyOptional({
+    description: 'Fecha de inicio de la suscripción del servicio',
+  })
   @IsOptional()
   @IsDateString()
   subscriptionStartDate?: string;
 
-  @ApiPropertyOptional({ description: 'Fecha de fin/vencimiento de la suscripción' })
+  @ApiPropertyOptional({
+    description: 'Fecha de fin/vencimiento de la suscripción',
+  })
   @IsOptional()
   @IsDateString()
   subscriptionEndDate?: string;
 
-  @ApiPropertyOptional({ description: 'Si la suscripción se renueva automáticamente' })
+  @ApiPropertyOptional({
+    description: 'Si la suscripción se renueva automáticamente',
+  })
   @IsOptional()
   @IsBoolean()
   autoRenewal?: boolean;
@@ -195,12 +259,18 @@ export class GetExpensesQueryDto {
   @IsDateString()
   endDate?: string;
 
-  @ApiPropertyOptional({ enum: ['hosting', 'advertising', 'tools', 'other'], description: 'Filter by category' })
+  @ApiPropertyOptional({
+    enum: ['hosting', 'advertising', 'tools', 'other'],
+    description: 'Filter by category',
+  })
   @IsOptional()
   @IsEnum(['hosting', 'advertising', 'tools', 'other'])
   category?: 'hosting' | 'advertising' | 'tools' | 'other';
 
-  @ApiPropertyOptional({ enum: ['recurring', 'one_time'], description: 'Filter by type' })
+  @ApiPropertyOptional({
+    enum: ['recurring', 'one_time'],
+    description: 'Filter by type',
+  })
   @IsOptional()
   @IsEnum(['recurring', 'one_time'])
   type?: 'recurring' | 'one_time';
@@ -217,25 +287,65 @@ export class GoalMetricConfigDto {
   @IsString()
   label: string;
 
-  @ApiProperty({ enum: ['currency', 'number', 'percentage'], description: 'Metric type' })
+  @ApiProperty({
+    enum: ['currency', 'number', 'percentage'],
+    description: 'Metric type',
+  })
   @IsIn(['currency', 'number', 'percentage'])
   type: 'currency' | 'number' | 'percentage';
 
   @ApiProperty({
-    enum: ['dollar', 'users', 'crown', 'trending', 'target', 'chart', 'ads', 'conversion'],
+    enum: [
+      'dollar',
+      'users',
+      'crown',
+      'trending',
+      'target',
+      'chart',
+      'ads',
+      'conversion',
+    ],
     description: 'Icon identifier',
   })
-  @IsIn(['dollar', 'users', 'crown', 'trending', 'target', 'chart', 'ads', 'conversion'])
-  icon: 'dollar' | 'users' | 'crown' | 'trending' | 'target' | 'chart' | 'ads' | 'conversion';
+  @IsIn([
+    'dollar',
+    'users',
+    'crown',
+    'trending',
+    'target',
+    'chart',
+    'ads',
+    'conversion',
+  ])
+  icon:
+    | 'dollar'
+    | 'users'
+    | 'crown'
+    | 'trending'
+    | 'target'
+    | 'chart'
+    | 'ads'
+    | 'conversion';
 
   @ApiProperty({
     enum: ['green', 'blue', 'purple', 'orange', 'pink', 'cyan', 'amber', 'red'],
     description: 'Color theme',
   })
   @IsIn(['green', 'blue', 'purple', 'orange', 'pink', 'cyan', 'amber', 'red'])
-  color: 'green' | 'blue' | 'purple' | 'orange' | 'pink' | 'cyan' | 'amber' | 'red';
+  color:
+    | 'green'
+    | 'blue'
+    | 'purple'
+    | 'orange'
+    | 'pink'
+    | 'cyan'
+    | 'amber'
+    | 'red';
 
-  @ApiPropertyOptional({ enum: ['USD', 'MXN'], description: 'Currency (for currency type metrics)' })
+  @ApiPropertyOptional({
+    enum: ['USD', 'MXN'],
+    description: 'Currency (for currency type metrics)',
+  })
   @IsOptional()
   @IsIn(['USD', 'MXN'])
   currency?: 'USD' | 'MXN';
@@ -252,13 +362,19 @@ export class SetGoalsDto {
 
   @ApiProperty({
     description: 'Monthly targets (dynamic key-value pairs)',
-    example: { revenue: 50000, newUsers: 100, proConversions: 10, traffic: 5000 },
+    example: {
+      revenue: 50000,
+      newUsers: 100,
+      proConversions: 10,
+      traffic: 5000,
+    },
   })
   @IsObject()
   targets: Record<string, number>;
 
   @ApiPropertyOptional({
-    description: 'Metric configurations (optional, uses defaults if not provided)',
+    description:
+      'Metric configurations (optional, uses defaults if not provided)',
     type: [GoalMetricConfigDto],
   })
   @IsOptional()
@@ -268,14 +384,19 @@ export class SetGoalsDto {
 }
 
 export class GetGoalsQueryDto {
-  @ApiPropertyOptional({ description: 'Month in YYYY-MM format (defaults to current month)' })
+  @ApiPropertyOptional({
+    description: 'Month in YYYY-MM format (defaults to current month)',
+  })
   @IsOptional()
   @IsString()
   month?: string;
 }
 
 export class GetGoalsHistoryQueryDto {
-  @ApiPropertyOptional({ description: 'Number of months to retrieve', default: 6 })
+  @ApiPropertyOptional({
+    description: 'Number of months to retrieve',
+    default: 6,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
@@ -299,7 +420,10 @@ export class GetGeoRevenueQueryDto {
 // ==================== Metrics ====================
 
 export class GetChurnQueryDto {
-  @ApiPropertyOptional({ description: 'Period (day, week, month)', default: 'month' })
+  @ApiPropertyOptional({
+    description: 'Period (day, week, month)',
+    default: 'month',
+  })
   @IsOptional()
   @IsString()
   period?: string;

@@ -129,7 +129,9 @@ export class ValidationMetricsService {
         await docRef.set(metrics);
       }
     } catch (error) {
-      this.logger.error(`Error guardando metricas en Firestore: ${error.message}`);
+      this.logger.error(
+        `Error guardando metricas en Firestore: ${error.message}`,
+      );
     }
   }
 
@@ -137,7 +139,11 @@ export class ValidationMetricsService {
    * Obtiene tendencias de errores de los ultimos N dias
    */
   async getErrorTrends(days: number = 30): Promise<{
-    mostCommonErrors: Array<{ code: string; count: number; description: string }>;
+    mostCommonErrors: Array<{
+      code: string;
+      count: number;
+      description: string;
+    }>;
     errorsByDay: Array<{ date: string; count: number }>;
   }> {
     try {

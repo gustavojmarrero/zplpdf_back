@@ -5,5 +5,6 @@ export default () => ({
   gcpQueueName: process.env.GCP_QUEUE_NAME || 'zpl-conversion-queue',
   gcpServiceAccountEmail: process.env.GCP_SERVICE_ACCOUNT_EMAIL,
   gcpStorageBucket: process.env.GCP_STORAGE_BUCKET || 'zplpdf-app-files',
-  serviceUrl: process.env.SERVICE_URL || 'https://zplpdf-app-service-url.a.run.app',
+  serviceUrl:
+    process.env.SERVICE_URL || 'https://zplpdf-app-service-url.a.run.app',
 });

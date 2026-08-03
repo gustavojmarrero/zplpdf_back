@@ -19,7 +19,8 @@ interface BanxicoResponse {
 export class ExchangeRateService {
   private readonly logger = new Logger(ExchangeRateService.name);
   private readonly BANXICO_SERIES_ID = 'SF43718'; // Tipo de cambio FIX
-  private readonly BANXICO_API_URL = 'https://www.banxico.org.mx/SieAPIRest/service/v1/series';
+  private readonly BANXICO_API_URL =
+    'https://www.banxico.org.mx/SieAPIRest/service/v1/series';
   private readonly CACHE_TTL_HOURS = 24;
 
   // Cache en memoria para evitar llamadas repetidas
@@ -56,18 +57,24 @@ export class ExchangeRateService {
       const cached = await firestoreService.getExchangeRate(dateString);
       if (cached) {
         const hoursSinceCache =
-          (Date.now() - new Date(cached.fetchedAt).getTime()) / (1000 * 60 * 60);
+          (Date.now() - new Date(cached.fetchedAt).getTime()) /
+          (1000 * 60 * 60);
         if (hoursSinceCache < this.CACHE_TTL_HOURS) {
           this.logger.debug(`Using Firestore cache: ${cached.usdToMxn}`);
           // Actualizar cache en memoria
           if (!date) {
-            this.memoryCache = { rate: cached.usdToMxn, fetchedAt: new Date(cached.fetchedAt) };
+            this.memoryCache = {
+              rate: cached.usdToMxn,
+              fetchedAt: new Date(cached.fetchedAt),
+            };
           }
           return cached.usdToMxn;
         }
       }
     } catch (error) {
-      this.logger.warn(`Error reading exchange rate from Firestore: ${error.message}`);
+      this.logger.warn(
+        `Error reading exchange rate from Firestore: ${error.message}`,
+      );
     }
 
     // 3. Obtener de Banxico
@@ -85,7 +92,9 @@ export class ExchangeRateService {
       await firestoreService.saveExchangeRate(exchangeRate);
       this.logger.log(`Saved exchange rate to Firestore: ${rate}`);
     } catch (error) {
-      this.logger.warn(`Error saving exchange rate to Firestore: ${error.message}`);
+      this.logger.warn(
+        `Error saving exchange rate to Firestore: ${error.message}`,
+      );
     }
 
     // Actualizar cache en memoria
@@ -111,7 +120,9 @@ export class ExchangeRateService {
       const today = new Date();
       const endDate = this.formatDate(today);
       // Buscar últimos 7 días para asegurar encontrar un dato (fines de semana no hay)
-      const startDate = this.formatDate(new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000));
+      const startDate = this.formatDate(
+        new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000),
+      );
 
       const url = `${this.BANXICO_API_URL}/${this.BANXICO_SERIES_ID}/datos/${startDate}/${endDate}`;
 
@@ -123,7 +134,9 @@ export class ExchangeRateService {
       });
 
       if (!response.ok) {
-        throw new Error(`Banxico API error: ${response.status} ${response.statusText}`);
+        throw new Error(
+          `Banxico API error: ${response.status} ${response.statusText}`,
+        );
       }
 
       const data = (await response.json()) as BanxicoResponse;
@@ -133,14 +146,17 @@ export class ExchangeRateService {
       }
 
       // Obtener el dato más reciente
-      const latestData = data.bmx.series[0].datos[data.bmx.series[0].datos.length - 1];
+      const latestData =
+        data.bmx.series[0].datos[data.bmx.series[0].datos.length - 1];
       const rate = parseFloat(latestData.dato.replace(',', '.'));
 
       if (isNaN(rate) || rate <= 0) {
         throw new Error(`Invalid exchange rate value: ${latestData.dato}`);
       }
 
-      this.logger.log(`Fetched exchange rate from Banxico: ${rate} (${latestData.fecha})`);
+      this.logger.log(
+        `Fetched exchange rate from Banxico: ${rate} (${latestData.fecha})`,
+      );
       return rate;
     } catch (error) {
       this.logger.error(`Error fetching from Banxico: ${error.message}`);

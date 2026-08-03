@@ -107,7 +107,10 @@ export class LabelaryAnalyticsService implements OnModuleDestroy {
   /**
    * Registra un error de Labelary
    */
-  async trackError(responseTimeMs: number, _errorMessage?: string): Promise<void> {
+  async trackError(
+    responseTimeMs: number,
+    _errorMessage?: string,
+  ): Promise<void> {
     const hourKey = this.getHourKey();
     const stats = this.getOrCreateStats(hourKey);
 
@@ -251,10 +254,16 @@ export class LabelaryAnalyticsService implements OnModuleDestroy {
 
     return {
       totalCalls,
-      avgResponseTimeMs: totalCalls > 0 ? Math.round(totalResponseTimeMs / totalCalls) : 0,
-      errorRate: totalCalls > 0 ? Math.round((totalErrors / totalCalls) * 10000) / 100 : 0,
+      avgResponseTimeMs:
+        totalCalls > 0 ? Math.round(totalResponseTimeMs / totalCalls) : 0,
+      errorRate:
+        totalCalls > 0
+          ? Math.round((totalErrors / totalCalls) * 10000) / 100
+          : 0,
       rateLimitRate:
-        totalCalls > 0 ? Math.round((totalRateLimits / totalCalls) * 10000) / 100 : 0,
+        totalCalls > 0
+          ? Math.round((totalRateLimits / totalCalls) * 10000) / 100
+          : 0,
       peakHour,
       peakCallCount,
       totalLabelsProcessed: totalLabels,

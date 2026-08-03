@@ -3,7 +3,9 @@
  * @param value Valor a convertir
  * @returns ISO string de la fecha
  */
-export function toISOString(value: Date | string | number | { toDate?: () => Date }): string {
+export function toISOString(
+  value: Date | string | number | { toDate?: () => Date },
+): string {
   if (value instanceof Date) {
     return value.toISOString();
   }
@@ -13,7 +15,11 @@ export function toISOString(value: Date | string | number | { toDate?: () => Dat
   if (typeof value === 'string') {
     return new Date(value).toISOString();
   }
-  if (typeof value === 'object' && value !== null && typeof value.toDate === 'function') {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof value.toDate === 'function'
+  ) {
     return value.toDate().toISOString();
   }
   return new Date(value as string | number).toISOString();
@@ -24,14 +30,20 @@ export function toISOString(value: Date | string | number | { toDate?: () => Dat
  * @param value Valor a procesar
  * @returns ISO string de la fecha
  */
-export function ensureISOString(value: Date | string | { toDate?: () => Date }): string {
+export function ensureISOString(
+  value: Date | string | { toDate?: () => Date },
+): string {
   if (typeof value === 'string') {
     return value;
   }
   if (value instanceof Date) {
     return value.toISOString();
   }
-  if (typeof value === 'object' && value !== null && typeof value.toDate === 'function') {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof value.toDate === 'function'
+  ) {
     return value.toDate().toISOString();
   }
   return String(value);

@@ -11,14 +11,33 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiTags, ApiOperation, ApiResponse, ApiHeader, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiHeader,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { EmailService } from './email.service.js';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { CronAuthGuard } from '../../common/guards/cron-auth.guard.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { ResendWebhookDto } from './dto/resend-webhook.dto.js';
-import { EmailMetricsDto, AbTestResultDto, EmailMetricsByTypeDto, OnboardingFunnelDto } from './dto/email-metrics.dto.js';
-import type { ProcessQueueResult, ScheduleEmailsResult, FreeReactivationResult, FreeInactiveUsersResponse, InactiveUsersResponse, PowerUsersResponse } from './interfaces/email.interface.js';
+import {
+  EmailMetricsDto,
+  AbTestResultDto,
+  EmailMetricsByTypeDto,
+  OnboardingFunnelDto,
+} from './dto/email-metrics.dto.js';
+import type {
+  ProcessQueueResult,
+  ScheduleEmailsResult,
+  FreeReactivationResult,
+  FreeInactiveUsersResponse,
+  InactiveUsersResponse,
+  PowerUsersResponse,
+} from './interfaces/email.interface.js';
 
 @ApiTags('email')
 @Controller()
@@ -31,7 +50,8 @@ export class EmailController {
     private readonly firestoreService: FirestoreService,
     private readonly configService: ConfigService,
   ) {
-    this.webhookSecret = this.configService.get<string>('RESEND_WEBHOOK_SECRET') || '';
+    this.webhookSecret =
+      this.configService.get<string>('RESEND_WEBHOOK_SECRET') || '';
   }
 
   // ============== Cron Endpoints ==============
@@ -41,7 +61,8 @@ export class EmailController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Process pending emails in queue (Cloud Scheduler)',
-    description: 'Sends pending emails that are ready to be sent. Should run every 5 minutes.',
+    description:
+      'Sends pending emails that are ready to be sent. Should run every 5 minutes.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -68,7 +89,8 @@ export class EmailController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Schedule onboarding emails for eligible users (Cloud Scheduler)',
-    description: 'Evaluates users for tutorial, help, and day 7 emails. Should run every hour.',
+    description:
+      'Evaluates users for tutorial, help, and day 7 emails. Should run every hour.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -130,7 +152,8 @@ export class EmailController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Initialize A/B variant configurations (one-time setup)',
-    description: 'Creates default A/B variant configurations in Firestore if they do not exist.',
+    description:
+      'Creates default A/B variant configurations in Firestore if they do not exist.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -141,7 +164,10 @@ export class EmailController {
     status: 200,
     description: 'A/B variants initialized',
   })
-  async initializeAbVariants(): Promise<{ success: boolean; executedAt: Date }> {
+  async initializeAbVariants(): Promise<{
+    success: boolean;
+    executedAt: Date;
+  }> {
     await this.emailService.initializeAbVariants();
     return { success: true, executedAt: new Date() };
   }
@@ -151,7 +177,8 @@ export class EmailController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Schedule high usage emails (Cloud Scheduler)',
-    description: 'Identifies FREE users with high usage patterns and sends proactive upgrade emails. Should run daily.',
+    description:
+      'Identifies FREE users with high usage patterns and sends proactive upgrade emails. Should run daily.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -177,8 +204,10 @@ export class EmailController {
   @UseGuards(CronAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Schedule retention emails for inactive PRO users (Cloud Scheduler)',
-    description: 'Identifies PRO users inactive for 7/14/30 days and queues retention emails. Should run daily. Disabled by default - set RETENTION_EMAILS_ENABLED=true to enable.',
+    summary:
+      'Schedule retention emails for inactive PRO users (Cloud Scheduler)',
+    description:
+      'Identifies PRO users inactive for 7/14/30 days and queues retention emails. Should run daily. Disabled by default - set RETENTION_EMAILS_ENABLED=true to enable.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -205,7 +234,8 @@ export class EmailController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Schedule power user recognition emails (Cloud Scheduler)',
-    description: 'Identifies PRO users with >50 PDFs in the previous month and queues recognition emails. Should run monthly (1st of each month). Disabled by default - set RETENTION_EMAILS_ENABLED=true to enable.',
+    description:
+      'Identifies PRO users with >50 PDFs in the previous month and queues recognition emails. Should run monthly (1st of each month). Disabled by default - set RETENTION_EMAILS_ENABLED=true to enable.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -234,7 +264,8 @@ export class EmailController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Trigger blocked email for a user',
-    description: 'Called when a user attempts to convert but is blocked due to reaching their limit.',
+    description:
+      'Called when a user attempts to convert but is blocked due to reaching their limit.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -264,7 +295,8 @@ export class EmailController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Handle Resend webhook events',
-    description: 'Receives delivery, open, click, bounce, and complaint events from Resend.',
+    description:
+      'Receives delivery, open, click, bounce, and complaint events from Resend.',
   })
   @ApiResponse({
     status: 200,
@@ -284,7 +316,9 @@ export class EmailController {
     if (this.webhookSecret) {
       // For now, just log the signature headers
       // In production, you should verify using Svix library
-      this.logger.debug(`Webhook received: ${payload.type} with svix-id: ${svixId}`);
+      this.logger.debug(
+        `Webhook received: ${payload.type} with svix-id: ${svixId}`,
+      );
 
       if (!svixId || !svixTimestamp || !svixSignature) {
         this.logger.warn('Missing webhook signature headers');
@@ -317,7 +351,8 @@ export class EmailController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get overall email metrics',
-    description: 'Returns aggregated metrics for all onboarding emails including open and click rates.',
+    description:
+      'Returns aggregated metrics for all onboarding emails including open and click rates.',
   })
   @ApiResponse({
     status: 200,
@@ -338,7 +373,8 @@ export class EmailController {
   @ApiQuery({
     name: 'emailType',
     required: false,
-    description: 'Filter by email type (welcome, tutorial, help, success_story, miss_you)',
+    description:
+      'Filter by email type (welcome, tutorial, help, success_story, miss_you)',
   })
   @ApiResponse({
     status: 200,
@@ -372,7 +408,8 @@ export class EmailController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get onboarding funnel data',
-    description: 'Returns funnel metrics from registration to activation, including email engagement.',
+    description:
+      'Returns funnel metrics from registration to activation, including email engagement.',
   })
   @ApiQuery({
     name: 'period',
@@ -398,7 +435,8 @@ export class EmailController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get inactive PRO users',
-    description: 'Returns PRO users who have not used the service for a specified number of days.',
+    description:
+      'Returns PRO users who have not used the service for a specified number of days.',
   })
   @ApiQuery({
     name: 'minDaysInactive',
@@ -439,7 +477,11 @@ export class EmailController {
               userEmail: { type: 'string' },
               displayName: { type: 'string', nullable: true },
               daysInactive: { type: 'number' },
-              lastActivityAt: { type: 'string', format: 'date-time', nullable: true },
+              lastActivityAt: {
+                type: 'string',
+                format: 'date-time',
+                nullable: true,
+              },
               pdfsThisMonth: { type: 'number' },
               labelsThisMonth: { type: 'number' },
               emailsSent: { type: 'array', items: { type: 'string' } },
@@ -488,7 +530,9 @@ export class EmailController {
   ): Promise<InactiveUsersResponse> {
     return this.firestoreService.getProInactiveUsers({
       minDaysInactive: minDaysInactive ? parseInt(minDaysInactive, 10) : 7,
-      maxDaysInactive: maxDaysInactive ? parseInt(maxDaysInactive, 10) : undefined,
+      maxDaysInactive: maxDaysInactive
+        ? parseInt(maxDaysInactive, 10)
+        : undefined,
       page: page ? parseInt(page, 10) : 1,
       limit: limit ? parseInt(limit, 10) : 50,
     });
@@ -499,13 +543,15 @@ export class EmailController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get PRO power users',
-    description: 'Returns users in the top percentile of usage based on their individual billing period (default: top 10%).',
+    description:
+      'Returns users in the top percentile of usage based on their individual billing period (default: top 10%).',
   })
   @ApiQuery({
     name: 'minPercentile',
     required: false,
     type: Number,
-    description: 'Minimum percentile to qualify as power user (default: 90, meaning top 10%)',
+    description:
+      'Minimum percentile to qualify as power user (default: 90, meaning top 10%)',
   })
   @ApiQuery({
     name: 'page',
@@ -586,8 +632,10 @@ export class EmailController {
   @UseGuards(CronAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Schedule reactivation emails for inactive FREE users (Cloud Scheduler)',
-    description: 'Identifies FREE users based on inactivity segments and queues reactivation emails. Should run daily. Disabled by default - set FREE_REACTIVATION_EMAILS_ENABLED=true to enable.',
+    summary:
+      'Schedule reactivation emails for inactive FREE users (Cloud Scheduler)',
+    description:
+      'Identifies FREE users based on inactivity segments and queues reactivation emails. Should run daily. Disabled by default - set FREE_REACTIVATION_EMAILS_ENABLED=true to enable.',
   })
   @ApiHeader({
     name: 'X-Cron-Secret',
@@ -624,7 +672,8 @@ export class EmailController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get inactive FREE users',
-    description: 'Returns FREE users who have not used the service, segmented by inactivity type.',
+    description:
+      'Returns FREE users who have not used the service, segmented by inactivity type.',
   })
   @ApiQuery({
     name: 'segment',
@@ -672,14 +721,25 @@ export class EmailController {
               displayName: { type: 'string', nullable: true },
               language: { type: 'string', enum: ['en', 'es', 'zh'] },
               registeredAt: { type: 'string', format: 'date-time' },
-              lastActiveAt: { type: 'string', format: 'date-time', nullable: true },
+              lastActiveAt: {
+                type: 'string',
+                format: 'date-time',
+                nullable: true,
+              },
               daysSinceRegistration: { type: 'number' },
               daysInactive: { type: 'number' },
               pdfCount: { type: 'number' },
               labelCount: { type: 'number' },
-              segment: { type: 'string', enum: ['never_used', 'tried_abandoned', 'dormant', 'abandoned'] },
+              segment: {
+                type: 'string',
+                enum: ['never_used', 'tried_abandoned', 'dormant', 'abandoned'],
+              },
               emailsSent: { type: 'array', items: { type: 'string' } },
-              lastEmailSentAt: { type: 'string', format: 'date-time', nullable: true },
+              lastEmailSentAt: {
+                type: 'string',
+                format: 'date-time',
+                nullable: true,
+              },
               lastEmailType: { type: 'string', nullable: true },
             },
           },
@@ -712,7 +772,8 @@ export class EmailController {
     },
   })
   async getInactiveFreeUsers(
-    @Query('segment') segment?: 'never_used' | 'tried_abandoned' | 'dormant' | 'abandoned',
+    @Query('segment')
+    segment?: 'never_used' | 'tried_abandoned' | 'dormant' | 'abandoned',
     @Query('minDaysInactive') minDaysInactive?: string,
     @Query('maxDaysInactive') maxDaysInactive?: string,
     @Query('page') page?: string,
@@ -720,8 +781,12 @@ export class EmailController {
   ): Promise<FreeInactiveUsersResponse> {
     return this.firestoreService.getFreeInactiveUsers({
       segment,
-      minDaysInactive: minDaysInactive ? parseInt(minDaysInactive, 10) : undefined,
-      maxDaysInactive: maxDaysInactive ? parseInt(maxDaysInactive, 10) : undefined,
+      minDaysInactive: minDaysInactive
+        ? parseInt(minDaysInactive, 10)
+        : undefined,
+      maxDaysInactive: maxDaysInactive
+        ? parseInt(maxDaysInactive, 10)
+        : undefined,
       page: page ? parseInt(page, 10) : 1,
       limit: limit ? parseInt(limit, 10) : 100,
     });

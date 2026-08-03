@@ -115,7 +115,10 @@ class ErrorItemDto {
   @ApiProperty({ description: 'Firestore document ID' })
   id: string;
 
-  @ApiProperty({ description: 'Unique error ID (ERR-YYYYMMDD-XXXXX)', example: 'ERR-20251222-00042' })
+  @ApiProperty({
+    description: 'Unique error ID (ERR-YYYYMMDD-XXXXX)',
+    example: 'ERR-20251222-00042',
+  })
   errorId: string;
 
   @ApiProperty()
@@ -145,7 +148,10 @@ class ErrorItemDto {
   @ApiProperty({ enum: ['error', 'warning', 'critical'] })
   severity: string;
 
-  @ApiProperty({ enum: ['open', 'investigating', 'resolved', 'dismissed'], default: 'open' })
+  @ApiProperty({
+    enum: ['open', 'investigating', 'resolved', 'dismissed'],
+    default: 'open',
+  })
   status: ErrorStatus;
 
   @ApiProperty({ enum: ['frontend', 'backend', 'system'], default: 'backend' })

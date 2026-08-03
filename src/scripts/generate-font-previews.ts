@@ -20,7 +20,24 @@ if (!process.env.GOOGLE_CREDENTIALS && fs.existsSync(credentialsPath)) {
   process.env.GOOGLE_CREDENTIALS = fs.readFileSync(credentialsPath, 'utf8');
 }
 
-const ZPL_FONTS = ['0', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'P', 'Q', 'R', 'S', 'T', 'U', 'V'] as const;
+const ZPL_FONTS = [
+  '0',
+  'A',
+  'B',
+  'C',
+  'D',
+  'E',
+  'F',
+  'G',
+  'H',
+  'P',
+  'Q',
+  'R',
+  'S',
+  'T',
+  'U',
+  'V',
+] as const;
 
 const LABEL_SIZE = '4x2';
 const SAMPLE_TEXT = 'ABCDabcd 12345';

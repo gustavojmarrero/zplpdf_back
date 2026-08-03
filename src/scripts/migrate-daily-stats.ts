@@ -84,7 +84,9 @@ async function main() {
 
   // 2. Load all conversion_history
   console.log('\n2. Loading conversion_history...');
-  const historySnapshot = await firestore.collection('conversion_history').get();
+  const historySnapshot = await firestore
+    .collection('conversion_history')
+    .get();
   console.log(`   Loaded ${historySnapshot.size} conversions`);
 
   // 3. Aggregate by date
@@ -98,7 +100,10 @@ async function main() {
     const createdAt = data.createdAt?.toDate?.() || new Date(data.createdAt);
     const dateKey = getDateStringInTimezone(createdAt);
     const userId = data.userId || 'unknown';
-    const userPlan = (userPlanMap[userId] || 'free') as 'free' | 'pro' | 'enterprise';
+    const userPlan = (userPlanMap[userId] || 'free') as
+      | 'free'
+      | 'pro'
+      | 'enterprise';
     const labelCount = data.labelCount || 0;
     const status = data.status || 'completed';
 
@@ -184,7 +189,9 @@ async function main() {
     labelsTotal: globalLabelsTotal,
     lastUpdated: new Date(),
   });
-  console.log(`   Global totals: ${globalPdfsTotal} PDFs, ${globalLabelsTotal} labels`);
+  console.log(
+    `   Global totals: ${globalPdfsTotal} PDFs, ${globalLabelsTotal} labels`,
+  );
 
   // 6. Summary
   console.log('\n========== Migration Complete ==========');

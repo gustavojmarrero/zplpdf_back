@@ -8,10 +8,14 @@ export class PlanLimitsDto {
   @ApiProperty({ description: 'Maximum PDFs per month' })
   maxPdfsPerMonth: number;
 
-  @ApiProperty({ description: 'Can download images (PNG/JPEG) - Pro and Enterprise only' })
+  @ApiProperty({
+    description: 'Can download images (PNG/JPEG) - Pro and Enterprise only',
+  })
   canDownloadImages: boolean;
 
-  @ApiProperty({ description: 'Batch processing allowed - Pro and Enterprise only' })
+  @ApiProperty({
+    description: 'Batch processing allowed - Pro and Enterprise only',
+  })
   batchAllowed: boolean;
 
   @ApiProperty({ description: 'Maximum files per batch' })
@@ -30,7 +34,10 @@ export class CurrentUsageDto {
 }
 
 export class UserLimitsDto {
-  @ApiProperty({ description: 'Current plan', enum: ['free', 'lite', 'pro', 'promax', 'enterprise'] })
+  @ApiProperty({
+    description: 'Current plan',
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
+  })
   plan: PlanType;
 
   @ApiProperty({ description: 'Plan limits', type: PlanLimitsDto })
@@ -43,7 +50,8 @@ export class UserLimitsDto {
   periodEndsAt: Date;
 
   @ApiProperty({
-    description: 'Stripe subscription status (active, past_due, unpaid, canceled, etc)',
+    description:
+      'Stripe subscription status (active, past_due, unpaid, canceled, etc)',
     required: false,
     nullable: true,
   })

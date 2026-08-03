@@ -7,7 +7,11 @@ import { User } from '../../common/interfaces/user.interface';
 
 describe('EmailService.triggerBlockedEmail', () => {
   let service: EmailService;
-  let firestore: { getUserById: jest.Mock; getOrCreateUsageWithPeriod: jest.Mock; getOrCreateUsage: jest.Mock };
+  let firestore: {
+    getUserById: jest.Mock;
+    getOrCreateUsageWithPeriod: jest.Mock;
+    getOrCreateUsage: jest.Mock;
+  };
   let periodCalculator: PeriodCalculatorService;
 
   const baseUser: User = {
@@ -46,7 +50,9 @@ describe('EmailService.triggerBlockedEmail', () => {
     }).compile();
 
     service = module.get<EmailService>(EmailService);
-    periodCalculator = module.get<PeriodCalculatorService>(PeriodCalculatorService);
+    periodCalculator = module.get<PeriodCalculatorService>(
+      PeriodCalculatorService,
+    );
   });
 
   function mockUsage(user: User, pdfCount: number) {

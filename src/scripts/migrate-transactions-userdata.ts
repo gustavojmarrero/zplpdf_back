@@ -90,7 +90,8 @@ async function migrateUserData() {
             console.log(`  userEmail desde users: ${userData.email}`);
           }
           if (needsPlan) {
-            updates.plan = userData?.plan === 'enterprise' ? 'enterprise' : 'pro';
+            updates.plan =
+              userData?.plan === 'enterprise' ? 'enterprise' : 'pro';
             console.log(`  plan desde users: ${updates.plan}`);
           }
         }
@@ -103,12 +104,19 @@ async function migrateUserData() {
     if (needsEmail && !updates.userEmail && stripeCustomerId) {
       try {
         const customer = await stripe.customers.retrieve(stripeCustomerId);
-        if (customer && !customer.deleted && 'email' in customer && customer.email) {
+        if (
+          customer &&
+          !customer.deleted &&
+          'email' in customer &&
+          customer.email
+        ) {
           updates.userEmail = customer.email;
           console.log(`  userEmail desde Stripe: ${customer.email}`);
         }
       } catch {
-        console.log(`  No se pudo obtener customer de Stripe ${stripeCustomerId}`);
+        console.log(
+          `  No se pudo obtener customer de Stripe ${stripeCustomerId}`,
+        );
       }
     }
 

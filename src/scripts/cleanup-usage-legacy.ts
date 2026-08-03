@@ -33,13 +33,15 @@ if (!process.env.FIREBASE_CREDENTIALS && fs.existsSync(credentialsPath)) {
 }
 
 async function main(): Promise<void> {
-  const raw = process.env.FIREBASE_CREDENTIALS || process.env.GOOGLE_CREDENTIALS;
+  const raw =
+    process.env.FIREBASE_CREDENTIALS || process.env.GOOGLE_CREDENTIALS;
   if (!raw) {
     console.error('No Firebase credentials found');
     process.exit(1);
   }
   const parsed = JSON.parse(raw);
-  if (parsed.private_key) parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  if (parsed.private_key)
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
 
   admin.initializeApp({
     credential: admin.credential.cert(parsed),
@@ -47,7 +49,9 @@ async function main(): Promise<void> {
   });
   const db = admin.firestore();
 
-  console.log(`Mode: ${execute ? 'EXECUTE (will delete docs)' : 'DRY-RUN (no writes)'}`);
+  console.log(
+    `Mode: ${execute ? 'EXECUTE (will delete docs)' : 'DRY-RUN (no writes)'}`,
+  );
   console.log('Reading usage collection...');
 
   const snap = await db.collection('usage').get();
@@ -55,7 +59,12 @@ async function main(): Promise<void> {
 
   const now = new Date();
   const toDelete: string[] = [];
-  const preserveLegacyWithData: Array<{ id: string; pdf: number; labels: number; userId: string }> = [];
+  const preserveLegacyWithData: Array<{
+    id: string;
+    pdf: number;
+    labels: number;
+    userId: string;
+  }> = [];
   let legacyEmptyDeleted = 0;
   let modernExpiredEmptyDeleted = 0;
   let modernCurrentPreserved = 0;
@@ -68,8 +77,9 @@ async function main(): Promise<void> {
     const pdf = data.pdfCount || 0;
     const labels = data.labelCount || 0;
     const isEmpty = pdf === 0 && labels === 0;
-    const periodEnd: Date | null = data.periodEnd?.toDate?.()
-      || (data.periodEnd ? new Date(data.periodEnd) : null);
+    const periodEnd: Date | null =
+      data.periodEnd?.toDate?.() ||
+      (data.periodEnd ? new Date(data.periodEnd) : null);
 
     if (/^\d{6}$/.test(lastPart)) {
       if (isEmpty) {
@@ -95,16 +105,26 @@ async function main(): Promise<void> {
 
   console.log('\n=== Plan ===');
   console.log(`Legacy _YYYYMM empty (delete): ${legacyEmptyDeleted}`);
-  console.log(`Legacy _YYYYMM with data (PRESERVE, manual migration needed): ${preserveLegacyWithData.length}`);
-  console.log(`Modern _YYYYMMDD expired empty (delete): ${modernExpiredEmptyDeleted}`);
-  console.log(`Modern _YYYYMMDD expired with data (preserve as history): ${modernExpiredWithDataPreserved}`);
-  console.log(`Modern _YYYYMMDD current period (preserve): ${modernCurrentPreserved}`);
+  console.log(
+    `Legacy _YYYYMM with data (PRESERVE, manual migration needed): ${preserveLegacyWithData.length}`,
+  );
+  console.log(
+    `Modern _YYYYMMDD expired empty (delete): ${modernExpiredEmptyDeleted}`,
+  );
+  console.log(
+    `Modern _YYYYMMDD expired with data (preserve as history): ${modernExpiredWithDataPreserved}`,
+  );
+  console.log(
+    `Modern _YYYYMMDD current period (preserve): ${modernCurrentPreserved}`,
+  );
   console.log(`Total to delete: ${toDelete.length}`);
 
   if (preserveLegacyWithData.length > 0) {
     console.log('\n--- Legacy docs WITH data (manual review) ---');
     for (const d of preserveLegacyWithData) {
-      console.log(`  ${d.id}  pdf=${d.pdf} labels=${d.labels} userId=${d.userId}`);
+      console.log(
+        `  ${d.id}  pdf=${d.pdf} labels=${d.labels} userId=${d.userId}`,
+      );
     }
   }
 

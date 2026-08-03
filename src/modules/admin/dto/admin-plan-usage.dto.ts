@@ -44,7 +44,9 @@ class UserNearLabelLimitDto {
   @ApiProperty({ description: 'Current label count in period' })
   labelCount: number;
 
-  @ApiProperty({ description: 'Monthly label limit (maxPdfsPerMonth * maxLabelsPerPdf)' })
+  @ApiProperty({
+    description: 'Monthly label limit (maxPdfsPerMonth * maxLabelsPerPdf)',
+  })
   labelLimit: number;
 
   @ApiProperty({ description: 'Percentage of label limit used' })
@@ -98,7 +100,10 @@ class UpgradeOpportunitiesDto {
   @ApiProperty()
   proToEnterpriseCandidates: number;
 
-  @ApiProperty({ deprecated: true, description: 'Alias de freeToLiteCandidates (compatibilidad)' })
+  @ApiProperty({
+    deprecated: true,
+    description: 'Alias de freeToLiteCandidates (compatibilidad)',
+  })
   freeToProCandidates: number;
 }
 
@@ -123,13 +128,22 @@ class PlanUsageDataDto {
     enterprise: PlanDistributionItemDto;
   };
 
-  @ApiProperty({ type: [UserNearLimitDto], description: 'Users near PDF limit' })
+  @ApiProperty({
+    type: [UserNearLimitDto],
+    description: 'Users near PDF limit',
+  })
   usersNearLimit: UserNearLimitDto[];
 
-  @ApiProperty({ type: [UserNearLabelLimitDto], description: 'Users near label limit' })
+  @ApiProperty({
+    type: [UserNearLabelLimitDto],
+    description: 'Users near label limit',
+  })
   usersNearLabelLimit: UserNearLabelLimitDto[];
 
-  @ApiProperty({ type: LabelUsageDistributionDto, description: 'Distribution of label usage by percentage ranges' })
+  @ApiProperty({
+    type: LabelUsageDistributionDto,
+    description: 'Distribution of label usage by percentage ranges',
+  })
   labelUsageDistribution: LabelUsageDistributionDto;
 
   @ApiProperty({ type: [UserExceedingFrequentlyDto] })

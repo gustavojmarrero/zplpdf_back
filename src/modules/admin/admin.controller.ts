@@ -26,7 +26,10 @@ import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
 import type { AdminUserData } from '../../common/decorators/admin-user.decorator.js';
 import { AdminService } from './admin.service.js';
-import { AdminMetricsResponseDto, GetMetricsQueryDto } from './dto/admin-metrics.dto.js';
+import {
+  AdminMetricsResponseDto,
+  GetMetricsQueryDto,
+} from './dto/admin-metrics.dto.js';
 import {
   GetUsersQueryDto,
   AdminUsersResponseDto,
@@ -34,7 +37,12 @@ import {
   UpdateUserPlanDto,
   UpdateUserPlanResponseDto,
 } from './dto/admin-users.dto.js';
-import { GetConversionsQueryDto, AdminConversionsResponseDto, GetConversionsListQueryDto, AdminConversionsListResponseDto } from './dto/admin-conversions.dto.js';
+import {
+  GetConversionsQueryDto,
+  AdminConversionsResponseDto,
+  GetConversionsListQueryDto,
+  AdminConversionsListResponseDto,
+} from './dto/admin-conversions.dto.js';
 import {
   GetErrorsQueryDto,
   AdminErrorsResponseDto,
@@ -44,8 +52,14 @@ import {
   AdminErrorStatsResponseDto,
 } from './dto/admin-errors.dto.js';
 import { AdminPlanUsageResponseDto } from './dto/admin-plan-usage.dto.js';
-import { GetPlanChangesQueryDto, AdminPlanChangesResponseDto } from './dto/admin-plan-changes.dto.js';
-import { GetConsumptionProjectionQueryDto, AdminConsumptionProjectionResponseDto } from './dto/admin-consumption-projection.dto.js';
+import {
+  GetPlanChangesQueryDto,
+  AdminPlanChangesResponseDto,
+} from './dto/admin-plan-changes.dto.js';
+import {
+  GetConsumptionProjectionQueryDto,
+  AdminConsumptionProjectionResponseDto,
+} from './dto/admin-consumption-projection.dto.js';
 import {
   SimulatePlanDto,
   SimulatePlanResponseDto,
@@ -96,35 +110,52 @@ export class AdminController {
   @Get('metrics')
   @ApiOperation({
     summary: 'Get dashboard metrics',
-    description: 'Returns all main metrics for the admin dashboard including users, conversions, errors, and plan usage.',
+    description:
+      'Returns all main metrics for the admin dashboard including users, conversions, errors, and plan usage.',
   })
   @ApiResponse({
     status: 200,
     description: 'Dashboard metrics retrieved successfully',
     type: AdminMetricsResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getMetrics(
     @Query() query: GetMetricsQueryDto,
     @AdminUser() admin: AdminUserData,
   ): Promise<AdminMetricsResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting dashboard metrics`);
-    return this.adminService.getDashboardMetrics(query.startDate, query.endDate);
+    return this.adminService.getDashboardMetrics(
+      query.startDate,
+      query.endDate,
+    );
   }
 
   @Get('users')
   @ApiOperation({
     summary: 'Get users list',
-    description: 'Returns a paginated list of all users with optional filtering and sorting.',
+    description:
+      'Returns a paginated list of all users with optional filtering and sorting.',
   })
   @ApiResponse({
     status: 200,
     description: 'Users list retrieved successfully',
     type: AdminUsersResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getUsers(
     @Query() query: GetUsersQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -136,15 +167,22 @@ export class AdminController {
   @Get('conversions/list')
   @ApiOperation({
     summary: 'Get individual conversions list',
-    description: 'Returns a paginated list of individual conversions with optional filtering by user, date range, and status.',
+    description:
+      'Returns a paginated list of individual conversions with optional filtering by user, date range, and status.',
   })
   @ApiResponse({
     status: 200,
     description: 'Conversions list retrieved successfully',
     type: AdminConversionsListResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getConversionsList(
     @Query() query: GetConversionsListQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -156,15 +194,22 @@ export class AdminController {
   @Get('conversions')
   @ApiOperation({
     summary: 'Get conversion statistics',
-    description: 'Returns detailed conversion statistics including trends and breakdown by plan.',
+    description:
+      'Returns detailed conversion statistics including trends and breakdown by plan.',
   })
   @ApiResponse({
     status: 200,
     description: 'Conversion statistics retrieved successfully',
     type: AdminConversionsResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getConversions(
     @Query() query: GetConversionsQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -176,15 +221,22 @@ export class AdminController {
   @Get('errors')
   @ApiOperation({
     summary: 'Get error logs',
-    description: 'Returns a paginated list of error logs with optional filtering by severity, type, date, and user.',
+    description:
+      'Returns a paginated list of error logs with optional filtering by severity, type, date, and user.',
   })
   @ApiResponse({
     status: 200,
     description: 'Error logs retrieved successfully',
     type: AdminErrorsResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getErrors(
     @Query() query: GetErrorsQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -196,16 +248,25 @@ export class AdminController {
   @Get('errors/stats')
   @ApiOperation({
     summary: 'Get error statistics',
-    description: 'Returns aggregated error statistics including counts by status, severity, type, source, and trend data.',
+    description:
+      'Returns aggregated error statistics including counts by status, severity, type, source, and trend data.',
   })
   @ApiResponse({
     status: 200,
     description: 'Error statistics retrieved successfully',
     type: AdminErrorStatsResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
-  async getErrorStats(@AdminUser() admin: AdminUserData): Promise<AdminErrorStatsResponseDto> {
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
+  async getErrorStats(
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminErrorStatsResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting error stats`);
     return this.adminService.getErrorStats();
   }
@@ -213,7 +274,8 @@ export class AdminController {
   @Get('errors/:id')
   @ApiOperation({
     summary: 'Get error detail by ID',
-    description: 'Returns detailed information about a specific error by document ID or errorId (ERR-YYYYMMDD-XXXXX).',
+    description:
+      'Returns detailed information about a specific error by document ID or errorId (ERR-YYYYMMDD-XXXXX).',
   })
   @ApiParam({
     name: 'id',
@@ -225,8 +287,14 @@ export class AdminController {
     description: 'Error detail retrieved successfully',
     type: AdminErrorDetailResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   @ApiResponse({ status: 404, description: 'Error not found' })
   async getErrorDetail(
     @Param('id') id: string,
@@ -239,7 +307,8 @@ export class AdminController {
   @Patch('errors/:id')
   @ApiOperation({
     summary: 'Update error status/notes',
-    description: 'Update the status and/or notes of an error. When status changes to "resolved", resolvedAt is set automatically.',
+    description:
+      'Update the status and/or notes of an error. When status changes to "resolved", resolvedAt is set automatically.',
   })
   @ApiParam({
     name: 'id',
@@ -252,8 +321,14 @@ export class AdminController {
     description: 'Error updated successfully',
     type: UpdateErrorResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   @ApiResponse({ status: 404, description: 'Error not found' })
   async updateError(
     @Param('id') id: string,
@@ -267,16 +342,25 @@ export class AdminController {
   @Get('plan-usage')
   @ApiOperation({
     summary: 'Get plan usage metrics',
-    description: 'Returns metrics about plan usage, distribution, users near limits, and upgrade opportunities.',
+    description:
+      'Returns metrics about plan usage, distribution, users near limits, and upgrade opportunities.',
   })
   @ApiResponse({
     status: 200,
     description: 'Plan usage metrics retrieved successfully',
     type: AdminPlanUsageResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
-  async getPlanUsage(@AdminUser() admin: AdminUserData): Promise<AdminPlanUsageResponseDto> {
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
+  async getPlanUsage(
+    @AdminUser() admin: AdminUserData,
+  ): Promise<AdminPlanUsageResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting plan usage`);
     return this.adminService.getPlanUsage();
   }
@@ -284,15 +368,22 @@ export class AdminController {
   @Get('plan-changes')
   @ApiOperation({
     summary: 'Get plan changes history',
-    description: 'Returns a paginated list of plan changes (upgrades, downgrades, admin changes) with optional filtering.',
+    description:
+      'Returns a paginated list of plan changes (upgrades, downgrades, admin changes) with optional filtering.',
   })
   @ApiResponse({
     status: 200,
     description: 'Plan changes history retrieved successfully',
     type: AdminPlanChangesResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getPlanChanges(
     @Query() query: GetPlanChangesQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -304,15 +395,22 @@ export class AdminController {
   @Get('consumption-projection')
   @ApiOperation({
     summary: 'Get consumption projection for all users',
-    description: 'Returns projected plan exhaustion data for users, identifying those who will exhaust their plan before billing period ends.',
+    description:
+      'Returns projected plan exhaustion data for users, identifying those who will exhaust their plan before billing period ends.',
   })
   @ApiResponse({
     status: 200,
     description: 'Consumption projection data retrieved successfully',
     type: AdminConsumptionProjectionResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getConsumptionProjection(
     @Query() query: GetConsumptionProjectionQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -324,7 +422,8 @@ export class AdminController {
   @Get('users/:userId')
   @ApiOperation({
     summary: 'Get user detail',
-    description: 'Returns detailed information about a specific user including usage, subscription, and activity history.',
+    description:
+      'Returns detailed information about a specific user including usage, subscription, and activity history.',
   })
   @ApiParam({
     name: 'userId',
@@ -337,20 +436,29 @@ export class AdminController {
     type: AdminUserDetailResponseDto,
   })
   @ApiResponse({ status: 404, description: 'User not found' })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getUserDetail(
     @Param('userId') userId: string,
     @AdminUser() admin: AdminUserData,
   ): Promise<AdminUserDetailResponseDto> {
-    this.logger.log(`Admin ${admin.email} requesting user detail for ${userId}`);
+    this.logger.log(
+      `Admin ${admin.email} requesting user detail for ${userId}`,
+    );
     return this.adminService.getUserDetail(userId);
   }
 
   @Patch('users/:userId/plan')
   @ApiOperation({
     summary: 'Update user plan',
-    description: 'Changes the plan for a specific user. Automatically cancels Stripe subscription when downgrading.',
+    description:
+      'Changes the plan for a specific user. Automatically cancels Stripe subscription when downgrading.',
   })
   @ApiParam({
     name: 'userId',
@@ -363,10 +471,19 @@ export class AdminController {
     description: 'User plan updated successfully',
     type: UpdateUserPlanResponseDto,
   })
-  @ApiResponse({ status: 400, description: 'Bad request - Same plan or invalid data' })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - Same plan or invalid data',
+  })
   @ApiResponse({ status: 404, description: 'User not found' })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async updateUserPlan(
     @Param('userId') userId: string,
     @Body() dto: UpdateUserPlanDto,
@@ -381,7 +498,8 @@ export class AdminController {
   @Post('simulate-plan')
   @ApiOperation({
     summary: 'Simulate a plan',
-    description: 'Allows an admin to simulate a different plan for testing purposes. The simulation affects limits and usage calculations.',
+    description:
+      'Allows an admin to simulate a different plan for testing purposes. The simulation affects limits and usage calculations.',
   })
   @ApiBody({ type: SimulatePlanDto })
   @ApiResponse({
@@ -389,30 +507,55 @@ export class AdminController {
     description: 'Plan simulation started successfully',
     type: SimulatePlanResponseDto,
   })
-  @ApiResponse({ status: 400, description: 'Bad request - Invalid plan or not an admin' })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - Invalid plan or not an admin',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async simulatePlan(
     @Body() dto: SimulatePlanDto,
     @AdminUser() admin: AdminUserData,
   ): Promise<SimulatePlanResponseDto> {
-    this.logger.log(`Admin ${admin.email} starting plan simulation: ${dto.plan}`);
-    return this.adminService.simulatePlan(admin.uid, dto.plan, dto.durationHours, admin);
+    this.logger.log(
+      `Admin ${admin.email} starting plan simulation: ${dto.plan}`,
+    );
+    return this.adminService.simulatePlan(
+      admin.uid,
+      dto.plan,
+      dto.durationHours,
+      admin,
+    );
   }
 
   @Get('simulate-plan/status')
   @ApiOperation({
     summary: 'Get simulation status',
-    description: 'Returns the current simulation status for the authenticated admin.',
+    description:
+      'Returns the current simulation status for the authenticated admin.',
   })
   @ApiResponse({
     status: 200,
     description: 'Simulation status retrieved successfully',
     type: SimulationStatusResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
-  async getSimulationStatus(@AdminUser() admin: AdminUserData): Promise<SimulationStatusResponseDto> {
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
+  async getSimulationStatus(
+    @AdminUser() admin: AdminUserData,
+  ): Promise<SimulationStatusResponseDto> {
     this.logger.log(`Admin ${admin.email} checking simulation status`);
     return this.adminService.getSimulationStatus(admin.uid);
   }
@@ -420,7 +563,8 @@ export class AdminController {
   @Post('simulate-plan/stop')
   @ApiOperation({
     summary: 'Stop plan simulation',
-    description: 'Stops the current plan simulation and reverts to the original plan.',
+    description:
+      'Stops the current plan simulation and reverts to the original plan.',
   })
   @ApiResponse({
     status: 201,
@@ -428,9 +572,17 @@ export class AdminController {
     type: StopSimulationResponseDto,
   })
   @ApiResponse({ status: 400, description: 'Bad request - Not an admin' })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
-  async stopSimulation(@AdminUser() admin: AdminUserData): Promise<StopSimulationResponseDto> {
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
+  async stopSimulation(
+    @AdminUser() admin: AdminUserData,
+  ): Promise<StopSimulationResponseDto> {
     this.logger.log(`Admin ${admin.email} stopping plan simulation`);
     return this.adminService.stopSimulation(admin.uid, admin);
   }
@@ -440,7 +592,8 @@ export class AdminController {
   @Get('labelary-stats')
   @ApiOperation({
     summary: 'Get Labelary API statistics',
-    description: 'Returns hourly statistics of Labelary API usage including calls, errors, rate limits, and response times.',
+    description:
+      'Returns hourly statistics of Labelary API usage including calls, errors, rate limits, and response times.',
   })
   @ApiResponse({
     status: 200,
@@ -485,13 +638,21 @@ export class AdminController {
       },
     },
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getLabelaryStats(
     @Query('hours') hours: string = '24',
     @AdminUser() admin: AdminUserData,
   ) {
-    this.logger.log(`Admin ${admin.email} requesting Labelary stats for ${hours} hours`);
+    this.logger.log(
+      `Admin ${admin.email} requesting Labelary stats for ${hours} hours`,
+    );
     return this.adminService.getLabelaryStats(parseInt(hours, 10) || 24);
   }
 
@@ -560,8 +721,16 @@ export class AdminController {
               type: 'object',
               properties: {
                 current: { type: 'number', example: 49 },
-                level: { type: 'string', enum: ['normal', 'warning', 'critical'], example: 'normal' },
-                estimatedExhaustion: { type: 'string', nullable: true, example: null },
+                level: {
+                  type: 'string',
+                  enum: ['normal', 'warning', 'critical'],
+                  example: 'normal',
+                },
+                estimatedExhaustion: {
+                  type: 'string',
+                  nullable: true,
+                  example: null,
+                },
               },
             },
           },
@@ -569,8 +738,14 @@ export class AdminController {
       },
     },
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getLabelaryMetrics(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} requesting Labelary metrics`);
     return this.adminService.getLabelaryMetrics();
@@ -581,9 +756,13 @@ export class AdminController {
   @Get('revenue')
   @ApiOperation({
     summary: 'Get revenue metrics',
-    description: 'Returns revenue data for the specified period with MRR information.',
+    description:
+      'Returns revenue data for the specified period with MRR information.',
   })
-  @ApiResponse({ status: 200, description: 'Revenue data retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Revenue data retrieved successfully',
+  })
   async getRevenue(
     @Query('period') period: string = 'month',
     @AdminUser() admin: AdminUserData,
@@ -595,9 +774,13 @@ export class AdminController {
   @Get('revenue/breakdown')
   @ApiOperation({
     summary: 'Get revenue breakdown',
-    description: 'Returns revenue breakdown by currency and country for the specified period.',
+    description:
+      'Returns revenue breakdown by currency and country for the specified period.',
   })
-  @ApiResponse({ status: 200, description: 'Revenue breakdown retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Revenue breakdown retrieved successfully',
+  })
   async getRevenueBreakdown(
     @Query('startDate') startDate: string,
     @Query('endDate') endDate: string,
@@ -606,13 +789,22 @@ export class AdminController {
     // Default to current month if not provided
     const now = new Date();
     const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    const defaultEnd = new Date(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+    );
 
     const start = startDate ? new Date(startDate) : defaultStart;
     const end = endDate ? new Date(endDate) : defaultEnd;
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new BadRequestException('Invalid date format. Use ISO 8601 format.');
+      throw new BadRequestException(
+        'Invalid date format. Use ISO 8601 format.',
+      );
     }
     this.logger.log(`Admin ${admin.email} requesting revenue breakdown`);
     return this.adminService.getRevenueBreakdown(start, end);
@@ -621,9 +813,13 @@ export class AdminController {
   @Get('transactions')
   @ApiOperation({
     summary: 'Get transactions list',
-    description: 'Returns a paginated list of Stripe transactions with optional filtering.',
+    description:
+      'Returns a paginated list of Stripe transactions with optional filtering.',
   })
-  @ApiResponse({ status: 200, description: 'Transactions list retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Transactions list retrieved successfully',
+  })
   async getTransactions(
     @Query() query: GetTransactionsQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -643,9 +839,13 @@ export class AdminController {
   @Get('mrr-history')
   @ApiOperation({
     summary: 'Get MRR history',
-    description: 'Returns Monthly Recurring Revenue history for the specified number of months.',
+    description:
+      'Returns Monthly Recurring Revenue history for the specified number of months.',
   })
-  @ApiResponse({ status: 200, description: 'MRR history retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'MRR history retrieved successfully',
+  })
   async getMRRHistory(
     @Query('months') months: string = '12',
     @AdminUser() admin: AdminUserData,
@@ -659,9 +859,13 @@ export class AdminController {
   @Get('expenses')
   @ApiOperation({
     summary: 'Get expenses list',
-    description: 'Returns a paginated list of expenses with optional filtering.',
+    description:
+      'Returns a paginated list of expenses with optional filtering.',
   })
-  @ApiResponse({ status: 200, description: 'Expenses list retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Expenses list retrieved successfully',
+  })
   async getExpenses(
     @Query() query: GetExpensesQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -681,7 +885,8 @@ export class AdminController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Create expense',
-    description: 'Creates a new expense. USD amounts are automatically converted to MXN using Banxico rates.',
+    description:
+      'Creates a new expense. USD amounts are automatically converted to MXN using Banxico rates.',
   })
   @ApiBody({ type: CreateExpenseDto })
   @ApiResponse({ status: 201, description: 'Expense created successfully' })
@@ -735,9 +940,13 @@ export class AdminController {
   @Get('expenses/summary')
   @ApiOperation({
     summary: 'Get expense summary',
-    description: 'Returns expense summary by category and vendor for the specified period.',
+    description:
+      'Returns expense summary by category and vendor for the specified period.',
   })
-  @ApiResponse({ status: 200, description: 'Expense summary retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Expense summary retrieved successfully',
+  })
   async getExpenseSummary(
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
@@ -760,7 +969,8 @@ export class AdminController {
   @Get('goals')
   @ApiOperation({
     summary: 'Get monthly goals',
-    description: 'Returns the goals for the specified month (defaults to current month).',
+    description:
+      'Returns the goals for the specified month (defaults to current month).',
   })
   @ApiResponse({ status: 200, description: 'Goals retrieved successfully' })
   async getGoals(
@@ -779,10 +989,7 @@ export class AdminController {
   })
   @ApiBody({ type: SetGoalsDto })
   @ApiResponse({ status: 200, description: 'Goals set successfully' })
-  async setGoals(
-    @Body() dto: SetGoalsDto,
-    @AdminUser() admin: AdminUserData,
-  ) {
+  async setGoals(@Body() dto: SetGoalsDto, @AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} setting goals for ${dto.month}`);
     return this.adminService.setGoals(dto, admin.email);
   }
@@ -790,9 +997,13 @@ export class AdminController {
   @Get('goals/progress')
   @ApiOperation({
     summary: 'Get goals progress',
-    description: 'Returns progress toward monthly goals with alerts and status.',
+    description:
+      'Returns progress toward monthly goals with alerts and status.',
   })
-  @ApiResponse({ status: 200, description: 'Goals progress retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Goals progress retrieved successfully',
+  })
   async getGoalsProgress(
     @Query() query: GetGoalsQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -806,7 +1017,10 @@ export class AdminController {
     summary: 'Check goal alerts',
     description: 'Returns current alerts for monthly goals.',
   })
-  @ApiResponse({ status: 200, description: 'Goal alerts retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Goal alerts retrieved successfully',
+  })
   async checkGoalAlerts(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} checking goal alerts`);
     return this.adminService.checkGoalAlerts();
@@ -815,7 +1029,8 @@ export class AdminController {
   @Get('goals/history')
   @ApiOperation({
     summary: 'Get goals history',
-    description: 'Returns goal history for the last N months with targets, achieved values, and status.',
+    description:
+      'Returns goal history for the last N months with targets, achieved values, and status.',
   })
   @ApiResponse({
     status: 200,
@@ -832,10 +1047,19 @@ export class AdminController {
                 type: 'object',
                 properties: {
                   month: { type: 'string', example: '2025-01' },
-                  targets: { type: 'object', example: { revenue: 50000, newUsers: 100 } },
-                  achieved: { type: 'object', example: { revenue: 45000, newUsers: 95 } },
+                  targets: {
+                    type: 'object',
+                    example: { revenue: 50000, newUsers: 100 },
+                  },
+                  achieved: {
+                    type: 'object',
+                    example: { revenue: 45000, newUsers: 95 },
+                  },
                   metrics: { type: 'array' },
-                  status: { type: 'string', enum: ['on_track', 'at_risk', 'behind', 'achieved'] },
+                  status: {
+                    type: 'string',
+                    enum: ['on_track', 'at_risk', 'behind', 'achieved'],
+                  },
                 },
               },
             },
@@ -857,9 +1081,13 @@ export class AdminController {
   @Get('geo/distribution')
   @ApiOperation({
     summary: 'Get user distribution by country',
-    description: 'Returns the distribution of users by country with plan breakdown.',
+    description:
+      'Returns the distribution of users by country with plan breakdown.',
   })
-  @ApiResponse({ status: 200, description: 'Distribution data retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Distribution data retrieved successfully',
+  })
   async getGeoDistribution(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} requesting geo distribution`);
     return this.adminService.getGeoDistribution();
@@ -870,7 +1098,10 @@ export class AdminController {
     summary: 'Get conversion rates by country',
     description: 'Returns Free→Pro conversion rates by country.',
   })
-  @ApiResponse({ status: 200, description: 'Conversion rates retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Conversion rates retrieved successfully',
+  })
   async getGeoConversionRates(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} requesting geo conversion rates`);
     return this.adminService.getGeoConversionRates();
@@ -881,21 +1112,31 @@ export class AdminController {
     summary: 'Get revenue by country',
     description: 'Returns revenue data by country for the specified period.',
   })
-  @ApiResponse({ status: 200, description: 'Revenue by country retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Revenue by country retrieved successfully',
+  })
   async getGeoRevenue(
     @Query() query: GetGeoRevenueQueryDto,
     @AdminUser() admin: AdminUserData,
   ) {
     this.logger.log(`Admin ${admin.email} requesting geo revenue`);
-    return this.adminService.getGeoRevenue(new Date(query.startDate), new Date(query.endDate));
+    return this.adminService.getGeoRevenue(
+      new Date(query.startDate),
+      new Date(query.endDate),
+    );
   }
 
   @Get('geo/potential')
   @ApiOperation({
     summary: 'Get countries with potential',
-    description: 'Returns countries ranked by potential for growth and marketing investment.',
+    description:
+      'Returns countries ranked by potential for growth and marketing investment.',
   })
-  @ApiResponse({ status: 200, description: 'Country potential data retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Country potential data retrieved successfully',
+  })
   async getGeoPotential(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} requesting geo potential`);
     return this.adminService.getGeoPotential();
@@ -908,7 +1149,10 @@ export class AdminController {
     summary: 'Get churn rate',
     description: 'Returns subscription churn rate for the specified period.',
   })
-  @ApiResponse({ status: 200, description: 'Churn rate retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Churn rate retrieved successfully',
+  })
   async getChurnRate(
     @Query() query: GetChurnQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -933,7 +1177,10 @@ export class AdminController {
     summary: 'Get profit margin',
     description: 'Returns profit margin for the specified period.',
   })
-  @ApiResponse({ status: 200, description: 'Profit data retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Profit data retrieved successfully',
+  })
   async getProfitMargin(
     @Query('period') period: string = 'month',
     @AdminUser() admin: AdminUserData,
@@ -945,9 +1192,13 @@ export class AdminController {
   @Get('finance/dashboard')
   @ApiOperation({
     summary: 'Get financial dashboard',
-    description: 'Returns comprehensive financial dashboard with revenue, expenses, MRR, and profit.',
+    description:
+      'Returns comprehensive financial dashboard with revenue, expenses, MRR, and profit.',
   })
-  @ApiResponse({ status: 200, description: 'Financial dashboard retrieved successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'Financial dashboard retrieved successfully',
+  })
   async getFinancialDashboard(@AdminUser() admin: AdminUserData) {
     this.logger.log(`Admin ${admin.email} requesting financial dashboard`);
     return this.adminService.getFinancialDashboard();
@@ -958,16 +1209,25 @@ export class AdminController {
   @Get('valuation')
   @ApiOperation({
     summary: 'Get business valuation',
-    description: 'Returns comprehensive business valuation using Revenue Multiple methodology with dynamic multiplier based on SaaS metrics (Growth Rate, Churn, NRR, Profit Margin, Rule of 40).',
+    description:
+      'Returns comprehensive business valuation using Revenue Multiple methodology with dynamic multiplier based on SaaS metrics (Growth Rate, Churn, NRR, Profit Margin, Rule of 40).',
   })
   @ApiResponse({
     status: 200,
     description: 'Business valuation retrieved successfully',
     type: BusinessValuationResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
-  async getBusinessValuation(@AdminUser() admin: AdminUserData): Promise<BusinessValuationResponseDto> {
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
+  async getBusinessValuation(
+    @AdminUser() admin: AdminUserData,
+  ): Promise<BusinessValuationResponseDto> {
     this.logger.log(`Admin ${admin.email} requesting business valuation`);
     const data = await this.adminService.getBusinessValuation();
     return {
@@ -986,8 +1246,14 @@ export class AdminController {
     description: 'Valuation history retrieved successfully',
     type: ValuationHistoryResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getValuationHistory(
     @Query() query: GetValuationHistoryQueryDto,
     @AdminUser() admin: AdminUserData,
@@ -1001,27 +1267,37 @@ export class AdminController {
   @Get('zpl-debug')
   @ApiOperation({
     summary: 'List ZPL debug files by user email',
-    description: 'Returns a paginated list of ZPL files stored for debugging purposes, filtered by user email.',
+    description:
+      'Returns a paginated list of ZPL files stored for debugging purposes, filtered by user email.',
   })
   @ApiResponse({
     status: 200,
     description: 'ZPL debug files retrieved successfully',
     type: AdminZplDebugFilesResponseDto,
   })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async getZplDebugFiles(
     @Query() query: GetZplDebugFilesQueryDto,
     @AdminUser() admin: AdminUserData,
   ): Promise<AdminZplDebugFilesResponseDto> {
-    this.logger.log(`Admin ${admin.email} requesting ZPL debug files for ${query.email}`);
+    this.logger.log(
+      `Admin ${admin.email} requesting ZPL debug files for ${query.email}`,
+    );
     return this.adminService.getZplDebugFiles(query);
   }
 
   @Get('zpl-debug/:jobId/download')
   @ApiOperation({
     summary: 'Download a specific ZPL debug file',
-    description: 'Returns a signed URL to download the original ZPL file for a specific conversion job.',
+    description:
+      'Returns a signed URL to download the original ZPL file for a specific conversion job.',
   })
   @ApiParam({
     name: 'jobId',
@@ -1034,13 +1310,21 @@ export class AdminController {
     type: AdminZplDebugFileDownloadResponseDto,
   })
   @ApiResponse({ status: 404, description: 'ZPL file not found' })
-  @ApiResponse({ status: 401, description: 'Unauthorized - Invalid or missing token' })
-  @ApiResponse({ status: 403, description: 'Forbidden - Admin access required' })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing token',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Admin access required',
+  })
   async downloadZplDebugFile(
     @Param('jobId') jobId: string,
     @AdminUser() admin: AdminUserData,
   ): Promise<AdminZplDebugFileDownloadResponseDto> {
-    this.logger.log(`Admin ${admin.email} downloading ZPL debug file: ${jobId}`);
+    this.logger.log(
+      `Admin ${admin.email} downloading ZPL debug file: ${jobId}`,
+    );
     return this.adminService.getZplDebugFileDownload(jobId);
   }
 }

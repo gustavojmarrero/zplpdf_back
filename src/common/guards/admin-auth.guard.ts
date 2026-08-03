@@ -36,9 +36,13 @@ export class AdminAuthGuard implements CanActivate {
       .filter((e) => e.length > 0);
 
     if (this.adminEmails.length === 0) {
-      this.logger.warn('No admin emails configured in ADMIN_EMAILS environment variable');
+      this.logger.warn(
+        'No admin emails configured in ADMIN_EMAILS environment variable',
+      );
     } else {
-      this.logger.log(`Admin emails configured: ${this.adminEmails.length} admins`);
+      this.logger.log(
+        `Admin emails configured: ${this.adminEmails.length} admins`,
+      );
     }
   }
 

@@ -5,4 +5,4 @@ import { ZplToPdfConverter } from './zpl-to-pdf.util.js';
   providers: [ZplToPdfConverter],
   exports: [ZplToPdfConverter],
 })
-export class UtilsModule {} 
+export class UtilsModule {}

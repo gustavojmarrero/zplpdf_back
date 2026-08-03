@@ -115,7 +115,10 @@ export class GeoService {
   private readonly IP_GUIDE_URL = 'https://ip.guide';
 
   // Cache en memoria para evitar llamadas repetidas
-  private ipCache = new Map<string, { country: string; city: string; timestamp: number }>();
+  private ipCache = new Map<
+    string,
+    { country: string; city: string; timestamp: number }
+  >();
   private readonly CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 horas
   private readonly GEO_REFRESH_DAYS = 7; // Refrescar geo cada 7 días
 
@@ -134,7 +137,9 @@ export class GeoService {
     // Verificar cache
     const cached = this.ipCache.get(ip);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL_MS) {
-      this.logger.debug(`Using cached geo for IP ${ip}: ${cached.country}/${cached.city}`);
+      this.logger.debug(
+        `Using cached geo for IP ${ip}: ${cached.country}/${cached.city}`,
+      );
       return { country: cached.country, city: cached.city };
     }
 
@@ -179,10 +184,16 @@ export class GeoService {
       detectedAt = user.countryDetectedAt;
     } else if (typeof user.countryDetectedAt === 'string') {
       detectedAt = new Date(user.countryDetectedAt);
-    } else if (user.countryDetectedAt && typeof (user.countryDetectedAt as any).toDate === 'function') {
+    } else if (
+      user.countryDetectedAt &&
+      typeof (user.countryDetectedAt as any).toDate === 'function'
+    ) {
       // Firestore Timestamp object
       detectedAt = (user.countryDetectedAt as any).toDate();
-    } else if (user.countryDetectedAt && (user.countryDetectedAt as any)._seconds !== undefined) {
+    } else if (
+      user.countryDetectedAt &&
+      (user.countryDetectedAt as any)._seconds !== undefined
+    ) {
       // Firestore Timestamp raw object { _seconds, _nanoseconds }
       detectedAt = new Date((user.countryDetectedAt as any)._seconds * 1000);
     } else {
@@ -196,7 +207,8 @@ export class GeoService {
       return true;
     }
 
-    const daysSinceDetection = (Date.now() - detectedAt.getTime()) / (1000 * 60 * 60 * 24);
+    const daysSinceDetection =
+      (Date.now() - detectedAt.getTime()) / (1000 * 60 * 60 * 24);
     return daysSinceDetection >= this.GEO_REFRESH_DAYS;
   }
 
@@ -216,7 +228,9 @@ export class GeoService {
       countryDetectedAt: new Date(),
     });
 
-    this.logger.log(`Updated user ${userId} geo to ${country}/${city || 'unknown'} (source: ${source})`);
+    this.logger.log(
+      `Updated user ${userId} geo to ${country}/${city || 'unknown'} (source: ${source})`,
+    );
   }
 
   /**
@@ -258,8 +272,14 @@ export class GeoService {
   /**
    * Obtiene ingresos por país
    */
-  async getRevenueByCountry(startDate: Date, endDate: Date): Promise<CountryRevenue[]> {
-    const data = await this.firestoreService.getRevenueByCountry(startDate, endDate);
+  async getRevenueByCountry(
+    startDate: Date,
+    endDate: Date,
+  ): Promise<CountryRevenue[]> {
+    const data = await this.firestoreService.getRevenueByCountry(
+      startDate,
+      endDate,
+    );
 
     return data.map((countryData) => ({
       country: countryData.country,
@@ -267,7 +287,10 @@ export class GeoService {
       revenue: countryData.revenue,
       revenueMxn: countryData.revenueMxn,
       transactions: countryData.transactions,
-      avgTicket: countryData.transactions > 0 ? countryData.revenueMxn / countryData.transactions : 0,
+      avgTicket:
+        countryData.transactions > 0
+          ? countryData.revenueMxn / countryData.transactions
+          : 0,
     }));
   }
 
@@ -291,14 +314,18 @@ export class GeoService {
 
     // Calcular métricas promedio para comparación
     const avgConversionRate =
-      conversionRates.reduce((sum, c) => sum + c.conversionRate, 0) / conversionRates.length || 0;
+      conversionRates.reduce((sum, c) => sum + c.conversionRate, 0) /
+        conversionRates.length || 0;
     const avgUsers =
-      distribution.reduce((sum, c) => sum + c.userCount, 0) / distribution.length || 1;
+      distribution.reduce((sum, c) => sum + c.userCount, 0) /
+        distribution.length || 1;
 
     const potentials: CountryPotential[] = [];
 
     for (const country of distribution) {
-      const conversionData = conversionRates.find((c) => c.country === country.country);
+      const conversionData = conversionRates.find(
+        (c) => c.country === country.country,
+      );
       const conversionRate = conversionData?.conversionRate || 0;
       const countryRevenue = revenueByCountry.get(country.country);
 
@@ -307,11 +334,15 @@ export class GeoService {
       // - Tasa de conversión (35%)
       // - Potencial de crecimiento (40%)
       const userScore = Math.min((country.userCount / avgUsers) * 25, 25);
-      const conversionScore = Math.min((conversionRate / Math.max(avgConversionRate, 1)) * 35, 35);
+      const conversionScore = Math.min(
+        (conversionRate / Math.max(avgConversionRate, 1)) * 35,
+        35,
+      );
 
       // Potencial de crecimiento: países con muchos free users y baja conversión
       const freeUsers = country.byPlan.free;
-      const growthPotential = freeUsers > 0 && conversionRate < avgConversionRate ? 40 : 20;
+      const growthPotential =
+        freeUsers > 0 && conversionRate < avgConversionRate ? 40 : 20;
 
       const score = Math.round(userScore + conversionScore + growthPotential);
 

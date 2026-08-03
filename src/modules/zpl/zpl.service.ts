@@ -1,5 +1,17 @@
-import { Injectable, Logger, HttpException, HttpStatus, Inject, forwardRef, ForbiddenException, Optional } from '@nestjs/common';
-import { ErrorCodes, getErrorTypeFromCode } from '../../common/constants/error-codes.js';
+import {
+  Injectable,
+  Logger,
+  HttpException,
+  HttpStatus,
+  Inject,
+  forwardRef,
+  ForbiddenException,
+  Optional,
+} from '@nestjs/common';
+import {
+  ErrorCodes,
+  getErrorTypeFromCode,
+} from '../../common/constants/error-codes.js';
 import sharp from 'sharp';
 import { v4 as uuidv4 } from 'uuid';
 import { PDFDocument } from 'pdf-lib';
@@ -8,15 +20,24 @@ import { ConfigService } from '@nestjs/config';
 import archiver from 'archiver';
 import { Writable } from 'stream';
 import { pdfToPng, PngPageOutput } from 'pdf-to-png-converter';
-import { FirestoreService, ConversionStatus } from '../cache/firestore.service.js';
+import {
+  FirestoreService,
+  ConversionStatus,
+} from '../cache/firestore.service.js';
 import { UsersService } from '../users/users.service.js';
 import type { PeriodInfo } from '../../common/services/period-calculator.service.js';
 import { OutputFormat } from './enums/output-format.enum.js';
 import type { BatchJob, BatchFileJob } from './interfaces/batch.interface.js';
 import { BATCH_LIMITS } from './interfaces/batch.interface.js';
 import { LabelaryQueueService } from './services/labelary-queue.service.js';
-import type { UserPlan, QueuePositionResponse } from './interfaces/queue.interface.js';
-import { DEFAULT_PLAN_LIMITS, PLAN_FEATURES } from '../../common/interfaces/user.interface.js';
+import type {
+  UserPlan,
+  QueuePositionResponse,
+} from './interfaces/queue.interface.js';
+import {
+  DEFAULT_PLAN_LIMITS,
+  PLAN_FEATURES,
+} from '../../common/interfaces/user.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
 
 export enum LabelSize {
@@ -83,20 +104,20 @@ export class ZplService {
 
   // Mapas de conversión para tamaños de etiqueta
   private readonly LABEL_SIZE_NORMALIZE_MAP: Record<string, string> = {
-    'small': '2x1',
+    small: '2x1',
     '2x1': '2x1',
     '2x4': '2x4',
     '4x2': '4x2',
-    'large': '4x6',
+    large: '4x6',
     '4x6': '4x6',
   };
 
   private readonly LABEL_SIZE_ENUM_MAP: Record<string, LabelSize> = {
-    'small': LabelSize.TWO_BY_ONE,
+    small: LabelSize.TWO_BY_ONE,
     '2x1': LabelSize.TWO_BY_ONE,
     '2x4': LabelSize.TWO_BY_FOUR,
     '4x2': LabelSize.FOUR_BY_TWO,
-    'large': LabelSize.FOUR_BY_SIX,
+    large: LabelSize.FOUR_BY_SIX,
     '4x6': LabelSize.FOUR_BY_SIX,
   };
 
@@ -113,7 +134,9 @@ export class ZplService {
     this.storage = new Storage(this.googleAuthOptions || {});
 
     // Nombre del bucket desde configuración o valor por defecto
-    this.bucket = this.configService.get<string>('GCP_STORAGE_BUCKET') || 'zplpdf-app-files';
+    this.bucket =
+      this.configService.get<string>('GCP_STORAGE_BUCKET') ||
+      'zplpdf-app-files';
 
     // Configurar la URL base para acceder a los archivos
     this.storageBasePath = `https://storage.googleapis.com/${this.bucket}/`;
@@ -129,7 +152,7 @@ export class ZplService {
           this.logger.error(`Bucket ${this.bucket} no encontrado`);
         }
       })
-      .catch(error => {
+      .catch((error) => {
         this.logger.error(`Error al conectar con el bucket: ${error.message}`);
       });
   }
@@ -288,12 +311,16 @@ export class ZplService {
       const labelCount = countResult.data.totalLabels;
 
       // Check user limits before processing
-      const canConvert = await this.usersService.checkCanConvert(userId, labelCount);
+      const canConvert = await this.usersService.checkCanConvert(
+        userId,
+        labelCount,
+      );
       if (!canConvert.allowed) {
         // Log conversion-gate rejection. El `type` se deriva del código real
         // (no se hardcodea LIMIT_EXCEEDED) para que el dashboard distinga
         // fricción de acceso (email sin verificar) de presión de cuota.
-        const errorCode = canConvert.errorCode || ErrorCodes.MONTHLY_LIMIT_EXCEEDED;
+        const errorCode =
+          canConvert.errorCode || ErrorCodes.MONTHLY_LIMIT_EXCEEDED;
         await this.logError(
           getErrorTypeFromCode(errorCode),
           errorCode,
@@ -327,7 +354,8 @@ export class ZplService {
           throw new HttpException(
             {
               error: ErrorCodes.IMAGE_FORMAT_PRO_ONLY,
-              message: 'PNG and JPEG formats are only available for Pro and Enterprise plans',
+              message:
+                'PNG and JPEG formats are only available for Pro and Enterprise plans',
             },
             HttpStatus.FORBIDDEN,
           );
@@ -363,14 +391,25 @@ export class ZplService {
           updatedAt: now.toISOString(),
         });
       } catch (firestoreError) {
-        this.logger.error(`Error al guardar en Firestore: ${firestoreError.message}`);
+        this.logger.error(
+          `Error al guardar en Firestore: ${firestoreError.message}`,
+        );
         // Continuar aunque falle Firestore - el job puede procesarse con el cache local
       }
 
       // Encolar el trabajo para procesamiento asincrono
       const periodInfo = canConvert.periodInfo;
       setTimeout(() => {
-        this.processZplConversionWithUser(zplContent, labelSize, jobId, userId, labelCount, outputFormat, periodInfo, userPlan as UserPlan);
+        this.processZplConversionWithUser(
+          zplContent,
+          labelSize,
+          jobId,
+          userId,
+          labelCount,
+          outputFormat,
+          periodInfo,
+          userPlan as UserPlan,
+        );
       }, 100);
 
       // Guardar ZPL para debugging de forma asíncrona (no bloquea)
@@ -382,7 +421,9 @@ export class ZplService {
         labelSize,
         labelCount,
         outputFormat,
-      ).catch(err => this.logger.warn(`Failed to save ZPL for debug: ${err.message}`));
+      ).catch((err) =>
+        this.logger.warn(`Failed to save ZPL for debug: ${err.message}`),
+      );
 
       return jobId;
     } catch (error) {
@@ -411,7 +452,14 @@ export class ZplService {
     userPlan?: UserPlan,
   ): Promise<void> {
     try {
-      await this.processZplConversion(zplContent, labelSize, jobId, outputFormat, userId, userPlan);
+      await this.processZplConversion(
+        zplContent,
+        labelSize,
+        jobId,
+        outputFormat,
+        userId,
+        userPlan,
+      );
 
       // Get the job to check if it completed successfully
       const job = this.jobs.get(jobId);
@@ -429,8 +477,13 @@ export class ZplService {
           userPlan,
         );
         // Update ZPL debug result
-        this.firestoreService.updateZplDebugResult(jobId, 'success')
-          .catch(err => this.logger.warn(`Failed to update ZPL debug result: ${err.message}`));
+        this.firestoreService
+          .updateZplDebugResult(jobId, 'success')
+          .catch((err) =>
+            this.logger.warn(
+              `Failed to update ZPL debug result: ${err.message}`,
+            ),
+          );
       } else if (job && job.status === 'failed') {
         // Record failed conversion
         await this.usersService.recordConversion(
@@ -445,11 +498,18 @@ export class ZplService {
           userPlan,
         );
         // Update ZPL debug result
-        this.firestoreService.updateZplDebugResult(jobId, 'error', job?.error)
-          .catch(err => this.logger.warn(`Failed to update ZPL debug result: ${err.message}`));
+        this.firestoreService
+          .updateZplDebugResult(jobId, 'error', job?.error)
+          .catch((err) =>
+            this.logger.warn(
+              `Failed to update ZPL debug result: ${err.message}`,
+            ),
+          );
       }
     } catch (error) {
-      this.logger.error(`Error in processZplConversionWithUser: ${error.message}`);
+      this.logger.error(
+        `Error in processZplConversionWithUser: ${error.message}`,
+      );
       // Record failed conversion
       try {
         await this.usersService.recordConversion(
@@ -464,10 +524,17 @@ export class ZplService {
           userPlan,
         );
         // Update ZPL debug result
-        this.firestoreService.updateZplDebugResult(jobId, 'error', error.message)
-          .catch(err => this.logger.warn(`Failed to update ZPL debug result: ${err.message}`));
+        this.firestoreService
+          .updateZplDebugResult(jobId, 'error', error.message)
+          .catch((err) =>
+            this.logger.warn(
+              `Failed to update ZPL debug result: ${err.message}`,
+            ),
+          );
       } catch (recordError) {
-        this.logger.error(`Error recording failed conversion: ${recordError.message}`);
+        this.logger.error(
+          `Error recording failed conversion: ${recordError.message}`,
+        );
       }
     }
   }
@@ -502,10 +569,14 @@ export class ZplService {
       this.jobs.set(jobId, job);
 
       // Actualizar Firestore
-      this.firestoreService.updateConversionStatus(jobId, {
-        status: 'processing',
-        progress: 0,
-      }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
+      this.firestoreService
+        .updateConversionStatus(jobId, {
+          status: 'processing',
+          progress: 0,
+        })
+        .catch((err) =>
+          this.logger.error(`Error actualizando Firestore: ${err.message}`),
+        );
 
       const size = job.labelSize;
       const effectiveUserPlan: UserPlan = userPlan || 'free';
@@ -516,18 +587,33 @@ export class ZplService {
 
       // Convertir según el formato solicitado
       if (outputFormat === OutputFormat.PDF) {
-        resultBuffer = await this.convertZplToPdf(zplContent, size, jobId, effectiveUserId, effectiveUserPlan);
+        resultBuffer = await this.convertZplToPdf(
+          zplContent,
+          size,
+          jobId,
+          effectiveUserId,
+          effectiveUserPlan,
+        );
         contentType = 'application/pdf';
         fileExtension = 'pdf';
       } else {
         // PNG o JPEG - crear archivo ZIP con las imágenes
-        resultBuffer = await this.convertZplToImages(zplContent, size, outputFormat, jobId, effectiveUserId, effectiveUserPlan);
+        resultBuffer = await this.convertZplToImages(
+          zplContent,
+          size,
+          outputFormat,
+          jobId,
+          effectiveUserId,
+          effectiveUserPlan,
+        );
         contentType = 'application/zip';
         fileExtension = 'zip';
       }
 
       // Generar nombres de archivo
-      this.logger.log(`Generando nombre: originalFilename=${job.originalFilename}, userPlan=${job.userPlan}`);
+      this.logger.log(
+        `Generando nombre: originalFilename=${job.originalFilename}, userPlan=${job.userPlan}`,
+      );
       const { storageFilename, downloadFilename } = this.generateFilenames(
         jobId,
         labelSize,
@@ -550,7 +636,10 @@ export class ZplService {
         });
 
       // Generar URL firmada
-      const signedUrl = await this.generateSignedUrl(storageFilename, downloadFilename);
+      const signedUrl = await this.generateSignedUrl(
+        storageFilename,
+        downloadFilename,
+      );
 
       // Actualizar estado a completado
       job.status = 'completed';
@@ -560,14 +649,20 @@ export class ZplService {
       this.jobs.set(jobId, job);
 
       // Actualizar Firestore con resultado
-      this.firestoreService.updateConversionStatus(jobId, {
-        status: 'completed',
-        progress: 100,
-        resultUrl: signedUrl,
-        filename: downloadFilename,
-      }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
+      this.firestoreService
+        .updateConversionStatus(jobId, {
+          status: 'completed',
+          progress: 100,
+          resultUrl: signedUrl,
+          filename: downloadFilename,
+        })
+        .catch((err) =>
+          this.logger.error(`Error actualizando Firestore: ${err.message}`),
+        );
 
-      this.logger.log(`Conversión completada para trabajo ${jobId} (formato: ${outputFormat})`);
+      this.logger.log(
+        `Conversión completada para trabajo ${jobId} (formato: ${outputFormat})`,
+      );
     } catch (error) {
       this.logger.error(`Error al procesar conversión ZPL: ${error.message}`);
 
@@ -575,7 +670,9 @@ export class ZplService {
       // capa inferior (p. ej. fallo de Labelary guardado como LABELARY_API_ERROR),
       // no lo duplicamos aquí: evita el doble conteo y los falsos "critical".
       if (!(error as any)?.loggedToDashboard) {
-        const errorType = error.message?.includes('ZPL') ? 'INVALID_ZPL' : 'SERVER_ERROR';
+        const errorType = error.message?.includes('ZPL')
+          ? 'INVALID_ZPL'
+          : 'SERVER_ERROR';
         const severity = errorType === 'SERVER_ERROR' ? 'critical' : 'error';
         await this.logError(
           errorType,
@@ -595,10 +692,14 @@ export class ZplService {
       this.jobs.set(jobId, job);
 
       // Actualizar Firestore con error
-      this.firestoreService.updateConversionStatus(jobId, {
-        status: 'error',
-        errorMessage: error.message,
-      }).catch(err => this.logger.error(`Error actualizando Firestore: ${err.message}`));
+      this.firestoreService
+        .updateConversionStatus(jobId, {
+          status: 'error',
+          errorMessage: error.message,
+        })
+        .catch((err) =>
+          this.logger.error(`Error actualizando Firestore: ${err.message}`),
+        );
     }
   }
 
@@ -609,15 +710,19 @@ export class ZplService {
    */
   async getConversionStatus(jobId: string) {
     // Primero buscar en caché local
-    let job = this.jobs.get(jobId);
+    const job = this.jobs.get(jobId);
 
     // Si no está en caché, buscar en Firestore
     if (!job) {
       try {
-        const firestoreStatus = await this.firestoreService.getConversionStatus(jobId);
+        const firestoreStatus =
+          await this.firestoreService.getConversionStatus(jobId);
         if (firestoreStatus) {
           // Mapear status de Firestore a formato interno
-          const mappedStatus = firestoreStatus.status === 'error' ? 'failed' : firestoreStatus.status;
+          const mappedStatus =
+            firestoreStatus.status === 'error'
+              ? 'failed'
+              : firestoreStatus.status;
           return {
             status: mappedStatus,
             progress: firestoreStatus.progress || 0,
@@ -625,10 +730,16 @@ export class ZplService {
           };
         }
       } catch (firestoreError) {
-        this.logger.error(`Error al consultar Firestore: ${firestoreError.message}`);
+        this.logger.error(
+          `Error al consultar Firestore: ${firestoreError.message}`,
+        );
       }
       throw new HttpException(
-        { error: ErrorCodes.JOB_NOT_FOUND, message: 'Trabajo no encontrado', data: { jobId } },
+        {
+          error: ErrorCodes.JOB_NOT_FOUND,
+          message: 'Trabajo no encontrado',
+          data: { jobId },
+        },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -648,7 +759,12 @@ export class ZplService {
       case 'pending':
         return 'Conversión en cola';
       case 'processing':
-        return this.getPhaseMessage(status.phase, status.chunksCompleted, status.chunksTotal, status.progress);
+        return this.getPhaseMessage(
+          status.phase,
+          status.chunksCompleted,
+          status.chunksTotal,
+          status.progress,
+        );
       case 'completed':
         return 'Conversión completada';
       case 'error':
@@ -691,12 +807,13 @@ export class ZplService {
    */
   async getPdfDownloadUrl(jobId: string, userId: string) {
     // Primero buscar en caché local
-    let job = this.jobs.get(jobId);
+    const job = this.jobs.get(jobId);
 
     // Si no está en caché, buscar en Firestore
     if (!job) {
       try {
-        const firestoreStatus = await this.firestoreService.getConversionStatus(jobId);
+        const firestoreStatus =
+          await this.firestoreService.getConversionStatus(jobId);
         if (firestoreStatus) {
           // Validar propiedad del recurso
           if (firestoreStatus.userId && firestoreStatus.userId !== userId) {
@@ -720,27 +837,42 @@ export class ZplService {
           };
         }
       } catch (error) {
-        if (error instanceof HttpException || error instanceof ForbiddenException) {
+        if (
+          error instanceof HttpException ||
+          error instanceof ForbiddenException
+        ) {
           throw error;
         }
         this.logger.error(`Error al consultar Firestore: ${error.message}`);
       }
       throw new HttpException(
-        { error: ErrorCodes.JOB_NOT_FOUND, message: 'Trabajo no encontrado', data: { jobId } },
+        {
+          error: ErrorCodes.JOB_NOT_FOUND,
+          message: 'Trabajo no encontrado',
+          data: { jobId },
+        },
         HttpStatus.NOT_FOUND,
       );
     }
 
     if (job.status !== 'completed') {
       throw new HttpException(
-        { error: ErrorCodes.JOB_NOT_COMPLETE, message: 'La conversión no está completa', data: { jobId, currentStatus: job.status } },
+        {
+          error: ErrorCodes.JOB_NOT_COMPLETE,
+          message: 'La conversión no está completa',
+          data: { jobId, currentStatus: job.status },
+        },
         HttpStatus.BAD_REQUEST,
       );
     }
 
     if (!job.resultUrl || !job.filename) {
       throw new HttpException(
-        { error: ErrorCodes.DOWNLOAD_NOT_AVAILABLE, message: 'No se encuentra el archivo de resultado', data: { jobId } },
+        {
+          error: ErrorCodes.DOWNLOAD_NOT_AVAILABLE,
+          message: 'No se encuentra el archivo de resultado',
+          data: { jobId },
+        },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -787,12 +919,16 @@ export class ZplService {
       this.jobs.set(jobId, job);
     }
 
-    this.firestoreService.updateConversionStatus(jobId, {
-      progress,
-      phase,
-      chunksCompleted,
-      chunksTotal,
-    }).catch(err => this.logger.error(`Error actualizando progreso: ${err.message}`));
+    this.firestoreService
+      .updateConversionStatus(jobId, {
+        progress,
+        phase,
+        chunksCompleted,
+        chunksTotal,
+      })
+      .catch((err) =>
+        this.logger.error(`Error actualizando progreso: ${err.message}`),
+      );
   }
 
   /**
@@ -803,7 +939,10 @@ export class ZplService {
    */
   private prepareZplBlocks(zplRaw: string, jobId: string): PreparedZplBlocks {
     if (!zplRaw) {
-      throw new HttpException('ZPL content is required', HttpStatus.BAD_REQUEST);
+      throw new HttpException(
+        'ZPL content is required',
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
     // Fase 1: Validación (5%)
@@ -814,12 +953,13 @@ export class ZplService {
     if (parsedBlocks.length === 0) {
       throw new HttpException(
         'No valid ZPL blocks found',
-        HttpStatus.BAD_REQUEST
+        HttpStatus.BAD_REQUEST,
       );
     }
 
     // 2. Identificar bloques únicos y su secuencia original
-    const { uniqueBlocks, originalSequence } = this.identifyUniqueBlocks(parsedBlocks);
+    const { uniqueBlocks, originalSequence } =
+      this.identifyUniqueBlocks(parsedBlocks);
 
     // 3. Dividir bloques únicos en chunks de 50 (límite de Labelary)
     const chunkRanges = this.calculateChunkRanges(uniqueBlocks.length);
@@ -850,7 +990,8 @@ export class ZplService {
   ): Promise<Buffer> {
     try {
       // Preparar bloques ZPL (validación, deduplicación, chunking)
-      const { uniqueBlocks, originalSequence, chunkRanges, totalChunks } = this.prepareZplBlocks(zplRaw, jobId);
+      const { uniqueBlocks, originalSequence, chunkRanges, totalChunks } =
+        this.prepareZplBlocks(zplRaw, jobId);
 
       // Convertir cada chunk de bloques únicos a PDF
       const chunkPdfs: Buffer[] = [];
@@ -872,7 +1013,14 @@ export class ZplService {
 
         const chunkZpl = formattedBlocks.join('\n');
         const labelCount = chunkBlocks.length;
-        const pdfBuffer = await this.callLabelary(chunkZpl, labelSize, jobId, userId, userPlan, labelCount);
+        const pdfBuffer = await this.callLabelary(
+          chunkZpl,
+          labelSize,
+          jobId,
+          userId,
+          userPlan,
+          labelCount,
+        );
         chunkPdfs.push(pdfBuffer);
       }
 
@@ -913,7 +1061,8 @@ export class ZplService {
   ): Promise<Buffer> {
     try {
       // Preparar bloques ZPL (validación, deduplicación, chunking)
-      const { uniqueBlocks, originalSequence, chunkRanges, totalChunks } = this.prepareZplBlocks(zplRaw, jobId);
+      const { uniqueBlocks, originalSequence, chunkRanges, totalChunks } =
+        this.prepareZplBlocks(zplRaw, jobId);
 
       // Obtener PDFs por chunks y convertir a imágenes
       const allUniqueImages: Buffer[] = [];
@@ -937,7 +1086,14 @@ export class ZplService {
         const labelCount = chunkBlocks.length;
 
         // Obtener PDF del chunk desde Labelary
-        const pdfBuffer = await this.callLabelary(chunkZpl, labelSize, jobId, userId, userPlan, labelCount);
+        const pdfBuffer = await this.callLabelary(
+          chunkZpl,
+          labelSize,
+          jobId,
+          userId,
+          userPlan,
+          labelCount,
+        );
 
         // Convertir PDF a imágenes PNG
         const images = await this.pdfToImages(pdfBuffer);
@@ -948,7 +1104,11 @@ export class ZplService {
       this.updateProgress(jobId, 80, 'merging');
 
       // 5. Crear ZIP con imágenes duplicadas según secuencia original
-      return this.createImagesZip(allUniqueImages, originalSequence, outputFormat);
+      return this.createImagesZip(
+        allUniqueImages,
+        originalSequence,
+        outputFormat,
+      );
     } catch (error) {
       this.logger.error(`Error converting ZPL to images: ${error.message}`);
       if (error instanceof HttpException) {
@@ -979,7 +1139,7 @@ export class ZplService {
         viewportScale: 2.0, // Mayor resolución
       });
 
-      return pages.map(page => page.content);
+      return pages.map((page) => page.content);
     } catch (error) {
       this.logger.error(`Error converting PDF to images: ${error.message}`);
       throw new HttpException(
@@ -1086,7 +1246,7 @@ export class ZplService {
    */
   private splitAndExtractCopies(zpl: string): ParsedZplBlock[] {
     const blockMatches = zpl.match(/\^XA.*?\^XZ/gs) || [];
-    let parsed: ParsedZplBlock[] = [];
+    const parsed: ParsedZplBlock[] = [];
     blockMatches.forEach((rawBlock) => {
       const normalized = this.normalizeZplBlock(rawBlock);
 
@@ -1116,9 +1276,7 @@ export class ZplService {
    * Deduplica bloques ignorando 'copies' para la llamada a la API,
    * pero almacena las copias reales en originalSequence
    */
-  private identifyUniqueBlocks(
-    blocks: ParsedZplBlock[]
-  ): UniqueBlocksResult {
+  private identifyUniqueBlocks(blocks: ParsedZplBlock[]): UniqueBlocksResult {
     const uniqueBlocks: ParsedZplBlock[] = [];
     const blockMap = new Map<string, number>();
     const originalSequence: number[] = [];
@@ -1292,13 +1450,17 @@ export class ZplService {
         throw new Error('No hay PDFs para fusionar');
       }
 
-      const validChunks = chunkPdfs.filter(chunk => chunk && chunk.length > 0);
+      const validChunks = chunkPdfs.filter(
+        (chunk) => chunk && chunk.length > 0,
+      );
       if (validChunks.length === 0) {
         throw new Error('Todos los chunks PDF están vacíos o son inválidos');
       }
 
       if (validChunks.length !== chunkPdfs.length) {
-        this.logger.warn(`${chunkPdfs.length - validChunks.length} chunks PDF fueron descartados por estar vacíos`);
+        this.logger.warn(
+          `${chunkPdfs.length - validChunks.length} chunks PDF fueron descartados por estar vacíos`,
+        );
       }
 
       // OPTIMIZACIÓN 1: Pre-cargar todos los documentos en paralelo
@@ -1312,25 +1474,33 @@ export class ZplService {
             this.logger.warn(`Error cargando chunk ${index}: ${error.message}`);
             return null;
           }
-        })
+        }),
       );
-      this.logger.debug(`Pre-carga de ${chunkPdfs.length} chunks completada en ${Date.now() - loadStartTime}ms`);
+      this.logger.debug(
+        `Pre-carga de ${chunkPdfs.length} chunks completada en ${Date.now() - loadStartTime}ms`,
+      );
 
       const finalDoc = await PDFDocument.create();
       finalDoc.setProducer('zplpdf-service');
 
       // OPTIMIZACIÓN 2: Agrupar páginas por chunk para copiar en batch
-      const chunkPageGroups = new Map<number, {
-        pageIndices: number[];
-        outputPositions: number[];
-      }>();
+      const chunkPageGroups = new Map<
+        number,
+        {
+          pageIndices: number[];
+          outputPositions: number[];
+        }
+      >();
 
       originalSequence.forEach((blockIdx, outputPosition) => {
         const chunkNumber = Math.floor(blockIdx / this.CHUNK_SIZE);
         const pageInChunk = blockIdx % this.CHUNK_SIZE;
 
         if (!chunkPageGroups.has(chunkNumber)) {
-          chunkPageGroups.set(chunkNumber, { pageIndices: [], outputPositions: [] });
+          chunkPageGroups.set(chunkNumber, {
+            pageIndices: [],
+            outputPositions: [],
+          });
         }
 
         const group = chunkPageGroups.get(chunkNumber)!;
@@ -1347,7 +1517,9 @@ export class ZplService {
         const srcDoc = loadedDocs[chunkNumber];
 
         if (!srcDoc) {
-          this.logger.warn(`Chunk ${chunkNumber} no disponible, saltando ${group.pageIndices.length} páginas`);
+          this.logger.warn(
+            `Chunk ${chunkNumber} no disponible, saltando ${group.pageIndices.length} páginas`,
+          );
           skippedPages += group.pageIndices.length;
           continue;
         }
@@ -1378,7 +1550,10 @@ export class ZplService {
 
         try {
           // Copiar TODAS las páginas válidas de este chunk en UNA sola operación
-          const copiedPages = await finalDoc.copyPages(srcDoc, validPageIndices);
+          const copiedPages = await finalDoc.copyPages(
+            srcDoc,
+            validPageIndices,
+          );
           copiedPages.forEach((page, i) => {
             copiedPagesWithPositions.push({
               page,
@@ -1386,11 +1561,15 @@ export class ZplService {
             });
           });
         } catch (error) {
-          this.logger.warn(`Error copiando páginas del chunk ${chunkNumber}: ${error.message}`);
+          this.logger.warn(
+            `Error copiando páginas del chunk ${chunkNumber}: ${error.message}`,
+          );
           skippedPages += validPageIndices.length;
         }
       }
-      this.logger.debug(`Copia de páginas completada en ${Date.now() - copyStartTime}ms`);
+      this.logger.debug(
+        `Copia de páginas completada en ${Date.now() - copyStartTime}ms`,
+      );
 
       // Ordenar y agregar páginas en el orden correcto
       const sortStartTime = Date.now();
@@ -1399,23 +1578,31 @@ export class ZplService {
       for (const { page } of copiedPagesWithPositions) {
         finalDoc.addPage(page);
       }
-      this.logger.debug(`Ordenamiento y agregado de ${copiedPagesWithPositions.length} páginas en ${Date.now() - sortStartTime}ms`);
+      this.logger.debug(
+        `Ordenamiento y agregado de ${copiedPagesWithPositions.length} páginas en ${Date.now() - sortStartTime}ms`,
+      );
 
       if (skippedPages > 0) {
-        this.logger.warn(`Se omitieron ${skippedPages} páginas durante la fusión`);
+        this.logger.warn(
+          `Se omitieron ${skippedPages} páginas durante la fusión`,
+        );
       }
 
       // Guardar como buffer
       const saveStartTime = Date.now();
       const pdfBytes = await finalDoc.save();
       const result = Buffer.from(pdfBytes);
-      this.logger.debug(`Guardado de PDF (${result.length} bytes) completado en ${Date.now() - saveStartTime}ms`);
+      this.logger.debug(
+        `Guardado de PDF (${result.length} bytes) completado en ${Date.now() - saveStartTime}ms`,
+      );
 
       if (!result || result.length === 0) {
         throw new Error('El PDF resultante está vacío');
       }
 
-      this.logger.log(`Fusión de PDF completada: ${originalSequence.length} páginas en ${Date.now() - startTime}ms`);
+      this.logger.log(
+        `Fusión de PDF completada: ${originalSequence.length} páginas en ${Date.now() - startTime}ms`,
+      );
       return result;
     } catch (error) {
       this.logger.error(`Error al fusionar PDFs: ${error.message}`);
@@ -1448,7 +1635,11 @@ export class ZplService {
 
     // Conservar el nombre original es feature premium: solo Pro/Pro Max/Enterprise.
     // Free y Lite usan el formato estándar zplpdf_size_timestamp.
-    if (originalFilename && userPlan && PLAN_FEATURES[userPlan as PlanType]?.preservesOriginalFilename) {
+    if (
+      originalFilename &&
+      userPlan &&
+      PLAN_FEATURES[userPlan as PlanType]?.preservesOriginalFilename
+    ) {
       // Remover extensión original (.zpl, .txt, etc) y agregar la nueva
       const baseName = originalFilename.replace(/\.(zpl|txt|ZPL|TXT)$/i, '');
       return {
@@ -1458,9 +1649,14 @@ export class ZplService {
     }
 
     // Para usuarios Free, usar formato estándar zplpdf_size_timestamp
-    const size = this.LABEL_SIZE_NORMALIZE_MAP[labelSize.toLowerCase()] ?? labelSize;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14);
-    const formatSuffix = outputFormat !== OutputFormat.PDF ? `_${outputFormat}` : '';
+    const size =
+      this.LABEL_SIZE_NORMALIZE_MAP[labelSize.toLowerCase()] ?? labelSize;
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, '')
+      .slice(0, 14);
+    const formatSuffix =
+      outputFormat !== OutputFormat.PDF ? `_${outputFormat}` : '';
     return {
       storageFilename,
       downloadFilename: `zplpdf_${size}${formatSuffix}_${timestamp}.${fileExtension}`,
@@ -1473,7 +1669,10 @@ export class ZplService {
    * @param downloadFilename Nombre del archivo para descarga (opcional, usa storageFilename si no se proporciona)
    * @returns URL firmada con tiempo de expiración
    */
-  public async generateSignedUrl(storageFilename: string, downloadFilename?: string): Promise<string> {
+  public async generateSignedUrl(
+    storageFilename: string,
+    downloadFilename?: string,
+  ): Promise<string> {
     try {
       const filename = downloadFilename || storageFilename;
       const options = {
@@ -1502,7 +1701,9 @@ export class ZplService {
    * @returns LabelSize enum value
    */
   private getLabelSize(labelSize: string): LabelSize {
-    return this.LABEL_SIZE_ENUM_MAP[labelSize.toLowerCase()] ?? LabelSize.TWO_BY_ONE;
+    return (
+      this.LABEL_SIZE_ENUM_MAP[labelSize.toLowerCase()] ?? LabelSize.TWO_BY_ONE
+    );
   }
 
   /**
@@ -1521,25 +1722,28 @@ export class ZplService {
     try {
       // Extraer y normalizar bloques ZPL
       const parsedBlocks = this.splitAndExtractCopies(zplContent);
-      
+
       if (parsedBlocks.length === 0) {
         throw new HttpException(
           'No se encontraron etiquetas válidas en el contenido ZPL',
-          HttpStatus.BAD_REQUEST
+          HttpStatus.BAD_REQUEST,
         );
       }
 
       // Calcular totales
       const totalUniqueLabels = parsedBlocks.length;
-      const totalLabels = parsedBlocks.reduce((sum, block) => sum + block.copies, 0);
+      const totalLabels = parsedBlocks.reduce(
+        (sum, block) => sum + block.copies,
+        0,
+      );
 
       return {
         success: true,
         message: 'Conteo de etiquetas realizado exitosamente',
         data: {
           totalUniqueLabels,
-          totalLabels
-        }
+          totalLabels,
+        },
       };
     } catch (error) {
       if (error instanceof HttpException) {
@@ -1547,7 +1751,7 @@ export class ZplService {
       }
       throw new HttpException(
         'Error al contar las etiquetas ZPL',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -1558,10 +1762,16 @@ export class ZplService {
    * @param labelSize Tamaño de la etiqueta
    * @returns Buffer de la imagen PNG
    */
-  private async getSingleLabelaryPngImage(zplContent: string, labelSize: LabelSize): Promise<Buffer> {
+  private async getSingleLabelaryPngImage(
+    zplContent: string,
+    labelSize: LabelSize,
+  ): Promise<Buffer> {
     try {
       this.logger.debug(`Enviando solicitud a Labelary para una etiqueta PNG`);
-      return await this.labelaryQueueService.enqueuePngDirect(zplContent, labelSize);
+      return await this.labelaryQueueService.enqueuePngDirect(
+        zplContent,
+        labelSize,
+      );
     } catch (error) {
       this.logger.error(`Error en Labelary API (PNG): ${error.message}`);
       throw error;
@@ -1574,27 +1784,32 @@ export class ZplService {
    * @param labelSize Tamaño de la etiqueta
    * @returns Array de buffers PNG
    */
-  private async getLabelaryPngImages(zplContent: string, labelSize: LabelSize): Promise<Buffer[]> {
+  private async getLabelaryPngImages(
+    zplContent: string,
+    labelSize: LabelSize,
+  ): Promise<Buffer[]> {
     try {
       // Extraer etiquetas individuales
       const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
       if (!labelMatches) {
         throw new HttpException(
           'No se encontraron etiquetas válidas en el contenido ZPL',
-          HttpStatus.BAD_REQUEST
+          HttpStatus.BAD_REQUEST,
         );
       }
 
-      this.logger.debug(`Procesando ${labelMatches.length} etiquetas individuales`);
-      
-      // Procesar cada etiqueta individualmente
-      const pngPromises = labelMatches.map(label => 
-        this.getSingleLabelaryPngImage(label, labelSize)
+      this.logger.debug(
+        `Procesando ${labelMatches.length} etiquetas individuales`,
       );
-      
+
+      // Procesar cada etiqueta individualmente
+      const pngPromises = labelMatches.map((label) =>
+        this.getSingleLabelaryPngImage(label, labelSize),
+      );
+
       // Esperar a que todas las solicitudes se completen
       const pngBuffers = await Promise.all(pngPromises);
-      
+
       this.logger.debug(`Imágenes PNG obtenidas: ${pngBuffers.length}`);
       return pngBuffers;
     } catch (error) {
@@ -1602,7 +1817,7 @@ export class ZplService {
       if (error instanceof HttpException) throw error;
       throw new HttpException(
         'Error al obtener imágenes de Labelary API',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -1613,14 +1828,17 @@ export class ZplService {
    * @param labelSize Tamaño de la etiqueta
    * @returns Array de objetos con imagen y cantidad de cada etiqueta única
    */
-  async getLabelsPreview(zplContent: string, labelSize: LabelSize): Promise<ZplPreviewItemDto[]> {
+  async getLabelsPreview(
+    zplContent: string,
+    labelSize: LabelSize,
+  ): Promise<ZplPreviewItemDto[]> {
     try {
       // 1. Extraer etiquetas individuales (separar por ^XA...^XZ)
       const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
       if (!labelMatches) {
         throw new HttpException(
           'No se encontraron etiquetas válidas en el contenido ZPL',
-          HttpStatus.BAD_REQUEST
+          HttpStatus.BAD_REQUEST,
         );
       }
 
@@ -1631,7 +1849,7 @@ export class ZplService {
       for (const label of labelMatches) {
         let normalized = label
           .replace(/[\r\n]+/g, '') // Eliminar saltos de línea
-          .replace(/\s+/g, ' ')    // Normalizar espacios
+          .replace(/\s+/g, ' ') // Normalizar espacios
           .trim();
 
         // Extraer y eliminar ^PQ para contar copias
@@ -1643,14 +1861,21 @@ export class ZplService {
         if (!normalized.startsWith('^XA')) normalized = '^XA' + normalized;
         if (!normalized.endsWith('^XZ')) normalized += '^XZ';
 
-        uniqueLabels.set(normalized, (uniqueLabels.get(normalized) || 0) + copies);
+        uniqueLabels.set(
+          normalized,
+          (uniqueLabels.get(normalized) || 0) + copies,
+        );
         if (!normalizedLabels.includes(normalized)) {
           normalizedLabels.push(normalized);
         }
       }
 
-      this.logger.debug(`Total de etiquetas encontradas: ${labelMatches.length}`);
-      this.logger.debug(`Total de etiquetas únicas: ${normalizedLabels.length}`);
+      this.logger.debug(
+        `Total de etiquetas encontradas: ${labelMatches.length}`,
+      );
+      this.logger.debug(
+        `Total de etiquetas únicas: ${normalizedLabels.length}`,
+      );
 
       // 3. Procesar etiquetas y generar previsualizaciones
       const labelPreviews: ZplPreviewItemDto[] = [];
@@ -1669,14 +1894,18 @@ export class ZplService {
         }
       }
 
-      this.logger.debug(`Total de previsualizaciones generadas: ${labelPreviews.length}`);
+      this.logger.debug(
+        `Total de previsualizaciones generadas: ${labelPreviews.length}`,
+      );
       return labelPreviews;
     } catch (error) {
-      this.logger.error(`Error al obtener previsualizaciones: ${error.message}`);
+      this.logger.error(
+        `Error al obtener previsualizaciones: ${error.message}`,
+      );
       if (error instanceof HttpException) throw error;
       throw new HttpException(
         'Error al generar previsualizaciones de etiquetas',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -1692,7 +1921,10 @@ export class ZplService {
     labelSize: LabelSize,
   ): Promise<{ image: string }> {
     try {
-      const buffer = await this.getSingleLabelaryPngImage(zplContent, labelSize);
+      const buffer = await this.getSingleLabelaryPngImage(
+        zplContent,
+        labelSize,
+      );
 
       return {
         image: `data:image/png;base64,${buffer.toString('base64')}`,
@@ -1735,7 +1967,10 @@ export class ZplService {
           userId,
           null,
           ErrorCodes.USER_NOT_FOUND,
-          { error: ErrorCodes.USER_NOT_FOUND, message: 'Usuario no encontrado' },
+          {
+            error: ErrorCodes.USER_NOT_FOUND,
+            message: 'Usuario no encontrado',
+          },
           HttpStatus.NOT_FOUND,
           { fileCount: files.length },
         );
@@ -1771,7 +2006,10 @@ export class ZplService {
           {
             error: ErrorCodes.BATCH_LIMIT_EXCEEDED,
             message: `Excedes el límite de ${planLimits.maxFilesPerBatch} archivos por batch`,
-            data: { maxFiles: planLimits.maxFilesPerBatch, requestedFiles: files.length },
+            data: {
+              maxFiles: planLimits.maxFilesPerBatch,
+              requestedFiles: files.length,
+            },
           },
           HttpStatus.FORBIDDEN,
           { plan: effectivePlan },
@@ -1789,7 +2027,11 @@ export class ZplService {
             {
               error: ErrorCodes.FILE_TOO_LARGE,
               message: `El archivo ${file.fileName} excede el límite de ${planLimits.maxFileSizeBytes / (1024 * 1024)}MB`,
-              data: { fileName: file.fileName, size: fileSize, maxSize: planLimits.maxFileSizeBytes },
+              data: {
+                fileName: file.fileName,
+                size: fileSize,
+                maxSize: planLimits.maxFileSizeBytes,
+              },
             },
             HttpStatus.PAYLOAD_TOO_LARGE,
             { plan: effectivePlan },
@@ -1804,14 +2046,19 @@ export class ZplService {
           const countResult = await this.countLabels(file.content);
           totalLabels += countResult.data.totalLabels;
         } catch (error) {
-          this.logger.warn(`Error contando labels en ${file.fileName}: ${error.message}`);
+          this.logger.warn(
+            `Error contando labels en ${file.fileName}: ${error.message}`,
+          );
           // Asumir al menos 1 label si hay error
           totalLabels += 1;
         }
       }
 
       // Verificar límites de usuario
-      const userLimits = await this.usersService.checkCanConvert(userId, totalLabels);
+      const userLimits = await this.usersService.checkCanConvert(
+        userId,
+        totalLabels,
+      );
       if (!userLimits.allowed) {
         throw await this.batchRejection(
           userId,
@@ -1868,7 +2115,14 @@ export class ZplService {
       }));
 
       // Iniciar procesamiento asíncrono
-      this.processBatchFiles(batchId, files, batchJobs, labelSize, outputFormat, userLimits.periodInfo);
+      this.processBatchFiles(
+        batchId,
+        files,
+        batchJobs,
+        labelSize,
+        outputFormat,
+        userLimits.periodInfo,
+      );
 
       return { batchId, jobs: jobsMapping };
     } catch (error) {
@@ -1921,14 +2175,21 @@ export class ZplService {
         const countResult = await this.countLabels(file.content);
         labelCount = countResult.data.totalLabels;
       } catch (error) {
-        this.logger.warn(`Error contando labels en ${file.fileName}: ${error.message}`);
+        this.logger.warn(
+          `Error contando labels en ${file.fileName}: ${error.message}`,
+        );
       }
 
       try {
         // Actualizar estado a procesando
         job.status = 'processing';
         job.progress = 10;
-        await this.updateBatchJobProgress(batchId, jobs, completedCount, failedCount);
+        await this.updateBatchJobProgress(
+          batchId,
+          jobs,
+          completedCount,
+          failedCount,
+        );
 
         // Convertir el archivo
         let resultBuffer: Buffer;
@@ -1936,7 +2197,13 @@ export class ZplService {
         let fileExtension: string;
 
         if (outputFormat === 'pdf') {
-          resultBuffer = await this.convertZplToPdf(file.content, size, job.jobId, userId || 'batch', userPlan);
+          resultBuffer = await this.convertZplToPdf(
+            file.content,
+            size,
+            job.jobId,
+            userId || 'batch',
+            userPlan,
+          );
           contentType = 'application/pdf';
           fileExtension = 'pdf';
         } else {
@@ -1954,7 +2221,10 @@ export class ZplService {
 
         // Guardar archivo temporal en GCS
         const tempPath = `batches/${batchId}/temp/${job.jobId}.${fileExtension}`;
-        await this.storage.bucket(this.bucket).file(tempPath).save(resultBuffer, { contentType });
+        await this.storage
+          .bucket(this.bucket)
+          .file(tempPath)
+          .save(resultBuffer, { contentType });
 
         // Marcar como completado
         job.status = 'completed';
@@ -1976,9 +2246,13 @@ export class ZplService {
           );
         }
 
-        this.logger.log(`Batch ${batchId}: Archivo ${file.fileName} completado`);
+        this.logger.log(
+          `Batch ${batchId}: Archivo ${file.fileName} completado`,
+        );
       } catch (error) {
-        this.logger.error(`Batch ${batchId}: Error procesando ${file.fileName}: ${error.message}`);
+        this.logger.error(
+          `Batch ${batchId}: Error procesando ${file.fileName}: ${error.message}`,
+        );
         job.status = 'failed';
         job.error = error.message;
         failedCount++;
@@ -1997,16 +2271,29 @@ export class ZplService {
               periodInfo,
             );
           } catch (recordError) {
-            this.logger.error(`Error registrando conversión fallida: ${recordError.message}`);
+            this.logger.error(
+              `Error registrando conversión fallida: ${recordError.message}`,
+            );
           }
         }
       }
 
-      await this.updateBatchJobProgress(batchId, jobs, completedCount, failedCount);
+      await this.updateBatchJobProgress(
+        batchId,
+        jobs,
+        completedCount,
+        failedCount,
+      );
     }
 
     // Finalizar el batch
-    await this.finalizeBatch(batchId, jobs, completedCount, failedCount, outputFormat);
+    await this.finalizeBatch(
+      batchId,
+      jobs,
+      completedCount,
+      failedCount,
+      outputFormat,
+    );
   }
 
   /**
@@ -2036,7 +2323,9 @@ export class ZplService {
     outputFormat: 'pdf' | 'png' | 'jpeg',
   ): Promise<void> {
     try {
-      const completedJobs = jobs.filter((j) => j.status === 'completed' && j.tempStoragePath);
+      const completedJobs = jobs.filter(
+        (j) => j.status === 'completed' && j.tempStoragePath,
+      );
 
       if (completedJobs.length === 0) {
         await this.firestoreService.updateBatchJob(batchId, {
@@ -2049,10 +2338,17 @@ export class ZplService {
       }
 
       // Crear ZIP con todos los archivos completados
-      const zipBuffer = await this.createBatchZip(batchId, completedJobs, outputFormat);
+      const zipBuffer = await this.createBatchZip(
+        batchId,
+        completedJobs,
+        outputFormat,
+      );
 
       // Guardar ZIP en GCS
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, 14);
+      const timestamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '')
+        .slice(0, 14);
       const zipFilename = `zpl-batch-${timestamp}.zip`;
       const zipPath = `batches/${batchId}/${zipFilename}`;
 
@@ -2126,16 +2422,21 @@ export class ZplService {
         if (!job.tempStoragePath) continue;
 
         try {
-          const file = this.storage.bucket(this.bucket).file(job.tempStoragePath);
+          const file = this.storage
+            .bucket(this.bucket)
+            .file(job.tempStoragePath);
           const [fileBuffer] = await file.download();
 
           // Determinar extensión según el formato
           const extension = outputFormat === 'pdf' ? 'pdf' : 'zip';
-          const fileName = job.fileName.replace(/\.(zpl|txt)$/i, '') + `.${extension}`;
+          const fileName =
+            job.fileName.replace(/\.(zpl|txt)$/i, '') + `.${extension}`;
 
           archive.append(fileBuffer, { name: fileName });
         } catch (error) {
-          this.logger.error(`Error agregando archivo ${job.fileName} al ZIP: ${error.message}`);
+          this.logger.error(
+            `Error agregando archivo ${job.fileName} al ZIP: ${error.message}`,
+          );
         }
       }
 
@@ -2146,16 +2447,25 @@ export class ZplService {
   /**
    * Limpia los archivos temporales de un batch
    */
-  private async cleanupBatchTempFiles(batchId: string, jobs: BatchFileJob[]): Promise<void> {
+  private async cleanupBatchTempFiles(
+    batchId: string,
+    jobs: BatchFileJob[],
+  ): Promise<void> {
     try {
       for (const job of jobs) {
         if (job.tempStoragePath) {
-          await this.storage.bucket(this.bucket).file(job.tempStoragePath).delete().catch(() => {});
+          await this.storage
+            .bucket(this.bucket)
+            .file(job.tempStoragePath)
+            .delete()
+            .catch(() => {});
         }
       }
       this.logger.log(`Archivos temporales del batch ${batchId} eliminados`);
     } catch (error) {
-      this.logger.warn(`Error limpiando archivos temporales del batch ${batchId}: ${error.message}`);
+      this.logger.warn(
+        `Error limpiando archivos temporales del batch ${batchId}: ${error.message}`,
+      );
     }
   }
 
@@ -2165,7 +2475,10 @@ export class ZplService {
    * @param userId ID del usuario
    * @returns Estado del batch con todos los jobs
    */
-  async getBatchStatus(batchId: string, userId: string): Promise<{
+  async getBatchStatus(
+    batchId: string,
+    userId: string,
+  ): Promise<{
     batchId: string;
     status: string;
     totalFiles: number;
@@ -2177,7 +2490,11 @@ export class ZplService {
 
     if (!batch) {
       throw new HttpException(
-        { error: ErrorCodes.BATCH_NOT_FOUND, message: 'Batch no encontrado', data: { batchId } },
+        {
+          error: ErrorCodes.BATCH_NOT_FOUND,
+          message: 'Batch no encontrado',
+          data: { batchId },
+        },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -2185,7 +2502,10 @@ export class ZplService {
     // Validar propiedad del recurso
     if (batch.userId !== userId) {
       throw new HttpException(
-        { error: ErrorCodes.ACCESS_DENIED, message: 'No tienes acceso a este recurso' },
+        {
+          error: ErrorCodes.ACCESS_DENIED,
+          message: 'No tienes acceso a este recurso',
+        },
         HttpStatus.FORBIDDEN,
       );
     }
@@ -2223,7 +2543,11 @@ export class ZplService {
 
     if (!batch) {
       throw new HttpException(
-        { error: ErrorCodes.BATCH_NOT_FOUND, message: 'Batch no encontrado', data: { batchId } },
+        {
+          error: ErrorCodes.BATCH_NOT_FOUND,
+          message: 'Batch no encontrado',
+          data: { batchId },
+        },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -2248,7 +2572,10 @@ export class ZplService {
    * @param batchId ID del batch
    * @returns URL de descarga y metadata
    */
-  async getBatchDownload(batchId: string, userId: string): Promise<{
+  async getBatchDownload(
+    batchId: string,
+    userId: string,
+  ): Promise<{
     url: string;
     filename: string;
     expiresAt: string;
@@ -2257,7 +2584,11 @@ export class ZplService {
 
     if (!batch) {
       throw new HttpException(
-        { error: ErrorCodes.BATCH_NOT_FOUND, message: 'Batch no encontrado', data: { batchId } },
+        {
+          error: ErrorCodes.BATCH_NOT_FOUND,
+          message: 'Batch no encontrado',
+          data: { batchId },
+        },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -2265,21 +2596,32 @@ export class ZplService {
     // Validar propiedad del recurso
     if (batch.userId !== userId) {
       throw new HttpException(
-        { error: ErrorCodes.ACCESS_DENIED, message: 'No tienes acceso a este recurso' },
+        {
+          error: ErrorCodes.ACCESS_DENIED,
+          message: 'No tienes acceso a este recurso',
+        },
         HttpStatus.FORBIDDEN,
       );
     }
 
     if (batch.status === 'processing') {
       throw new HttpException(
-        { error: ErrorCodes.BATCH_PROCESSING, message: 'El batch aún está procesándose', data: { batchId, currentStatus: batch.status } },
+        {
+          error: ErrorCodes.BATCH_PROCESSING,
+          message: 'El batch aún está procesándose',
+          data: { batchId, currentStatus: batch.status },
+        },
         HttpStatus.BAD_REQUEST,
       );
     }
 
     if (!batch.downloadUrl || !batch.zipFilename) {
       throw new HttpException(
-        { error: ErrorCodes.DOWNLOAD_NOT_AVAILABLE, message: 'No hay archivos disponibles para descargar', data: { batchId } },
+        {
+          error: ErrorCodes.DOWNLOAD_NOT_AVAILABLE,
+          message: 'No hay archivos disponibles para descargar',
+          data: { batchId },
+        },
         HttpStatus.NOT_FOUND,
       );
     }
@@ -2287,7 +2629,9 @@ export class ZplService {
     // Regenerar URL firmada si es necesario
     const zipPath = `batches/${batchId}/${batch.zipFilename}`;
     const freshUrl = await this.generateSignedUrl(zipPath, batch.zipFilename);
-    const expiresAt = new Date(Date.now() + this.URL_EXPIRATION_TIME).toISOString();
+    const expiresAt = new Date(
+      Date.now() + this.URL_EXPIRATION_TIME,
+    ).toISOString();
 
     return {
       url: freshUrl,
@@ -2295,4 +2639,4 @@ export class ZplService {
       expiresAt,
     };
   }
-} 
+}

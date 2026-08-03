@@ -6,26 +6,54 @@
 // ============== Email Types ==============
 
 // Onboarding emails
-export type OnboardingEmailType = 'welcome' | 'tutorial' | 'help' | 'success_story' | 'miss_you';
+export type OnboardingEmailType =
+  | 'welcome'
+  | 'tutorial'
+  | 'help'
+  | 'success_story'
+  | 'miss_you';
 
 // Conversion emails (limit-based for FREE users)
-export type ConversionEmailType = 'limit_80_percent' | 'limit_100_percent' | 'conversion_blocked' | 'high_usage';
+export type ConversionEmailType =
+  | 'limit_80_percent'
+  | 'limit_100_percent'
+  | 'conversion_blocked'
+  | 'high_usage';
 
 // Retention emails (for PRO users)
-export type RetentionEmailType = 'pro_inactive_7_days' | 'pro_inactive_14_days' | 'pro_inactive_30_days' | 'pro_power_user';
+export type RetentionEmailType =
+  | 'pro_inactive_7_days'
+  | 'pro_inactive_14_days'
+  | 'pro_inactive_30_days'
+  | 'pro_power_user';
 
 // Payment notification emails
 export type PaymentEmailType = 'payment_failed' | 'subscription_downgraded';
 
 // Reactivation emails (for inactive FREE users)
-export type ReactivationEmailType = 'free_never_used_7d' | 'free_never_used_14d' | 'free_tried_abandoned' | 'free_dormant_30d' | 'free_abandoned_60d';
+export type ReactivationEmailType =
+  | 'free_never_used_7d'
+  | 'free_never_used_14d'
+  | 'free_tried_abandoned'
+  | 'free_dormant_30d'
+  | 'free_abandoned_60d';
 
 // All email types
-export type EmailType = OnboardingEmailType | ConversionEmailType | RetentionEmailType | ReactivationEmailType | PaymentEmailType;
+export type EmailType =
+  | OnboardingEmailType
+  | ConversionEmailType
+  | RetentionEmailType
+  | ReactivationEmailType
+  | PaymentEmailType;
 
 export type EmailStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
 
-export type EmailEventType = 'delivered' | 'opened' | 'clicked' | 'bounced' | 'complained';
+export type EmailEventType =
+  | 'delivered'
+  | 'opened'
+  | 'clicked'
+  | 'bounced'
+  | 'complained';
 
 export type AbVariant = 'A' | 'B';
 
@@ -258,7 +286,11 @@ export interface PowerUsersResponse {
 
 // ============== FREE Reactivation Interfaces ==============
 
-export type FreeInactiveSegment = 'never_used' | 'tried_abandoned' | 'dormant' | 'abandoned';
+export type FreeInactiveSegment =
+  | 'never_used'
+  | 'tried_abandoned'
+  | 'dormant'
+  | 'abandoned';
 
 export interface FreeInactiveUser {
   userId: string;
@@ -312,7 +344,11 @@ export interface FreeReactivationResult {
 
 // ============== Email Templates Admin ==============
 
-export type TemplateType = 'pro_retention' | 'free_reactivation' | 'onboarding' | 'conversion';
+export type TemplateType =
+  | 'pro_retention'
+  | 'free_reactivation'
+  | 'onboarding'
+  | 'conversion';
 
 export interface EmailTemplateContent {
   subject: string;

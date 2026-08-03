@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
-import { EnterpriseContactDto, EnterpriseContactResponseDto } from './dto/enterprise-contact.dto.js';
+import {
+  EnterpriseContactDto,
+  EnterpriseContactResponseDto,
+} from './dto/enterprise-contact.dto.js';
 
 @Injectable()
 export class ContactService {
@@ -28,7 +31,9 @@ export class ContactService {
         message: 'Your request has been submitted. We will contact you soon.',
       };
     } catch (error) {
-      this.logger.error(`Error submitting enterprise contact: ${error.message}`);
+      this.logger.error(
+        `Error submitting enterprise contact: ${error.message}`,
+      );
       throw error;
     }
   }

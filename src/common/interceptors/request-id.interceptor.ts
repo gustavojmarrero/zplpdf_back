@@ -20,7 +20,8 @@ export class RequestIdInterceptor implements NestInterceptor {
     const response = ctx.getResponse<Response>();
 
     // Generar o usar el requestId existente (por si viene de un proxy/load balancer)
-    const requestId = (request.headers['x-request-id'] as string) || this.generateRequestId();
+    const requestId =
+      (request.headers['x-request-id'] as string) || this.generateRequestId();
 
     // Agregar al request para que esté disponible en los controllers y servicios
     request.headers['x-request-id'] = requestId;

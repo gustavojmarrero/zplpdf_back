@@ -80,7 +80,9 @@ async function migrateTransactions() {
       starting_after: startingAfter,
     });
 
-    console.log(`📦 Procesando ${paymentIntents.data.length} payment intents...`);
+    console.log(
+      `📦 Procesando ${paymentIntents.data.length} payment intents...`,
+    );
 
     for (const pi of paymentIntents.data) {
       // Solo procesar pagos exitosos
@@ -95,13 +97,18 @@ async function migrateTransactions() {
         (pi.currency === 'mxn' && pi.amount === 19900);
 
       if (!isZplpdfTransaction) {
-        console.log(`  ⏭️  ${pi.id} no es ZPLPDF (${pi.currency.toUpperCase()} ${pi.amount / 100})`);
+        console.log(
+          `  ⏭️  ${pi.id} no es ZPLPDF (${pi.currency.toUpperCase()} ${pi.amount / 100})`,
+        );
         totalSkipped++;
         continue;
       }
 
       // Verificar si ya existe - si existe pero no tiene billingCountry, actualizar
-      const existingDoc = await db.collection('stripe_transactions').doc(pi.id).get();
+      const existingDoc = await db
+        .collection('stripe_transactions')
+        .doc(pi.id)
+        .get();
       if (existingDoc.exists) {
         const existingData = existingDoc.data();
         if (existingData?.billingCountry) {
@@ -120,7 +127,9 @@ async function migrateTransactions() {
       // Obtener del payment method
       if (pi.payment_method) {
         try {
-          const pm = await stripe.paymentMethods.retrieve(pi.payment_method as string);
+          const pm = await stripe.paymentMethods.retrieve(
+            pi.payment_method as string,
+          );
           billingCountry = pm.card?.country || undefined;
         } catch {
           // Ignorar error, intentar con charge
@@ -130,7 +139,9 @@ async function migrateTransactions() {
       // Si no hay país del PM, intentar del charge
       if (!billingCountry && pi.latest_charge) {
         try {
-          const charge = await stripe.charges.retrieve(pi.latest_charge as string);
+          const charge = await stripe.charges.retrieve(
+            pi.latest_charge as string,
+          );
           billingCountry =
             charge.billing_details?.address?.country ||
             (charge.payment_method_details as any)?.card?.country ||
@@ -169,7 +180,8 @@ async function migrateTransactions() {
 
       // Calcular amount en MXN
       const amountInUnits = pi.amount / 100;
-      const amountMxn = pi.currency === 'mxn' ? amountInUnits : amountInUnits * exchangeRate;
+      const amountMxn =
+        pi.currency === 'mxn' ? amountInUnits : amountInUnits * exchangeRate;
 
       const transaction: StripeTransaction = {
         id: pi.id,
@@ -197,7 +209,8 @@ async function migrateTransactions() {
       };
 
       if (transaction.userId) docData.userId = transaction.userId;
-      if (transaction.billingCountry) docData.billingCountry = transaction.billingCountry;
+      if (transaction.billingCountry)
+        docData.billingCountry = transaction.billingCountry;
 
       await db.collection('stripe_transactions').doc(pi.id).set(docData);
 

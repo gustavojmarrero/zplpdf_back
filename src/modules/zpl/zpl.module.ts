@@ -29,6 +29,11 @@ import { GoogleAuthProvider } from '../../config/google-auth.provider.js';
     LabelaryAnalyticsService,
     GoogleAuthProvider,
   ],
-  exports: [ZplService, ZplValidatorService, LabelaryAnalyticsService, LabelaryQueueService],
+  exports: [
+    ZplService,
+    ZplValidatorService,
+    LabelaryAnalyticsService,
+    LabelaryQueueService,
+  ],
 })
 export class ZplModule {}

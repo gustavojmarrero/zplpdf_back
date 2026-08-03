@@ -16,7 +16,8 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 // Initialize Firebase Admin
-const credentials = process.env.FIREBASE_CREDENTIALS || process.env.GOOGLE_CREDENTIALS;
+const credentials =
+  process.env.FIREBASE_CREDENTIALS || process.env.GOOGLE_CREDENTIALS;
 if (!credentials) {
   console.error('ERROR: FIREBASE_CREDENTIALS or GOOGLE_CREDENTIALS not set');
   process.exit(1);
@@ -43,7 +44,7 @@ const TEMPLATES = [
     variables: ['userName', 'displayName', 'daysInactive', 'appUrl'],
     content: {
       en: {
-        subject: 'We noticed you haven\'t converted labels recently',
+        subject: "We noticed you haven't converted labels recently",
         body: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Hi {userName},</h2>
           <p>We noticed it's been {daysInactive} days since your last label conversion on ZPLPDF.</p>
@@ -207,10 +208,17 @@ const TEMPLATES = [
     templateType: 'free_reactivation',
     templateKey: 'free_never_used_7d',
     name: 'FREE Reactivation - Never Used (7 Days)',
-    description: 'Email for FREE users who registered 7+ days ago but never converted',
+    description:
+      'Email for FREE users who registered 7+ days ago but never converted',
     triggerDays: 7,
     enabled: true,
-    variables: ['userName', 'displayName', 'daysSinceRegistration', 'pdfsAvailable', 'appUrl'],
+    variables: [
+      'userName',
+      'displayName',
+      'daysSinceRegistration',
+      'pdfsAvailable',
+      'appUrl',
+    ],
     content: {
       en: {
         subject: '{userName}, your ZPLPDF account is waiting',
@@ -263,10 +271,17 @@ const TEMPLATES = [
     templateType: 'free_reactivation',
     templateKey: 'free_never_used_14d',
     name: 'FREE Reactivation - Never Used (14 Days)',
-    description: 'Email for FREE users who registered 14+ days ago but never converted',
+    description:
+      'Email for FREE users who registered 14+ days ago but never converted',
     triggerDays: 14,
     enabled: true,
-    variables: ['userName', 'displayName', 'daysSinceRegistration', 'pdfsAvailable', 'appUrl'],
+    variables: [
+      'userName',
+      'displayName',
+      'daysSinceRegistration',
+      'pdfsAvailable',
+      'appUrl',
+    ],
     content: {
       en: {
         subject: 'Still waiting to see your first label, {userName}',
@@ -322,10 +337,18 @@ const TEMPLATES = [
     templateType: 'free_reactivation',
     templateKey: 'free_tried_abandoned',
     name: 'FREE Reactivation - Tried & Abandoned',
-    description: 'Email for FREE users who converted 1-3 PDFs then stopped (14+ days inactive)',
+    description:
+      'Email for FREE users who converted 1-3 PDFs then stopped (14+ days inactive)',
     triggerDays: 14,
     enabled: true,
-    variables: ['userName', 'displayName', 'daysInactive', 'pdfCount', 'pdfsAvailable', 'appUrl'],
+    variables: [
+      'userName',
+      'displayName',
+      'daysInactive',
+      'pdfCount',
+      'pdfsAvailable',
+      'appUrl',
+    ],
     content: {
       en: {
         subject: 'Your labels miss you, {userName}',
@@ -369,13 +392,22 @@ const TEMPLATES = [
     templateType: 'free_reactivation',
     templateKey: 'free_dormant_30d',
     name: 'FREE Reactivation - Dormant (30 Days)',
-    description: 'Email for FREE users with >3 PDFs who have been inactive for 30+ days',
+    description:
+      'Email for FREE users with >3 PDFs who have been inactive for 30+ days',
     triggerDays: 30,
     enabled: true,
-    variables: ['userName', 'displayName', 'daysInactive', 'pdfCount', 'labelCount', 'appUrl', 'upgradeUrl'],
+    variables: [
+      'userName',
+      'displayName',
+      'daysInactive',
+      'pdfCount',
+      'labelCount',
+      'appUrl',
+      'upgradeUrl',
+    ],
     content: {
       en: {
-        subject: 'A month without labels? Let\'s fix that, {userName}',
+        subject: "A month without labels? Let's fix that, {userName}",
         body: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Hi {userName},</h2>
           <p>It's been {daysInactive} days since your last conversion. In that time, you've helped convert {labelCount} labels!</p>
@@ -431,10 +463,16 @@ const TEMPLATES = [
     description: 'Last chance email for FREE users inactive for 60+ days',
     triggerDays: 60,
     enabled: true,
-    variables: ['userName', 'displayName', 'daysInactive', 'appUrl', 'upgradeUrl'],
+    variables: [
+      'userName',
+      'displayName',
+      'daysInactive',
+      'appUrl',
+      'upgradeUrl',
+    ],
     content: {
       en: {
-        subject: 'It\'s been a while, {userName}. Your account is still here!',
+        subject: "It's been a while, {userName}. Your account is still here!",
         body: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2>Hi {userName},</h2>
           <p>We noticed it's been {daysInactive} days since you last used ZPLPDF.</p>

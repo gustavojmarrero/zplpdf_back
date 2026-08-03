@@ -25,7 +25,12 @@ export class BillingController {
 
   @Get('invoices')
   @ApiOperation({ summary: 'Get user invoices from Stripe' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max invoices to return (default: 10)' })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Max invoices to return (default: 10)',
+  })
   @ApiResponse({
     status: 200,
     description: 'List of invoices',

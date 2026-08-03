@@ -20,7 +20,9 @@ export class BillingService {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
 
     if (!stripeSecretKey) {
-      this.logger.warn('Stripe secret key not configured. Billing features disabled.');
+      this.logger.warn(
+        'Stripe secret key not configured. Billing features disabled.',
+      );
       return;
     }
 
@@ -62,7 +64,9 @@ export class BillingService {
         hasMore: invoices.has_more,
       };
     } catch (error) {
-      this.logger.error(`Error fetching invoices for user ${userId}: ${error.message}`);
+      this.logger.error(
+        `Error fetching invoices for user ${userId}: ${error.message}`,
+      );
       throw new BadRequestException('Failed to fetch invoices');
     }
   }
@@ -79,7 +83,9 @@ export class BillingService {
     }
 
     try {
-      const customer = await this.stripe.customers.retrieve(user.stripeCustomerId);
+      const customer = await this.stripe.customers.retrieve(
+        user.stripeCustomerId,
+      );
 
       if (customer.deleted) {
         return { paymentMethods: [], defaultPaymentMethodId: null };
@@ -88,7 +94,8 @@ export class BillingService {
       // Cast to Customer type since we verified it's not deleted
       const activeCustomer = customer as Stripe.Customer;
       const defaultPmId =
-        typeof activeCustomer.invoice_settings?.default_payment_method === 'string'
+        typeof activeCustomer.invoice_settings?.default_payment_method ===
+        'string'
           ? activeCustomer.invoice_settings.default_payment_method
           : activeCustomer.invoice_settings?.default_payment_method?.id || null;
 
@@ -116,12 +123,16 @@ export class BillingService {
         defaultPaymentMethodId: defaultPmId,
       };
     } catch (error) {
-      this.logger.error(`Error fetching payment methods for user ${userId}: ${error.message}`);
+      this.logger.error(
+        `Error fetching payment methods for user ${userId}: ${error.message}`,
+      );
       throw new BadRequestException('Failed to fetch payment methods');
     }
   }
 
-  async getSubscription(userId: string): Promise<SubscriptionResponseDto | null> {
+  async getSubscription(
+    userId: string,
+  ): Promise<SubscriptionResponseDto | null> {
     if (!this.stripe) {
       throw new BadRequestException('Billing system not configured');
     }
@@ -133,7 +144,9 @@ export class BillingService {
     }
 
     try {
-      const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId) as Stripe.Subscription;
+      const subscription = (await this.stripe.subscriptions.retrieve(
+        user.stripeSubscriptionId,
+      )) as Stripe.Subscription;
       const subscriptionItem = subscription.items.data[0];
       const price = subscriptionItem?.price;
 
@@ -141,7 +154,8 @@ export class BillingService {
         id: subscription.id,
         status: subscription.status,
         plan: user.plan || 'free',
-        currentPeriodStart: subscriptionItem?.current_period_start || subscription.start_date,
+        currentPeriodStart:
+          subscriptionItem?.current_period_start || subscription.start_date,
         currentPeriodEnd: subscriptionItem?.current_period_end || null,
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
         canceledAt: subscription.canceled_at,
@@ -150,7 +164,9 @@ export class BillingService {
         interval: price?.recurring?.interval || null,
       };
     } catch (error) {
-      this.logger.error(`Error fetching subscription for user ${userId}: ${error.message}`);
+      this.logger.error(
+        `Error fetching subscription for user ${userId}: ${error.message}`,
+      );
       // If subscription not found in Stripe, return null
       if (error.code === 'resource_missing') {
         return null;

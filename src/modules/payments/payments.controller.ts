@@ -43,7 +43,9 @@ export class PaymentsController {
     @CurrentUser() user: FirebaseUser,
     @Body() dto: CreateCheckoutDto,
   ): Promise<CheckoutResponseDto> {
-    const successUrl = dto.successUrl || 'https://zplpdf.com/success?session_id={CHECKOUT_SESSION_ID}';
+    const successUrl =
+      dto.successUrl ||
+      'https://zplpdf.com/success?session_id={CHECKOUT_SESSION_ID}';
     const cancelUrl = dto.cancelUrl || 'https://zplpdf.com/pricing';
 
     return this.paymentsService.createCheckoutSession(

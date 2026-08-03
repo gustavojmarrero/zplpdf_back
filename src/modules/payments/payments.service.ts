@@ -1,12 +1,24 @@
-import { Injectable, Logger, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
-import { CheckoutResponseDto, PortalResponseDto } from './dto/create-checkout.dto.js';
+import {
+  CheckoutResponseDto,
+  PortalResponseDto,
+} from './dto/create-checkout.dto.js';
 import { GA4Service } from '../analytics/ga4.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import { EmailService } from '../email/email.service.js';
-import type { StripeTransaction, SubscriptionEvent } from '../../common/interfaces/finance.interface.js';
+import type {
+  StripeTransaction,
+  SubscriptionEvent,
+} from '../../common/interfaces/finance.interface.js';
 import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
 
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
@@ -43,10 +55,14 @@ export class PaymentsService {
           throw error;
         }
         // Exponential backoff: 1s, 2s, 4s
-        await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)),
+        );
       }
     }
-    throw new Error(`${operationName} failed after ${this.MAX_RETRIES} attempts`);
+    throw new Error(
+      `${operationName} failed after ${this.MAX_RETRIES} attempts`,
+    );
   }
 
   constructor(
@@ -61,28 +77,44 @@ export class PaymentsService {
     const nodeEnv = this.configService.get<string>('NODE_ENV');
 
     if (!stripeSecretKey) {
-      this.logger.warn('Stripe secret key not configured. Payment features disabled.');
+      this.logger.warn(
+        'Stripe secret key not configured. Payment features disabled.',
+      );
       return;
     }
 
     // Validate test vs live key based on environment
     if (nodeEnv === 'production' && stripeSecretKey.startsWith('sk_test_')) {
-      this.logger.error('CRITICAL: Using Stripe TEST key in PRODUCTION environment!');
-      throw new Error('FATAL: Using Stripe test key in production! Check STRIPE_SECRET_KEY configuration.');
+      this.logger.error(
+        'CRITICAL: Using Stripe TEST key in PRODUCTION environment!',
+      );
+      throw new Error(
+        'FATAL: Using Stripe test key in production! Check STRIPE_SECRET_KEY configuration.',
+      );
     }
 
     if (nodeEnv !== 'production' && stripeSecretKey.startsWith('sk_live_')) {
-      this.logger.warn('WARNING: Using Stripe LIVE key in non-production environment');
+      this.logger.warn(
+        'WARNING: Using Stripe LIVE key in non-production environment',
+      );
     }
 
     this.stripe = new Stripe(stripeSecretKey);
 
     this.proPriceId = this.configService.get<string>('STRIPE_PRO_PRICE_ID');
-    this.proPriceIdMxn = this.configService.get<string>('STRIPE_PRO_PRICE_ID_MXN');
-    this.promaxPriceId = this.configService.get<string>('STRIPE_PROMAX_PRICE_ID');
-    this.promaxPriceIdMxn = this.configService.get<string>('STRIPE_PROMAX_PRICE_ID_MXN');
+    this.proPriceIdMxn = this.configService.get<string>(
+      'STRIPE_PRO_PRICE_ID_MXN',
+    );
+    this.promaxPriceId = this.configService.get<string>(
+      'STRIPE_PROMAX_PRICE_ID',
+    );
+    this.promaxPriceIdMxn = this.configService.get<string>(
+      'STRIPE_PROMAX_PRICE_ID_MXN',
+    );
     this.litePriceId = this.configService.get<string>('STRIPE_LITE_PRICE_ID');
-    this.litePriceIdMxn = this.configService.get<string>('STRIPE_LITE_PRICE_ID_MXN');
+    this.litePriceIdMxn = this.configService.get<string>(
+      'STRIPE_LITE_PRICE_ID_MXN',
+    );
 
     // Validate price IDs are configured
     if (!this.proPriceId) {
@@ -125,7 +157,7 @@ export class PaymentsService {
     }
     this.logger.error(
       `CRITICAL: Unknown Stripe price ID '${priceId}' — not mapped to any plan. ` +
-      `Check STRIPE_LITE/PRO/PROMAX_PRICE_ID[_MXN] configuration. Plan NOT assigned.`,
+        `Check STRIPE_LITE/PRO/PROMAX_PRICE_ID[_MXN] configuration. Plan NOT assigned.`,
     );
     return null;
   }
@@ -181,10 +213,16 @@ export class PaymentsService {
           user.stripeSubscriptionId,
         );
 
-        if (['active', 'trialing', 'past_due'].includes(existingSubscription.status)) {
+        if (
+          ['active', 'trialing', 'past_due'].includes(
+            existingSubscription.status,
+          )
+        ) {
           // Get the current plan from the subscription
           const currentPriceId = existingSubscription.items.data[0]?.price?.id;
-          const currentPlan = currentPriceId ? this.getPlanFromPriceId(currentPriceId) : null;
+          const currentPlan = currentPriceId
+            ? this.getPlanFromPriceId(currentPriceId)
+            : null;
 
           // If trying to buy the same plan, reject
           if (currentPlan === plan) {
@@ -208,7 +246,7 @@ export class PaymentsService {
           // one. Block and direct the user to the customer portal to change/cancel first.
           throw new BadRequestException(
             `You already have an active subscription${currentPlan ? ` (${currentPlan.toUpperCase()})` : ''}. ` +
-            `To downgrade or change your plan, manage it from your account settings (customer portal).`,
+              `To downgrade or change your plan, manage it from your account settings (customer portal).`,
           );
         }
       } catch (error) {
@@ -233,17 +271,19 @@ export class PaymentsService {
         if (activeSubscriptions.data.length > 0) {
           const activeSub = activeSubscriptions.data[0];
           const activePriceId = activeSub.items.data[0]?.price?.id;
-          const activePlan = activePriceId ? this.getPlanFromPriceId(activePriceId) : null;
+          const activePlan = activePriceId
+            ? this.getPlanFromPriceId(activePriceId)
+            : null;
 
           // If user trying to buy the same plan they already have active in Stripe
           if (activePlan === plan) {
             this.logger.warn(
               `User ${userId} has active Stripe subscription ${activeSub.id} (${activePlan}) ` +
-              `but tried to create checkout for ${plan}. Blocking duplicate.`,
+                `but tried to create checkout for ${plan}. Blocking duplicate.`,
             );
             throw new BadRequestException(
               `You already have an active ${plan.toUpperCase()} subscription (${activeSub.id}). ` +
-              `Manage it from your account settings.`,
+                `Manage it from your account settings.`,
             );
           }
 
@@ -258,21 +298,23 @@ export class PaymentsService {
           if (activeSubscriptions.data.length > 1) {
             this.logger.warn(
               `User ${userId} has ${activeSubscriptions.data.length} active subscriptions in Stripe: ` +
-              activeSubscriptions.data.map(s => s.id).join(', '),
+                activeSubscriptions.data.map((s) => s.id).join(', '),
             );
           }
           this.logger.warn(
             `User ${userId} has active Stripe subscription ${activeSub.id} (${activePlan ?? 'unknown'}) ` +
-            `but tried to create checkout for ${plan}. Blocking to avoid duplicate.`,
+              `but tried to create checkout for ${plan}. Blocking to avoid duplicate.`,
           );
           throw new BadRequestException(
             `You already have an active subscription${activePlan ? ` (${activePlan.toUpperCase()})` : ''} (${activeSub.id}). ` +
-            `To downgrade or change your plan, manage it from your account settings (customer portal).`,
+              `To downgrade or change your plan, manage it from your account settings (customer portal).`,
           );
         }
       } catch (error) {
         if (error instanceof BadRequestException) throw error;
-        this.logger.error(`Failed to list subscriptions for customer ${user.stripeCustomerId}: ${error.message}`);
+        this.logger.error(
+          `Failed to list subscriptions for customer ${user.stripeCustomerId}: ${error.message}`,
+        );
         // Don't block checkout if we can't verify - log and continue
       }
     }
@@ -285,7 +327,9 @@ export class PaymentsService {
         await this.stripe.customers.retrieve(customerId);
       } catch {
         // Customer doesn't exist in current mode, create new one
-        this.logger.warn(`Customer ${customerId} not found in current Stripe mode, creating new one`);
+        this.logger.warn(
+          `Customer ${customerId} not found in current Stripe mode, creating new one`,
+        );
         customerId = null;
       }
     }
@@ -375,7 +419,9 @@ export class PaymentsService {
     }
 
     if (!user.stripeSubscriptionId) {
-      throw new BadRequestException('No active subscription to upgrade. Please subscribe first.');
+      throw new BadRequestException(
+        'No active subscription to upgrade. Please subscribe first.',
+      );
     }
 
     // Solo se permite subir a un plan ESTRICTAMENTE superior (lite→pro, lite→promax, pro→promax).
@@ -386,7 +432,9 @@ export class PaymentsService {
     }
 
     // Get current subscription to find the item ID
-    const subscription = await this.stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+    const subscription = await this.stripe.subscriptions.retrieve(
+      user.stripeSubscriptionId,
+    );
 
     if (subscription.status !== 'active') {
       throw new BadRequestException('Subscription is not active');
@@ -401,7 +449,9 @@ export class PaymentsService {
     const newPriceId = this.getPriceIdForPlan(targetPlan, user.country);
 
     if (!newPriceId) {
-      throw new BadRequestException(`${targetPlan.toUpperCase()} price not configured`);
+      throw new BadRequestException(
+        `${targetPlan.toUpperCase()} price not configured`,
+      );
     }
 
     // Update subscription with proration
@@ -420,7 +470,9 @@ export class PaymentsService {
       plan: targetPlan,
     });
 
-    this.logger.log(`User ${userId} upgraded from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}`);
+    this.logger.log(
+      `User ${userId} upgraded from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}`,
+    );
 
     return {
       success: true,
@@ -428,20 +480,22 @@ export class PaymentsService {
     };
   }
 
-  async handleCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {
+  async handleCheckoutCompleted(
+    session: Stripe.Checkout.Session,
+  ): Promise<void> {
     const userId = session.metadata?.firebaseUid;
 
     // Detailed logging for debugging
     this.logger.log(
       `Processing checkout.session.completed: session=${session.id}, ` +
-      `userId=${userId || 'MISSING'}, subscription=${session.subscription}, ` +
-      `customer=${session.customer}`,
+        `userId=${userId || 'MISSING'}, subscription=${session.subscription}, ` +
+        `customer=${session.customer}`,
     );
 
     if (!userId) {
       this.logger.error(
         `No firebaseUid in session metadata. Session: ${session.id}, ` +
-        `Customer: ${session.customer}, Email: ${session.customer_details?.email}`,
+          `Customer: ${session.customer}, Email: ${session.customer_details?.email}`,
       );
       return;
     }
@@ -450,16 +504,22 @@ export class PaymentsService {
     const user = await this.firestoreService.getUserById(userId);
 
     // Log if user already has a different subscription (indicates duplicate checkout)
-    if (user?.stripeSubscriptionId && user.stripeSubscriptionId !== subscriptionId) {
+    if (
+      user?.stripeSubscriptionId &&
+      user.stripeSubscriptionId !== subscriptionId
+    ) {
       this.logger.warn(
         `DUPLICATE CHECKOUT DETECTED: User ${userId} already has subscription ${user.stripeSubscriptionId}. ` +
-        `New subscription from checkout: ${subscriptionId}. ` +
-        `User plan: ${user.plan}. Previous subscription may be orphaned in Stripe.`,
+          `New subscription from checkout: ${subscriptionId}. ` +
+          `User plan: ${user.plan}. Previous subscription may be orphaned in Stripe.`,
       );
     }
-    const billingCountry = session.customer_details?.address?.country || undefined;
+    const billingCountry =
+      session.customer_details?.address?.country || undefined;
     const billingCity = session.customer_details?.address?.city || undefined;
-    const currency = (session.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
+    const currency = (session.currency?.toLowerCase() || 'usd') as
+      | 'usd'
+      | 'mxn';
     const amount = session.amount_total || 0;
 
     // Get plan and period from subscription
@@ -467,14 +527,19 @@ export class PaymentsService {
     let subscriptionPeriodStart: Date | undefined;
     let subscriptionPeriodEnd: Date | undefined;
     try {
-      const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
+      const subscription =
+        await this.stripe.subscriptions.retrieve(subscriptionId);
       const priceId = subscription.items.data[0]?.price?.id;
       if (priceId) {
         plan = this.getPlanFromPriceId(priceId);
       }
       // Extract billing period dates (type cast for Stripe API compatibility)
-      const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
-      const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+      const periodStart = (
+        subscription as unknown as { current_period_start: number }
+      ).current_period_start;
+      const periodEnd = (
+        subscription as unknown as { current_period_end: number }
+      ).current_period_end;
       if (periodStart) subscriptionPeriodStart = new Date(periodStart * 1000);
       if (periodEnd) subscriptionPeriodEnd = new Date(periodEnd * 1000);
     } catch (error) {
@@ -487,7 +552,7 @@ export class PaymentsService {
     if (!plan) {
       this.logger.error(
         `CRITICAL: No se pudo determinar el plan para checkout de user ${userId} ` +
-        `(session ${session.id}, sub ${subscriptionId}). Plan NO asignado. Revisar STRIPE_*_PRICE_ID.`,
+          `(session ${session.id}, sub ${subscriptionId}). Plan NO asignado. Revisar STRIPE_*_PRICE_ID.`,
       );
       throw new Error(`Cannot resolve plan for checkout session ${session.id}`);
     }
@@ -529,7 +594,9 @@ export class PaymentsService {
       updateData.city = billingCity;
       updateData.countrySource = 'stripe';
       updateData.countryDetectedAt = new Date();
-      this.logger.log(`Updated user ${userId} geo to ${billingCountry}/${billingCity || 'unknown'} from Stripe billing`);
+      this.logger.log(
+        `Updated user ${userId} geo to ${billingCountry}/${billingCity || 'unknown'} from Stripe billing`,
+      );
     }
 
     await this.withRetry(
@@ -541,7 +608,8 @@ export class PaymentsService {
 
     // Determine transaction type based on previous plan
     const previousPlan = user?.plan || 'free';
-    const transactionType = previousPlan === 'free' ? 'subscription' : 'upgrade';
+    const transactionType =
+      previousPlan === 'free' ? 'subscription' : 'upgrade';
 
     // Save transaction record
     const transactionId = this.generateTransactionId();
@@ -617,9 +685,12 @@ export class PaymentsService {
     return `sub_event_${dateStr}_${random}`;
   }
 
-  async handleSubscriptionUpdated(subscription: Stripe.Subscription): Promise<void> {
+  async handleSubscriptionUpdated(
+    subscription: Stripe.Subscription,
+  ): Promise<void> {
     const customerId = subscription.customer as string;
-    const user = await this.firestoreService.getUserByStripeCustomerId(customerId);
+    const user =
+      await this.firestoreService.getUserByStripeCustomerId(customerId);
 
     if (!user) {
       this.logger.error(`No user found for customer: ${customerId}`);
@@ -635,15 +706,19 @@ export class PaymentsService {
     if (subscription.status === 'active' && !plan) {
       this.logger.error(
         `CRITICAL: No se pudo determinar el plan para subscription.updated de user ${user.id} ` +
-        `(sub ${subscription.id}). Plan NO actualizado. Revisar STRIPE_*_PRICE_ID.`,
+          `(sub ${subscription.id}). Plan NO actualizado. Revisar STRIPE_*_PRICE_ID.`,
       );
       return;
     }
 
     // Check subscription status with retry
     // Type cast for Stripe API compatibility
-    const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
-    const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+    const periodStart = (
+      subscription as unknown as { current_period_start: number }
+    ).current_period_start;
+    const periodEnd = (
+      subscription as unknown as { current_period_end: number }
+    ).current_period_end;
 
     if (subscription.status === 'active') {
       // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
@@ -661,46 +736,65 @@ export class PaymentsService {
         () => this.firestoreService.updateUser(user.id, activeUpdateData),
         `handleSubscriptionUpdated(${user.id})`,
       );
-      this.logger.log(`Subscription updated for user ${user.id}: active (${plan})`);
+      this.logger.log(
+        `Subscription updated for user ${user.id}: active (${plan})`,
+      );
     } else if (['canceled', 'unpaid'].includes(subscription.status)) {
       // Subscription terminated - downgrade to free and clear subscription ID
       const previousPlan = user.plan || 'pro';
 
       await this.withRetry(
-        () => this.firestoreService.updateUser(user.id, {
-          plan: 'free',
-          stripeSubscriptionId: null,
-        }),
+        () =>
+          this.firestoreService.updateUser(user.id, {
+            plan: 'free',
+            stripeSubscriptionId: null,
+          }),
         `handleSubscriptionUpdated(${user.id})`,
       );
-      this.logger.log(`Subscription updated for user ${user.id}: ${subscription.status}`);
+      this.logger.log(
+        `Subscription updated for user ${user.id}: ${subscription.status}`,
+      );
 
       // Send downgrade notification email
       this.emailService
-        .queueSubscriptionDowngradedEmail({
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-          language: this.detectLanguageFromCountry(user.country),
-        }, previousPlan, subscription.status)
-        .catch((err) => this.logger.error(`Failed to queue subscription downgraded email: ${err.message}`));
+        .queueSubscriptionDowngradedEmail(
+          {
+            id: user.id,
+            email: user.email,
+            displayName: user.displayName,
+            language: this.detectLanguageFromCountry(user.country),
+          },
+          previousPlan,
+          subscription.status,
+        )
+        .catch((err) =>
+          this.logger.error(
+            `Failed to queue subscription downgraded email: ${err.message}`,
+          ),
+        );
     } else if (subscription.status === 'past_due') {
       // Payment pending - keep subscriptionId to allow status queries
       // Don't downgrade immediately, give user time to pay
       // The handlePaymentFailed method already sends notification emails
       await this.withRetry(
-        () => this.firestoreService.updateUser(user.id, {
-          stripeSubscriptionId: subscription.id,
-        }),
+        () =>
+          this.firestoreService.updateUser(user.id, {
+            stripeSubscriptionId: subscription.id,
+          }),
         `handleSubscriptionUpdated(${user.id})`,
       );
-      this.logger.log(`Subscription past_due for user ${user.id} - keeping subscription active for recovery`);
+      this.logger.log(
+        `Subscription past_due for user ${user.id} - keeping subscription active for recovery`,
+      );
     }
   }
 
-  async handleSubscriptionDeleted(subscription: Stripe.Subscription): Promise<void> {
+  async handleSubscriptionDeleted(
+    subscription: Stripe.Subscription,
+  ): Promise<void> {
     const customerId = subscription.customer as string;
-    const user = await this.firestoreService.getUserByStripeCustomerId(customerId);
+    const user =
+      await this.firestoreService.getUserByStripeCustomerId(customerId);
 
     if (!user) {
       this.logger.error(`No user found for customer: ${customerId}`);
@@ -709,10 +803,13 @@ export class PaymentsService {
 
     // FIX: Only process if the deleted subscription matches the user's current subscription
     // This prevents orphan/duplicate subscription deletions from affecting the user's active plan
-    if (user.stripeSubscriptionId && user.stripeSubscriptionId !== subscription.id) {
+    if (
+      user.stripeSubscriptionId &&
+      user.stripeSubscriptionId !== subscription.id
+    ) {
       this.logger.warn(
         `Ignoring subscription.deleted for ${subscription.id} - ` +
-        `user ${user.id} has different active subscription: ${user.stripeSubscriptionId}`,
+          `user ${user.id} has different active subscription: ${user.stripeSubscriptionId}`,
       );
 
       // Save event for tracking but DO NOT modify the user's plan
@@ -727,39 +824,56 @@ export class PaymentsService {
         mrr: 0,
         mrrMxn: 0,
         stripeSubscriptionId: subscription.id,
-        cancellationReason: subscription.cancellation_details?.reason || 'orphan_subscription',
+        cancellationReason:
+          subscription.cancellation_details?.reason || 'orphan_subscription',
         country: user.country,
         createdAt: new Date(),
       };
 
       await this.firestoreService.saveSubscriptionEvent(orphanEvent);
-      this.logger.log(`Saved orphan subscription event for ${subscription.id} (user has ${user.stripeSubscriptionId})`);
+      this.logger.log(
+        `Saved orphan subscription event for ${subscription.id} (user has ${user.stripeSubscriptionId})`,
+      );
       return;
     }
 
     // Get the plan that was canceled (from user's current plan before downgrade)
-    const canceledPlan = (user.plan === 'lite' || user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
+    const canceledPlan =
+      user.plan === 'lite' || user.plan === 'pro' || user.plan === 'promax'
+        ? user.plan
+        : 'pro';
 
     // Downgrade to free plan with retry
     await this.withRetry(
-      () => this.firestoreService.updateUser(user.id, {
-        plan: 'free',
-        stripeSubscriptionId: null,
-      }),
+      () =>
+        this.firestoreService.updateUser(user.id, {
+          plan: 'free',
+          stripeSubscriptionId: null,
+        }),
       `handleSubscriptionDeleted(${user.id})`,
     );
 
-    this.logger.log(`User ${user.id} downgraded to Free plan (was ${canceledPlan})`);
+    this.logger.log(
+      `User ${user.id} downgraded to Free plan (was ${canceledPlan})`,
+    );
 
     // Send downgrade notification email
     this.emailService
-      .queueSubscriptionDowngradedEmail({
-        id: user.id,
-        email: user.email,
-        displayName: user.displayName,
-        language: this.detectLanguageFromCountry(user.country),
-      }, canceledPlan, 'canceled')
-      .catch((err) => this.logger.error(`Failed to queue subscription downgraded email: ${err.message}`));
+      .queueSubscriptionDowngradedEmail(
+        {
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          language: this.detectLanguageFromCountry(user.country),
+        },
+        canceledPlan,
+        'canceled',
+      )
+      .catch((err) =>
+        this.logger.error(
+          `Failed to queue subscription downgraded email: ${err.message}`,
+        ),
+      );
 
     // Save subscription event for churn tracking
     const subscriptionEvent: SubscriptionEvent = {
@@ -773,7 +887,8 @@ export class PaymentsService {
       mrr: 0,
       mrrMxn: 0,
       stripeSubscriptionId: subscription.id,
-      cancellationReason: subscription.cancellation_details?.reason || undefined,
+      cancellationReason:
+        subscription.cancellation_details?.reason || undefined,
       country: user.country,
       createdAt: new Date(),
     };
@@ -784,29 +899,43 @@ export class PaymentsService {
 
   async handlePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
     const customerId = invoice.customer as string;
-    const user = await this.firestoreService.getUserByStripeCustomerId(customerId);
+    const user =
+      await this.firestoreService.getUserByStripeCustomerId(customerId);
 
     if (!user) {
-      this.logger.error(`No user found for customer: ${customerId} on payment failed`);
+      this.logger.error(
+        `No user found for customer: ${customerId} on payment failed`,
+      );
       return;
     }
 
     // Log the failed payment
-    this.logger.warn(`Payment failed for user ${user.id}, invoice: ${invoice.id}`);
+    this.logger.warn(
+      `Payment failed for user ${user.id}, invoice: ${invoice.id}`,
+    );
 
     // If this is not the first attempt, send payment failed notification
     const attemptCount = invoice.attempt_count || 1;
     if (attemptCount >= 2) {
-      this.logger.warn(`Multiple payment failures (${attemptCount}) for user ${user.id}`);
+      this.logger.warn(
+        `Multiple payment failures (${attemptCount}) for user ${user.id}`,
+      );
       // Send payment failed notification email
       this.emailService
-        .queuePaymentFailedEmail({
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-          language: this.detectLanguageFromCountry(user.country),
-        }, attemptCount)
-        .catch((err) => this.logger.error(`Failed to queue payment failed email: ${err.message}`));
+        .queuePaymentFailedEmail(
+          {
+            id: user.id,
+            email: user.email,
+            displayName: user.displayName,
+            language: this.detectLanguageFromCountry(user.country),
+          },
+          attemptCount,
+        )
+        .catch((err) =>
+          this.logger.error(
+            `Failed to queue payment failed email: ${err.message}`,
+          ),
+        );
     }
 
     // Note: Don't immediately downgrade - Stripe will retry and send subscription.updated
@@ -818,34 +947,50 @@ export class PaymentsService {
 
     // Skip subscription_create - already handled by checkout.session.completed
     if (billingReason === 'subscription_create') {
-      this.logger.log(`Skipping invoice ${invoice.id}: subscription_create handled by checkout`);
+      this.logger.log(
+        `Skipping invoice ${invoice.id}: subscription_create handled by checkout`,
+      );
       return;
     }
 
     // Only process renewals (subscription_cycle) and updates (subscription_update)
-    if (!['subscription_cycle', 'subscription_update'].includes(billingReason || '')) {
-      this.logger.log(`Skipping invoice ${invoice.id}: billing_reason=${billingReason}`);
+    if (
+      !['subscription_cycle', 'subscription_update'].includes(
+        billingReason || '',
+      )
+    ) {
+      this.logger.log(
+        `Skipping invoice ${invoice.id}: billing_reason=${billingReason}`,
+      );
       return;
     }
 
     const customerId = invoice.customer as string;
-    const user = await this.firestoreService.getUserByStripeCustomerId(customerId);
+    const user =
+      await this.firestoreService.getUserByStripeCustomerId(customerId);
 
     if (!user) {
-      this.logger.error(`No user found for customer: ${customerId} on invoice paid`);
+      this.logger.error(
+        `No user found for customer: ${customerId} on invoice paid`,
+      );
       return;
     }
 
     // Get plan and period from invoice subscription.
     // Fallback al plan actual del usuario si no se puede resolver desde el price ID
     // (no degradamos ni regalamos plan por un price desconocido).
-    let plan: PaidPlanType = (user.plan === 'lite' || user.plan === 'pro' || user.plan === 'promax') ? user.plan : 'pro';
+    let plan: PaidPlanType =
+      user.plan === 'lite' || user.plan === 'pro' || user.plan === 'promax'
+        ? user.plan
+        : 'pro';
     let subscriptionPeriodStart: Date | undefined;
     let subscriptionPeriodEnd: Date | undefined;
-    const subscriptionId = (invoice as { subscription?: string | null }).subscription as string;
+    const subscriptionId = (invoice as { subscription?: string | null })
+      .subscription as string;
     if (subscriptionId) {
       try {
-        const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
+        const subscription =
+          await this.stripe.subscriptions.retrieve(subscriptionId);
         const priceId = subscription.items.data[0]?.price?.id;
         if (priceId) {
           const resolvedPlan = this.getPlanFromPriceId(priceId);
@@ -854,16 +999,24 @@ export class PaymentsService {
           }
         }
         // Extract new billing period dates (type cast for Stripe API compatibility)
-        const periodStart = (subscription as unknown as { current_period_start: number }).current_period_start;
-        const periodEnd = (subscription as unknown as { current_period_end: number }).current_period_end;
+        const periodStart = (
+          subscription as unknown as { current_period_start: number }
+        ).current_period_start;
+        const periodEnd = (
+          subscription as unknown as { current_period_end: number }
+        ).current_period_end;
         if (periodStart) subscriptionPeriodStart = new Date(periodStart * 1000);
         if (periodEnd) subscriptionPeriodEnd = new Date(periodEnd * 1000);
       } catch (error) {
-        this.logger.warn(`Failed to get subscription details for invoice: ${error.message}`);
+        this.logger.warn(
+          `Failed to get subscription details for invoice: ${error.message}`,
+        );
       }
     }
 
-    const currency = (invoice.currency?.toLowerCase() || 'usd') as 'usd' | 'mxn';
+    const currency = (invoice.currency?.toLowerCase() || 'usd') as
+      | 'usd'
+      | 'mxn';
     const amount = invoice.amount_paid || 0;
 
     // Calculate MXN amount
@@ -885,7 +1038,8 @@ export class PaymentsService {
     }
 
     // Determine transaction type
-    const transactionType = billingReason === 'subscription_cycle' ? 'renewal' : 'upgrade';
+    const transactionType =
+      billingReason === 'subscription_cycle' ? 'renewal' : 'upgrade';
 
     // Save transaction record
     const transactionId = this.generateTransactionId();
@@ -910,7 +1064,9 @@ export class PaymentsService {
     };
 
     await this.firestoreService.saveTransaction(transaction);
-    this.logger.log(`Saved ${transactionType} transaction: ${transactionId} for user ${user.id}`);
+    this.logger.log(
+      `Saved ${transactionType} transaction: ${transactionId} for user ${user.id}`,
+    );
 
     // Update user's billing period dates
     if (subscriptionPeriodStart && subscriptionPeriodEnd) {
@@ -918,7 +1074,9 @@ export class PaymentsService {
         subscriptionPeriodStart,
         subscriptionPeriodEnd,
       });
-      this.logger.log(`Updated billing period for user ${user.id}: ${subscriptionPeriodStart.toISOString()} - ${subscriptionPeriodEnd.toISOString()}`);
+      this.logger.log(
+        `Updated billing period for user ${user.id}: ${subscriptionPeriodStart.toISOString()} - ${subscriptionPeriodEnd.toISOString()}`,
+      );
     }
 
     // Save subscription event for renewal tracking
@@ -939,7 +1097,9 @@ export class PaymentsService {
       };
 
       await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
-      this.logger.log(`Saved subscription event: renewed for user ${user.id} (${plan})`);
+      this.logger.log(
+        `Saved subscription event: renewed for user ${user.id} (${plan})`,
+      );
     }
   }
 
@@ -950,8 +1110,25 @@ export class PaymentsService {
     if (!country) return 'en';
 
     const spanishCountries = [
-      'MX', 'ES', 'AR', 'CO', 'PE', 'CL', 'VE', 'EC', 'GT', 'CU',
-      'BO', 'DO', 'HN', 'SV', 'NI', 'CR', 'PA', 'UY', 'PR',
+      'MX',
+      'ES',
+      'AR',
+      'CO',
+      'PE',
+      'CL',
+      'VE',
+      'EC',
+      'GT',
+      'CU',
+      'BO',
+      'DO',
+      'HN',
+      'SV',
+      'NI',
+      'CR',
+      'PA',
+      'UY',
+      'PR',
     ];
 
     if (spanishCountries.includes(country)) return 'es';

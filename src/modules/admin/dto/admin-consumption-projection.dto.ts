@@ -2,12 +2,18 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsEnum } from 'class-validator';
 
 export class GetConsumptionProjectionQueryDto {
-  @ApiPropertyOptional({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'], description: 'Filter by plan' })
+  @ApiPropertyOptional({
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
+    description: 'Filter by plan',
+  })
   @IsOptional()
   @IsEnum(['free', 'lite', 'pro', 'promax', 'enterprise'])
   plan?: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
 
-  @ApiPropertyOptional({ enum: ['critical', 'risk', 'normal'], description: 'Filter by status' })
+  @ApiPropertyOptional({
+    enum: ['critical', 'risk', 'normal'],
+    description: 'Filter by status',
+  })
   @IsOptional()
   @IsEnum(['critical', 'risk', 'normal'])
   status?: 'critical' | 'risk' | 'normal';
@@ -23,7 +29,10 @@ class ConsumptionProjectionUserDto {
   @ApiProperty({ description: 'User display name' })
   name: string;
 
-  @ApiProperty({ enum: ['free', 'lite', 'pro', 'promax', 'enterprise'], description: 'User plan' })
+  @ApiProperty({
+    enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
+    description: 'User plan',
+  })
   plan: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
 
   @ApiProperty({ description: 'Billing period start date' })
@@ -47,12 +56,17 @@ class ConsumptionProjectionUserDto {
   @ApiProperty({ description: 'Projected days until plan exhaustion' })
   projectedDaysToExhaust: number;
 
-  @ApiProperty({ enum: ['critical', 'risk', 'normal'], description: 'Consumption status' })
+  @ApiProperty({
+    enum: ['critical', 'risk', 'normal'],
+    description: 'Consumption status',
+  })
   status: 'critical' | 'risk' | 'normal';
 }
 
 class ConsumptionSummaryDto {
-  @ApiProperty({ description: 'Users in critical status (will exhaust < 15 days)' })
+  @ApiProperty({
+    description: 'Users in critical status (will exhaust < 15 days)',
+  })
   critical: number;
 
   @ApiProperty({ description: 'Users at risk (will exhaust in 15-24 days)' })
