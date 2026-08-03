@@ -126,3 +126,136 @@ describe('EmailService.triggerBlockedEmail', () => {
     );
   });
 });
+
+/**
+ * `skipped` reportaba siempre 0 en los schedule* de onboarding: el filtrado
+ * ocurre dentro de getUsersEligibleForEmail, que descartaba candidatos en
+ * silencio y devolvía solo los elegibles (issue #60). Sin ese dato no se puede
+ * distinguir "no había candidatos" de "todos ya habían recibido el email".
+ */
+describe('EmailService — métricas de skipped en schedule*Emails', () => {
+  let service: EmailService;
+  let firestore: {
+    getUsersEligibleForEmail: jest.Mock;
+    createEmailQueue: jest.Mock;
+  };
+
+  function eligible(count: number, prefix = 'u') {
+    return Array.from({ length: count }, (_, i) => ({
+      userId: `${prefix}${i}`,
+      userEmail: `${prefix}${i}@ejemplo.com`,
+      displayName: `User ${i}`,
+      language: 'es',
+      pdfCount: 0,
+      createdAt: new Date(2026, 0, 1),
+    }));
+  }
+
+  beforeEach(async () => {
+    firestore = {
+      getUsersEligibleForEmail: jest.fn(),
+      createEmailQueue: jest.fn().mockResolvedValue('queue-id'),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RESEND_API_KEY' ? 'test-key' : undefined,
+          },
+        },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+
+    service = module.get<EmailService>(EmailService);
+  });
+
+  it('reporta los candidatos descartados por haber recibido ya el email', async () => {
+    // 8 candidatos: 3 elegibles, 5 ya lo recibieron.
+    firestore.getUsersEligibleForEmail.mockResolvedValue({
+      users: eligible(3),
+      skipped: { alreadyReceived: 5, pdfCountOutOfRange: 0 },
+    });
+
+    const result = await service.scheduleTutorialEmails();
+
+    expect(result.scheduled).toBe(3);
+    expect(result.skipped).toBe(5);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(3);
+  });
+
+  it('suma los descartes de todos los motivos', async () => {
+    firestore.getUsersEligibleForEmail.mockResolvedValue({
+      users: eligible(2),
+      skipped: { alreadyReceived: 4, pdfCountOutOfRange: 6 },
+    });
+
+    const result = await service.scheduleHelpEmails();
+
+    expect(result.scheduled).toBe(2);
+    expect(result.skipped).toBe(10);
+  });
+
+  it('distingue "sin candidatos" de "todos ya lo recibieron"', async () => {
+    // Ambos casos programan 0 emails; solo `skipped` los diferencia.
+    firestore.getUsersEligibleForEmail.mockResolvedValue({
+      users: [],
+      skipped: { alreadyReceived: 0, pdfCountOutOfRange: 0 },
+    });
+    const sinCandidatos = await service.scheduleTutorialEmails();
+
+    firestore.getUsersEligibleForEmail.mockResolvedValue({
+      users: [],
+      skipped: { alreadyReceived: 12, pdfCountOutOfRange: 0 },
+    });
+    const yaRecibido = await service.scheduleTutorialEmails();
+
+    expect(sinCandidatos.scheduled).toBe(0);
+    expect(yaRecibido.scheduled).toBe(0);
+    expect(sinCandidatos.skipped).toBe(0);
+    expect(yaRecibido.skipped).toBe(12);
+  });
+
+  it('en day 7 NO cuenta pdfCountOutOfRange: las dos consultas parten el mismo cohorte', async () => {
+    // success_story pide pdfCount>=1 y miss_you pide 0, así que cada usuario
+    // del cohorte cae fuera de rango en la consulta que no le toca. Contarlo
+    // marcaría como descartado a quien SÍ recibió email en la otra rama.
+    firestore.getUsersEligibleForEmail
+      .mockResolvedValueOnce({
+        users: eligible(4, 'activo'),
+        skipped: { alreadyReceived: 1, pdfCountOutOfRange: 6 },
+      })
+      .mockResolvedValueOnce({
+        users: eligible(6, 'inactivo'),
+        skipped: { alreadyReceived: 2, pdfCountOutOfRange: 4 },
+      });
+
+    const result = await service.scheduleDay7Emails();
+
+    expect(result.scheduled).toBe(10);
+    // Solo 1 + 2, nunca los 10 de pdfCountOutOfRange.
+    expect(result.skipped).toBe(3);
+  });
+
+  it('devuelve skipped 0 sin consultar nada si el servicio está deshabilitado', async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        { provide: ConfigService, useValue: { get: () => undefined } },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+    const disabled = module.get<EmailService>(EmailService);
+
+    const result = await disabled.scheduleTutorialEmails();
+
+    expect(result).toMatchObject({ scheduled: 0, skipped: 0 });
+    expect(firestore.getUsersEligibleForEmail).not.toHaveBeenCalled();
+  });
+});

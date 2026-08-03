@@ -12,6 +12,7 @@ import type {
   FreeReactivationResult,
   ReactivationEmailType,
   PowerUsersResponse,
+  EmailSkipReasons,
 } from './interfaces/email.interface.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
@@ -237,6 +238,17 @@ export class EmailService {
    * Select A/B variant deterministically based on userId
    * Uses simple hash to ensure same user always gets same variant
    */
+  /**
+   * Suma los candidatos descartados durante el filtrado de elegibilidad.
+   *
+   * Centralizado a propósito: si mañana se añade un motivo nuevo a
+   * `EmailSkipReasons`, basta actualizar esta función en vez de revisar cada
+   * `schedule*Emails` (que es justo cómo `skipped` acabó reportando 0).
+   */
+  private totalSkipped(skipped: EmailSkipReasons): number {
+    return skipped.alreadyReceived + skipped.pdfCountOutOfRange;
+  }
+
   selectAbVariant(userId: string): AbVariant {
     // Simple hash: sum of char codes mod 2
     const hash = userId
@@ -400,20 +412,20 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    const skipped = 0;
+    let skipped = 0;
 
     try {
       // Get users created 1 day ago with 0 PDFs
-      const eligibleUsers =
-        await this.firestoreService.getUsersEligibleForEmail({
-          emailType: 'tutorial',
-          minDaysSinceCreation: 1,
-          maxDaysSinceCreation: 2,
-          maxPdfCount: 0,
-          limit: 100,
-        });
+      const eligible = await this.firestoreService.getUsersEligibleForEmail({
+        emailType: 'tutorial',
+        minDaysSinceCreation: 1,
+        maxDaysSinceCreation: 2,
+        maxPdfCount: 0,
+        limit: 100,
+      });
+      skipped = this.totalSkipped(eligible.skipped);
 
-      for (const user of eligibleUsers) {
+      for (const user of eligible.users) {
         const variant = this.selectAbVariant(user.userId);
 
         await this.firestoreService.createEmailQueue({
@@ -449,20 +461,20 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    const skipped = 0;
+    let skipped = 0;
 
     try {
       // Get users created 3 days ago with 0 PDFs
-      const eligibleUsers =
-        await this.firestoreService.getUsersEligibleForEmail({
-          emailType: 'help',
-          minDaysSinceCreation: 3,
-          maxDaysSinceCreation: 4,
-          maxPdfCount: 0,
-          limit: 100,
-        });
+      const eligible = await this.firestoreService.getUsersEligibleForEmail({
+        emailType: 'help',
+        minDaysSinceCreation: 3,
+        maxDaysSinceCreation: 4,
+        maxPdfCount: 0,
+        limit: 100,
+      });
+      skipped = this.totalSkipped(eligible.skipped);
 
-      for (const user of eligibleUsers) {
+      for (const user of eligible.users) {
         const variant = this.selectAbVariant(user.userId);
 
         await this.firestoreService.createEmailQueue({
@@ -498,11 +510,11 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    const skipped = 0;
+    let skipped = 0;
 
     try {
       // Get users created 7 days ago with ≥1 PDF (success_story)
-      const activeUsers = await this.firestoreService.getUsersEligibleForEmail({
+      const active = await this.firestoreService.getUsersEligibleForEmail({
         emailType: 'success_story',
         minDaysSinceCreation: 7,
         maxDaysSinceCreation: 8,
@@ -510,7 +522,7 @@ export class EmailService {
         limit: 100,
       });
 
-      for (const user of activeUsers) {
+      for (const user of active.users) {
         const variant = this.selectAbVariant(user.userId);
 
         await this.firestoreService.createEmailQueue({
@@ -527,16 +539,23 @@ export class EmailService {
       }
 
       // Get users created 7 days ago with 0 PDFs (miss_you)
-      const inactiveUsers =
-        await this.firestoreService.getUsersEligibleForEmail({
-          emailType: 'miss_you',
-          minDaysSinceCreation: 7,
-          maxDaysSinceCreation: 8,
-          maxPdfCount: 0,
-          limit: 100,
-        });
+      const inactive = await this.firestoreService.getUsersEligibleForEmail({
+        emailType: 'miss_you',
+        minDaysSinceCreation: 7,
+        maxDaysSinceCreation: 8,
+        maxPdfCount: 0,
+        limit: 100,
+      });
 
-      for (const user of inactiveUsers) {
+      // Aquí solo cuenta `alreadyReceived`, NO el total: las dos consultas
+      // parten el mismo cohorte por pdfCount (≥1 vs 0), así que cada usuario
+      // aparece como `pdfCountOutOfRange` en la consulta que no le toca.
+      // Sumarlo marcaría como descartado a todo el que sí recibió email en la
+      // otra rama.
+      skipped =
+        active.skipped.alreadyReceived + inactive.skipped.alreadyReceived;
+
+      for (const user of inactive.users) {
         const variant = this.selectAbVariant(user.userId);
 
         await this.firestoreService.createEmailQueue({
@@ -837,6 +856,13 @@ export class EmailService {
     }
 
     let scheduled = 0;
+    // Sigue en 0 a propósito, a diferencia de los schedule* de onboarding.
+    // getUsersWithHighUsage descarta por `hasUserReceivedEmailInPeriod` ANTES
+    // de evaluar el criterio de uso alto, así que ese conteo incluiría a todos
+    // los usuarios free que ya recibieron el email tengan o no uso alto ahora:
+    // un número inflado y engañoso. Contarlo bien exige reordenar los filtros,
+    // lo que haría correr la consulta de conversiones (cara) para todo free.
+    // Ver issue #60.
     const skipped = 0;
 
     try {
@@ -1158,6 +1184,10 @@ export class EmailService {
     }
 
     let scheduled = 0;
+    // Sigue en 0 porque aquí no hay nada que descartar: getPowerUsersWithPeriod
+    // es un método de reporting (top 10% por uso) y NO comprueba si el usuario
+    // ya recibió el email. Poblar `skipped` exige antes decidir la política de
+    // cadencia de este envío. Ver issue #60.
     const skipped = 0;
 
     try {

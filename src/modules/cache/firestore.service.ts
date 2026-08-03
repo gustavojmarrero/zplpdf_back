@@ -36,6 +36,8 @@ import type {
   TemplateVersion,
   CreateEmailTemplateData,
   UpdateEmailTemplateData,
+  EligibleEmailUser,
+  EligibleEmailUsersResult,
 } from '../email/interfaces/email.interface.js';
 
 // ============== Daily Stats (Aggregated Metrics) ==============
@@ -5086,16 +5088,7 @@ export class FirestoreService {
     minPdfCount?: number;
     maxPdfCount?: number;
     limit?: number;
-  }): Promise<
-    Array<{
-      userId: string;
-      userEmail: string;
-      displayName?: string;
-      language: string;
-      pdfCount: number;
-      createdAt: Date;
-    }>
-  > {
+  }): Promise<EligibleEmailUsersResult> {
     const now = new Date();
     const minDate = new Date(now);
     minDate.setDate(minDate.getDate() - params.maxDaysSinceCreation);
@@ -5110,14 +5103,10 @@ export class FirestoreService {
       .limit(params.limit || 100)
       .get();
 
-    const eligibleUsers: Array<{
-      userId: string;
-      userEmail: string;
-      displayName?: string;
-      language: string;
-      pdfCount: number;
-      createdAt: Date;
-    }> = [];
+    const users: EligibleEmailUser[] = [];
+    // Los descartes se cuentan aquí porque es donde ocurren: quien llama solo
+    // recibe la lista final y no puede saber cuántos candidatos se filtraron.
+    const skipped = { alreadyReceived: 0, pdfCountOutOfRange: 0 };
 
     for (const doc of usersSnapshot.docs) {
       const userData = doc.data();
@@ -5127,7 +5116,10 @@ export class FirestoreService {
         doc.id,
         params.emailType,
       );
-      if (hasEmail) continue;
+      if (hasEmail) {
+        skipped.alreadyReceived++;
+        continue;
+      }
 
       // Get user's PDF count from usage
       const usageSnapshot = await this.firestore
@@ -5143,15 +5135,19 @@ export class FirestoreService {
       }
 
       // Check PDF count criteria
-      if (params.minPdfCount !== undefined && pdfCount < params.minPdfCount)
+      if (params.minPdfCount !== undefined && pdfCount < params.minPdfCount) {
+        skipped.pdfCountOutOfRange++;
         continue;
-      if (params.maxPdfCount !== undefined && pdfCount > params.maxPdfCount)
+      }
+      if (params.maxPdfCount !== undefined && pdfCount > params.maxPdfCount) {
+        skipped.pdfCountOutOfRange++;
         continue;
+      }
 
       // Determine language (default to 'en')
       const language = this.detectLanguageFromCountry(userData.country) || 'en';
 
-      eligibleUsers.push({
+      users.push({
         userId: doc.id,
         userEmail: userData.email,
         displayName: userData.displayName,
@@ -5161,7 +5157,7 @@ export class FirestoreService {
       });
     }
 
-    return eligibleUsers;
+    return { users, skipped };
   }
 
   /**
