@@ -1,0 +1,10 @@
+# Commits que solo reformatean y no cambian comportamiento.
+# git blame los atraviesa para no atribuirles la autoría real del código.
+#
+# Uso (una vez por clon):
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub lo aplica automáticamente en su vista de blame.
+
+# style: aplicar prettier a todo el repo (solo formato)
+6e6aae010503d0ec7c28dbeb953cc51a1d8e4c74
