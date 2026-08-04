@@ -423,10 +423,18 @@ export class PaymentsService {
     const status = stripeError.statusCode;
 
     if (status === 401 || status === 403) {
+      // 401 y 403 se arreglan en sitios distintos: un 401 es una credencial
+      // inválida/revocada/mal desplegada (hay que rotar o corregir la key), un 403
+      // es una key válida sin el scope (hay que editar sus permisos). Dar el consejo
+      // equivocado durante una caída manda al equipo a buscar donde no es.
+      const action =
+        status === 401
+          ? `La STRIPE_SECRET_KEY desplegada es inválida o fue revocada: validar o rotar la clave.`
+          : `La STRIPE_SECRET_KEY no tiene permisos para esta operación: revisar los scopes ` +
+            `de la API key en el dashboard de Stripe.`;
       this.logger.error(
         `CRITICAL: ${operation} rechazado por Stripe (HTTP ${status}) — ${context}. ` +
-          `La STRIPE_SECRET_KEY no tiene permisos para esta operación: revisar los scopes ` +
-          `de la API key en el dashboard de Stripe. Detalle: ${stripeError.message}`,
+          `${action} Detalle: ${stripeError.message}`,
       );
       throw new ServiceUnavailableException(
         'We could not process your plan change right now due to a configuration issue on our side. ' +
@@ -451,6 +459,31 @@ export class PaymentsService {
       'We could not process your plan change right now. Please try again in a few minutes ' +
         'or contact support@zplpdf.com.',
     );
+  }
+
+  /**
+   * Mensaje para un upgrade bloqueado por el estado de la suscripción.
+   *
+   * La acción que resuelve el bloqueo depende del estado: cambiar la tarjeta solo
+   * sirve en los estados de cobro (`past_due`, `unpaid`); si la suscripción ya
+   * terminó hay que contratarla de nuevo, y en el resto de estados no hay nada que
+   * el cliente pueda arreglar por su cuenta.
+   */
+  private inactiveSubscriptionMessage(status: string): string {
+    const base = `Your subscription is not active (status: ${status}).`;
+
+    if (status === 'past_due' || status === 'unpaid') {
+      return (
+        `${base} Please update your payment method from your account settings ` +
+        `before upgrading.`
+      );
+    }
+
+    if (status === 'canceled' || status === 'incomplete_expired') {
+      return `${base} Please subscribe again to get the plan you need.`;
+    }
+
+    return `${base} Manage your subscription from your account settings before upgrading.`;
   }
 
   /**
@@ -501,8 +534,7 @@ export class PaymentsService {
         `Upgrade bloqueado: la suscripción está en estado '${subscription.status}' — ${upgradeContext}`,
       );
       throw new BadRequestException(
-        `Your subscription is not active (status: ${subscription.status}). ` +
-          `Please update your payment method from your account settings before upgrading.`,
+        this.inactiveSubscriptionMessage(subscription.status),
       );
     }
 

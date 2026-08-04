@@ -5,7 +5,7 @@ import {
   BadRequestException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { PaymentsService } from './payments.service';
+import { PaymentsService } from './payments.service.js';
 
 /**
  * Un fallo de permisos de la API key de Stripe (restricted key sin el scope
@@ -97,6 +97,27 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(service.logger.error).toHaveBeenCalledWith(
       expect.stringContaining('STRIPE_SECRET_KEY'),
     );
+    // Un 403 se arregla editando los scopes de la key, no rotándola.
+    expect(service.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('scopes'),
+    );
+  });
+
+  it('ante un 401 pide rotar la clave, no revisar scopes', async () => {
+    const { service } = buildService({
+      subscription: activeSubscription,
+      updateError: { statusCode: 401, message: 'Invalid API Key provided' },
+    });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow(ServiceUnavailableException);
+
+    // Una credencial inválida y una sin permisos se arreglan en sitios distintos:
+    // confundirlas manda al equipo a buscar donde no es durante una caída.
+    const logged = service.logger.error.mock.calls[0][0];
+    expect(logged).toContain('rotar');
+    expect(logged).not.toContain('scopes');
   });
 
   it('también captura el fallo de permisos al leer la suscripción', async () => {
@@ -125,15 +146,31 @@ describe('PaymentsService — upgradeSubscription', () => {
     ).rejects.toThrow(BadRequestException);
   });
 
-  it('indica el estado real cuando la suscripción no está activa', async () => {
+  it('en un estado de cobro pide actualizar el método de pago', async () => {
     const { service, update } = buildService({
       subscription: { status: 'past_due', items: { data: [{ id: 'si_123' }] } },
     });
 
     await expect(
       service.upgradeSubscription('uid-1', 'promax'),
-    ).rejects.toThrow(/past_due/);
+    ).rejects.toThrow(/past_due.*payment method/s);
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it('en una suscripción terminada pide volver a contratar, no cambiar la tarjeta', async () => {
+    const { service } = buildService({
+      subscription: { status: 'canceled', items: { data: [{ id: 'si_123' }] } },
+    });
+
+    // Pasa cuando el webhook de cancelación no llegó y Firestore conserva el
+    // subscriptionId: la tarjeta del cliente está bien, no hay nada que cambiar ahí.
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error.message).toContain('canceled');
+    expect(error.message).toContain('subscribe again');
+    expect(error.message).not.toContain('payment method');
   });
 
   it('rechaza un cambio que no es una subida de plan', async () => {
