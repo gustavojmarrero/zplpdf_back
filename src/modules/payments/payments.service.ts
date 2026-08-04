@@ -2,6 +2,7 @@ import {
   Injectable,
   Logger,
   BadRequestException,
+  ServiceUnavailableException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
@@ -401,6 +402,91 @@ export class PaymentsService {
   }
 
   /**
+   * Traduce un error de la API de Stripe en una excepción HTTP con mensaje accionable.
+   *
+   * Un 401/403 es un fallo de CONFIGURACIÓN (API key inválida, o restricted key sin el
+   * scope necesario), no un error del usuario: se registra como CRITICAL para que salte
+   * en los logs y se devuelve como 503. Antes estos errores escapaban sin capturar y el
+   * usuario recibía un 500 opaco, así que reintentaba una y otra vez sin saber que el
+   * problema no estaba de su lado.
+   */
+  private throwStripeApiError(
+    error: unknown,
+    operation: string,
+    context: string,
+  ): never {
+    const stripeError = error as {
+      statusCode?: number;
+      type?: string;
+      message?: string;
+    };
+    const status = stripeError.statusCode;
+
+    if (status === 401 || status === 403) {
+      // 401 y 403 se arreglan en sitios distintos: un 401 es una credencial
+      // inválida/revocada/mal desplegada (hay que rotar o corregir la key), un 403
+      // es una key válida sin el scope (hay que editar sus permisos). Dar el consejo
+      // equivocado durante una caída manda al equipo a buscar donde no es.
+      const action =
+        status === 401
+          ? `La STRIPE_SECRET_KEY desplegada es inválida o fue revocada: validar o rotar la clave.`
+          : `La STRIPE_SECRET_KEY no tiene permisos para esta operación: revisar los scopes ` +
+            `de la API key en el dashboard de Stripe.`;
+      this.logger.error(
+        `CRITICAL: ${operation} rechazado por Stripe (HTTP ${status}) — ${context}. ` +
+          `${action} Detalle: ${stripeError.message}`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not process your plan change right now due to a configuration issue on our side. ' +
+          'Our team has been notified — please contact support@zplpdf.com.',
+      );
+    }
+
+    if (stripeError.type === 'StripeCardError') {
+      this.logger.warn(
+        `${operation} falló por la tarjeta — ${context}. Detalle: ${stripeError.message}`,
+      );
+      throw new BadRequestException(
+        stripeError.message ||
+          'Your card was declined. Please update your payment method and try again.',
+      );
+    }
+
+    this.logger.error(
+      `${operation} falló — ${context}. Detalle: ${stripeError.message}`,
+    );
+    throw new ServiceUnavailableException(
+      'We could not process your plan change right now. Please try again in a few minutes ' +
+        'or contact support@zplpdf.com.',
+    );
+  }
+
+  /**
+   * Mensaje para un upgrade bloqueado por el estado de la suscripción.
+   *
+   * La acción que resuelve el bloqueo depende del estado: cambiar la tarjeta solo
+   * sirve en los estados de cobro (`past_due`, `unpaid`); si la suscripción ya
+   * terminó hay que contratarla de nuevo, y en el resto de estados no hay nada que
+   * el cliente pueda arreglar por su cuenta.
+   */
+  private inactiveSubscriptionMessage(status: string): string {
+    const base = `Your subscription is not active (status: ${status}).`;
+
+    if (status === 'past_due' || status === 'unpaid') {
+      return (
+        `${base} Please update your payment method from your account settings ` +
+        `before upgrading.`
+      );
+    }
+
+    if (status === 'canceled' || status === 'incomplete_expired') {
+      return `${base} Please subscribe again to get the plan you need.`;
+    }
+
+    return `${base} Manage your subscription from your account settings before upgrading.`;
+  }
+
+  /**
    * Upgrade subscription from one paid plan to another (e.g., PRO → PRO MAX)
    * Stripe handles proration automatically
    */
@@ -431,13 +517,25 @@ export class PaymentsService {
       );
     }
 
+    const upgradeContext = `user ${userId} (${user.plan} → ${targetPlan}, sub ${user.stripeSubscriptionId})`;
+
     // Get current subscription to find the item ID
-    const subscription = await this.stripe.subscriptions.retrieve(
-      user.stripeSubscriptionId,
-    );
+    let subscription: Stripe.Subscription;
+    try {
+      subscription = await this.stripe.subscriptions.retrieve(
+        user.stripeSubscriptionId,
+      );
+    } catch (error) {
+      this.throwStripeApiError(error, 'subscriptions.retrieve', upgradeContext);
+    }
 
     if (subscription.status !== 'active') {
-      throw new BadRequestException('Subscription is not active');
+      this.logger.warn(
+        `Upgrade bloqueado: la suscripción está en estado '${subscription.status}' — ${upgradeContext}`,
+      );
+      throw new BadRequestException(
+        this.inactiveSubscriptionMessage(subscription.status),
+      );
     }
 
     const subscriptionItemId = subscription.items.data[0]?.id;
@@ -455,15 +553,19 @@ export class PaymentsService {
     }
 
     // Update subscription with proration
-    await this.stripe.subscriptions.update(user.stripeSubscriptionId, {
-      items: [
-        {
-          id: subscriptionItemId,
-          price: newPriceId,
-        },
-      ],
-      proration_behavior: 'always_invoice', // Charge/credit immediately
-    });
+    try {
+      await this.stripe.subscriptions.update(user.stripeSubscriptionId, {
+        items: [
+          {
+            id: subscriptionItemId,
+            price: newPriceId,
+          },
+        ],
+        proration_behavior: 'always_invoice', // Charge/credit immediately
+      });
+    } catch (error) {
+      this.throwStripeApiError(error, 'subscriptions.update', upgradeContext);
+    }
 
     // Update user plan in Firestore
     await this.firestoreService.updateUser(userId, {
