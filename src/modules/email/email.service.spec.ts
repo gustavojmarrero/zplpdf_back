@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service';
 import { FirestoreService } from '../cache/firestore.service';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service';
-import { User } from '../../common/interfaces/user.interface';
+import { User, PlanType } from '../../common/interfaces/user.interface';
 
 describe('EmailService.triggerBlockedEmail', () => {
   let service: EmailService;
@@ -257,5 +258,238 @@ describe('EmailService — métricas de skipped en schedule*Emails', () => {
 
     expect(result).toMatchObject({ scheduled: 0, skipped: 0 });
     expect(firestore.getUsersEligibleForEmail).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * schedulePowerUserEmails era el único schedule* sin deduplicación: sus
+ * candidatos vienen de getPowerUsersWithPeriod, un método de reporting (top 10%
+ * por uso) que no consulta envíos previos ni filtra por plan. Con el cron
+ * mensual activo, cada ejecución reencolaba el mismo email a los mismos
+ * usuarios de pago (issue #62).
+ */
+describe('EmailService.schedulePowerUserEmails', () => {
+  let service: EmailService;
+  let firestore: {
+    isTemplateEnabled: jest.Mock;
+    hasUserReceivedEmailInPeriod: jest.Mock;
+    createEmailQueue: jest.Mock;
+  };
+
+  const periodStart = new Date(2026, 6, 15);
+
+  function powerUser(id: string, plan: PlanType = 'pro') {
+    return {
+      userId: id,
+      userEmail: `${id}@ejemplo.com`,
+      displayName: `User ${id}`,
+      language: 'es' as const,
+      pdfsThisMonth: 120,
+      labelsThisMonth: 3400,
+      monthsAsPro: 5,
+      plan,
+      periodStart,
+    };
+  }
+
+  /**
+   * Mockea la cohorte SIN paginar, que es lo que el scheduler debe consumir.
+   * Si el scheduler volviera a pedir una página, este mock se lo daría entero
+   * y el test no lo notaría — por eso hay además un caso que comprueba que no
+   * pasa por el método paginado.
+   */
+  function mockCohort(users: ReturnType<typeof powerUser>[]) {
+    return jest
+      .spyOn(
+        service as unknown as {
+          getPowerUserCohort: (p: number) => Promise<unknown>;
+        },
+        'getPowerUserCohort',
+      )
+      .mockResolvedValue({
+        users,
+        summary: {
+          total: users.length,
+          topPerformers: Math.min(10, users.length),
+          avgMonthlyPdfs: 120,
+          byPlan: { free: 0, lite: 0, pro: users.length, promax: 0 },
+        },
+      });
+  }
+
+  beforeEach(async () => {
+    firestore = {
+      isTemplateEnabled: jest.fn().mockResolvedValue(true),
+      hasUserReceivedEmailInPeriod: jest.fn().mockResolvedValue(false),
+      createEmailQueue: jest.fn().mockResolvedValue('queue-id'),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RESEND_API_KEY' ? 'test-key' : undefined,
+          },
+        },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+
+    service = module.get<EmailService>(EmailService);
+  });
+
+  it('no reencola a quien ya recibió el email en su período de facturación', async () => {
+    // 5 power users, 3 ya lo recibieron en este período.
+    mockCohort(['a', 'b', 'c', 'd', 'e'].map((id) => powerUser(id)));
+    firestore.hasUserReceivedEmailInPeriod.mockImplementation(
+      (userId: string) => Promise.resolve(['a', 'b', 'c'].includes(userId)),
+    );
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(2);
+    expect(result.skipped).toBe(3);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('deduplica por período usando el periodStart del propio usuario', async () => {
+    mockCohort([powerUser('a')]);
+
+    await service.schedulePowerUserEmails();
+
+    // Períodos individuales por aniversario de suscripción, no mes calendario.
+    expect(firestore.hasUserReceivedEmailInPeriod).toHaveBeenCalledWith(
+      'a',
+      'pro_power_user',
+      periodStart,
+    );
+  });
+
+  it('es idempotente: la segunda ejecución no crea duplicados', async () => {
+    mockCohort([powerUser('a'), powerUser('b')]);
+    const encolados = new Set<string>();
+    firestore.hasUserReceivedEmailInPeriod.mockImplementation(
+      (userId: string) => Promise.resolve(encolados.has(userId)),
+    );
+    firestore.createEmailQueue.mockImplementation(
+      ({ userId }: { userId: string }) => {
+        encolados.add(userId);
+        return Promise.resolve('queue-id');
+      },
+    );
+
+    const primera = await service.schedulePowerUserEmails();
+    const segunda = await service.schedulePowerUserEmails();
+
+    expect(primera.scheduled).toBe(2);
+    expect(segunda.scheduled).toBe(0);
+    expect(segunda.skipped).toBe(2);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('no envía el email de PRO a usuarios free ni lite colados en el top 10%', async () => {
+    // El percentil se calcula sobre todos los usuarios con uso, así que un free
+    // puede entrar en el top 10% y recibir un email que le agradece ser PRO.
+    mockCohort([
+      powerUser('gratis', 'free'),
+      powerUser('basico', 'lite'),
+      powerUser('pagado', 'pro'),
+      powerUser('maximo', 'promax'),
+      powerUser('empresa', 'enterprise'),
+    ]);
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(3);
+    expect(result.skipped).toBe(2);
+    const destinatarios = firestore.createEmailQueue.mock.calls.map(
+      ([{ userId }]) => userId,
+    );
+    expect(destinatarios).toEqual(['pagado', 'maximo', 'empresa']);
+  });
+
+  it('no consulta candidatos si el template está deshabilitado', async () => {
+    firestore.isTemplateEnabled.mockResolvedValue(false);
+    const spy = jest.spyOn(service, 'getPowerUsersWithPeriod');
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result).toMatchObject({ scheduled: 0, skipped: 0 });
+    expect(spy).not.toHaveBeenCalled();
+    expect(firestore.createEmailQueue).not.toHaveBeenCalled();
+  });
+
+  it('los free/lite no consumen cupo: los de pago que quedan detrás sí reciben', async () => {
+    // Cohorte de 70 con 30 free/lite por delante. Con cualquier truncamiento
+    // previo al filtro, esos 30 descartados se llevarían por delante a otros
+    // tantos de pago que nunca se llegarían a examinar.
+    const cohorte = [
+      ...Array.from({ length: 15 }, (_, i) => powerUser(`free${i}`, 'free')),
+      ...Array.from({ length: 15 }, (_, i) => powerUser(`lite${i}`, 'lite')),
+      ...Array.from({ length: 40 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    ];
+    mockCohort(cohorte);
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(40);
+    expect(result.skipped).toBe(30);
+  });
+
+  it('consume la cohorte sin paginar, por grande que sea', async () => {
+    // Los empates en pdfsThisMonth pueden ensanchar la cohorte mucho más allá
+    // del 10% nominal, así que no puede haber ningún techo intermedio: aquí los
+    // 1200 primeros son descartables y los elegibles están al final.
+    const paginado = jest.spyOn(service, 'getPowerUsersWithPeriod');
+    mockCohort([
+      ...Array.from({ length: 1200 }, (_, i) => powerUser(`free${i}`, 'free')),
+      ...Array.from({ length: 5 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    ]);
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(5);
+    expect(result.skipped).toBe(1200);
+    // Si volviera a pasar por el método paginado, habría un techo de nuevo.
+    expect(paginado).not.toHaveBeenCalled();
+  });
+
+  it('corta en el tope de envíos por ejecución sin truncar en silencio', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    mockCohort(
+      Array.from({ length: 80 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    );
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(50);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(50);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('tope de 50'));
+  });
+
+  it('el endpoint de admin sigue paginando la misma cohorte', async () => {
+    // El scheduler dejó de paginar, pero el dashboard no: extraer el helper no
+    // puede haberle cambiado el contrato.
+    mockCohort(
+      Array.from({ length: 120 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    );
+
+    const pagina2 = await service.getPowerUsersWithPeriod({
+      page: 2,
+      limit: 50,
+    });
+
+    expect(pagina2.users).toHaveLength(50);
+    expect(pagina2.users[0].userId).toBe('pro50');
+    expect(pagina2.pagination).toMatchObject({
+      page: 2,
+      limit: 50,
+      total: 120,
+      totalPages: 3,
+    });
   });
 });

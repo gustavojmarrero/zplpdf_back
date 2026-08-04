@@ -3,6 +3,8 @@
  * Firestore collections: email_queue, email_events, ab_variants
  */
 
+import type { PlanType } from '../../../common/interfaces/user.interface.js';
+
 // ============== Email Types ==============
 
 // Onboarding emails
@@ -264,6 +266,18 @@ export interface ProPowerUser {
   pdfsThisMonth: number;
   labelsThisMonth: number;
   monthsAsPro: number;
+  /**
+   * Plan del usuario. Necesario porque el percentil se calcula sobre TODOS los
+   * usuarios con uso, no solo los de pago: quien consuma este listado para
+   * enviar emails debe filtrar por plan (ver schedulePowerUserEmails).
+   */
+  plan: PlanType;
+  /**
+   * Inicio del período de facturación del usuario, calculado por
+   * PeriodCalculatorService. Permite deduplicar envíos por período con
+   * FirestoreService.hasUserReceivedEmailInPeriod.
+   */
+  periodStart: Date;
 }
 
 // Response structure for PRO inactive users endpoint
@@ -299,6 +313,7 @@ export interface PowerUsersResponse {
     avgMonthlyPdfs: number;
     byPlan: {
       free: number;
+      lite: number;
       pro: number;
       promax: number;
       enterprise: number;
