@@ -16,6 +16,7 @@ import {
 import { GA4Service } from '../analytics/ga4.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import { EmailService } from '../email/email.service.js';
+import { BillingService } from '../billing/billing.service.js';
 import type {
   StripeTransaction,
   SubscriptionEvent,
@@ -75,6 +76,7 @@ export class PaymentsService {
     private readonly exchangeRateService: ExchangeRateService,
     @Inject(forwardRef(() => EmailService))
     private readonly emailService: EmailService,
+    private readonly billingService: BillingService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     const nodeEnv = this.configService.get<string>('NODE_ENV');
@@ -967,6 +969,11 @@ export class PaymentsService {
     );
 
     this.logger.log(`User ${userId} upgraded to ${plan} plan`);
+
+    // Un usuario puede haber cargado su perfil fiscal antes de tener customer en
+    // Stripe. Sin este segundo intento, su primera factura saldría sin la razón
+    // social ni el tax ID. Es idempotente y no lanza.
+    await this.billingService.syncTaxProfileToStripe(userId);
 
     // Determine transaction type based on previous plan
     const previousPlan = user?.plan || 'free';

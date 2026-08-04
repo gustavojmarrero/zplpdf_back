@@ -14,6 +14,7 @@ import type {
   FeedbackSummary,
 } from '../../common/interfaces/feedback.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
+import type { TaxProfile } from '../../common/interfaces/tax-profile.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
@@ -6839,6 +6840,73 @@ export class FirestoreService {
       };
     } catch (error) {
       this.logger.error(`Error getting ZPL debug file: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== Tax Profiles (Perfil fiscal / CFDI) ==============
+
+  private readonly taxProfilesCollection = 'tax_profiles';
+
+  /**
+   * Devuelve el perfil fiscal del usuario, o `null` si nunca lo cargó.
+   *
+   * Vive en su propia colección con docId = userId: el doc de `users` se lee en
+   * casi cada request y no tiene por qué cargar con el RFC y el domicilio.
+   */
+  async getTaxProfile(userId: string): Promise<TaxProfile | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.taxProfilesCollection)
+        .doc(userId)
+        .get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        ...data,
+        userId,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+      } as TaxProfile;
+    } catch (error) {
+      this.logger.error(`Error al obtener perfil fiscal: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Crea o actualiza el perfil fiscal.
+   *
+   * Se usa `set` con merge en lugar de `update` porque el primer guardado crea el
+   * documento, y `createdAt` solo se fija si no existía.
+   */
+  async saveTaxProfile(
+    userId: string,
+    data: Partial<TaxProfile>,
+  ): Promise<void> {
+    try {
+      const ref = this.firestore
+        .collection(this.taxProfilesCollection)
+        .doc(userId);
+      const existing = await ref.get();
+
+      await ref.set(
+        {
+          ...data,
+          userId,
+          ...(existing.exists ? {} : { createdAt: new Date() }),
+          updatedAt: new Date(),
+        },
+        { merge: true },
+      );
+
+      this.logger.log(`Perfil fiscal guardado: ${userId}`);
+    } catch (error) {
+      this.logger.error(`Error al guardar perfil fiscal: ${error.message}`);
       throw error;
     }
   }

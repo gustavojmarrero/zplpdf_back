@@ -5,9 +5,15 @@ import { CacheModule } from '../cache/cache.module.js';
 import { AnalyticsModule } from '../analytics/analytics.module.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import { EmailModule } from '../email/email.module.js';
+import { BillingModule } from '../billing/billing.module.js';
 
 @Module({
-  imports: [CacheModule, AnalyticsModule, forwardRef(() => EmailModule)],
+  imports: [
+    CacheModule,
+    AnalyticsModule,
+    forwardRef(() => EmailModule),
+    BillingModule,
+  ],
   controllers: [PaymentsController],
   providers: [PaymentsService, ExchangeRateService],
   exports: [PaymentsService],
