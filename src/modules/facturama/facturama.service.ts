@@ -40,6 +40,8 @@ export class FacturamaService {
   private readonly logger = new Logger(FacturamaService.name);
   private readonly http: AxiosInstance | null = null;
   private readonly expeditionPlace: string;
+  /** Zona del lugar de expedición. El emisor tiene su domicilio fiscal en Mérida. */
+  private readonly timezone: string;
 
   constructor(private readonly configService: ConfigService) {
     const username = this.configService.get<string>('FACTURAMA_USERNAME');
@@ -51,6 +53,10 @@ export class FacturamaService {
     this.expeditionPlace = this.configService.get<string>(
       'FACTURAMA_EXPEDITION_PLACE',
       '97308',
+    );
+    this.timezone = this.configService.get<string>(
+      'FACTURAMA_TIMEZONE',
+      'America/Merida',
     );
 
     if (!username || !password) {
@@ -197,25 +203,53 @@ export class FacturamaService {
   }
 
   /**
-   * Decide la fecha de expedición.
+   * Decide la fecha de expedición, siempre en la hora local del emisor.
    *
    * Se prefiere la del cobro para que comprobante y cobro caigan en el mismo mes
-   * —importa cuando el cargo es de los últimos días—, pero Facturama rechaza
-   * cualquier fecha de más de 72 h, así que fuera de esa ventana se omite el
-   * campo y el PAC sella con la hora del timbrado.
+   * —importa cuando el cargo es de los últimos días del mes—, pero Facturama
+   * rechaza cualquier fecha de más de 72 h, así que fuera de esa ventana se
+   * expide con la hora actual.
+   *
+   * El campo se manda siempre. Omitirlo delegaba la fecha al PAC, que es
+   * aceptable en el timbrado inmediato pero no en un reintento: ahí la única
+   * fecha válida es la de ahora, y hay que decirlo explícitamente.
    */
-  private resolveExpeditionDate(chargedAt?: Date): { Date?: string } {
-    if (!chargedAt) {
-      return {};
-    }
+  private resolveExpeditionDate(chargedAt?: Date): { Date: string } {
+    const now = Date.now();
+    const age = chargedAt ? now - chargedAt.getTime() : Infinity;
+    const withinWindow = age >= 0 && age <= CFDI_MAX_BACKDATE_MS;
 
-    const age = Date.now() - chargedAt.getTime();
-    if (age < 0 || age > CFDI_MAX_BACKDATE_MS) {
-      return {};
-    }
+    return {
+      Date: this.formatIssuerLocalTime(withinWindow ? chargedAt : new Date()),
+    };
+  }
 
-    // Facturama espera hora local sin zona; el sufijo Z se lo rechaza.
-    return { Date: chargedAt.toISOString().slice(0, 19) };
+  /**
+   * Formatea una fecha en la hora local del lugar de expedición, sin zona.
+   *
+   * Facturama interpreta `Date` como hora local del emisor. Mandarle el UTC de
+   * `toISOString()` adelantaba seis horas el comprobante —el domicilio fiscal
+   * está en Mérida, UTC-6—, y un cobro de la tarde salía fechado en el futuro,
+   * que el PAC rechaza de plano.
+   */
+  private formatIssuerLocalTime(date: Date): string {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      // h23 y no hour12:false: este último devuelve «24» a medianoche en algunos
+      // runtimes, y «24:00:00» no es una hora válida en el XML.
+      hourCycle: 'h23',
+    }).formatToParts(date);
+
+    const get = (type: string) =>
+      parts.find((part) => part.type === type)?.value ?? '00';
+
+    return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`;
   }
 
   private async request<T>(

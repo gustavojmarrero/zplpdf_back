@@ -135,20 +135,22 @@ export class BillingService {
   /**
    * Resuelve el bloque `cfdi` de cada factura en una sola lectura.
    *
-   * Los usuarios no mexicanos reciben un mapa vacío y el campo queda a `null`,
-   * que es como el frontend sabe que no debe pintar la columna. Para los
-   * mexicanos, una factura sin registro es `not_applicable`: normalmente una
-   * anterior a que cargaran su perfil fiscal.
+   * Los CFDI ya emitidos se devuelven SIEMPRE, viva donde viva el usuario hoy:
+   * un comprobante fiscal se conserva cinco años y esta es la única vía de
+   * descarga. Si alguien que facturó en México cambia de país, seguiría teniendo
+   * derecho a bajarse lo que ya se le emitió.
+   *
+   * El país actual solo decide qué se responde para las facturas SIN registro:
+   * `not_applicable` a un mexicano —normalmente una factura anterior a que
+   * cargara su perfil fiscal— y `null` a los demás, que es como el frontend sabe
+   * que no debe pintar la columna.
    */
   private async resolveCfdis(
     user: User,
     invoices: Stripe.Invoice[],
   ): Promise<Map<string, CfdiDto>> {
     const result = new Map<string, CfdiDto>();
-
-    if (user.country?.toUpperCase() !== 'MX') {
-      return result;
-    }
+    const isMexican = user.country?.toUpperCase() === 'MX';
 
     const records = await this.firestoreService.getCfdisByInvoiceIds(
       invoices.map((invoice) => invoice.id),
@@ -157,7 +159,12 @@ export class BillingService {
     for (const invoice of invoices) {
       const record = records.get(invoice.id);
 
-      if (!record) {
+      if (record) {
+        result.set(invoice.id, await this.toCfdiDto(record));
+        continue;
+      }
+
+      if (isMexican) {
         result.set(invoice.id, {
           status: 'not_applicable',
           uuid: null,
@@ -166,10 +173,7 @@ export class BillingService {
           stampedAt: null,
           error: null,
         });
-        continue;
       }
-
-      result.set(invoice.id, await this.toCfdiDto(record));
     }
 
     return result;
@@ -246,17 +250,6 @@ export class BillingService {
       throw new ForbiddenException('Invoice does not belong to this user');
     }
 
-    const record = await this.firestoreService.getCfdiByInvoiceId(invoiceId);
-
-    // Reintentar uno ya timbrado emitiría un duplicado, que solo se deshace
-    // cancelándolo a mano ante el SAT.
-    if (record && record.status !== 'failed') {
-      throw new BadRequestException({
-        error: ErrorCodes.INVALID_INPUT,
-        message: `CFDI is not in a retryable state (${record.status})`,
-      });
-    }
-
     // El perfil incompleto se comprueba aquí y no dentro del reintento para que
     // salga como 400: es una precondición que el usuario no ha cumplido, no un
     // rechazo del PAC. Si se dejara caer al catch se devolvería un 422, que le
@@ -270,6 +263,22 @@ export class BillingService {
           code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
           message: 'Tax profile is incomplete',
         },
+      });
+    }
+
+    // Tomar el CFDI es lo que autoriza a timbrar, y es atómico. Comprobar el
+    // estado con una lectura previa no serviría de candado: un doble clic
+    // bastaría para que dos peticiones vieran `failed` y ambas llamaran al PAC.
+    const blocked = await this.firestoreService.claimCfdiForRetry(invoiceId, {
+      userId,
+      amount: (invoice.amount_paid ?? 0) / 100,
+      currency: (invoice.currency || 'mxn').toLowerCase(),
+    });
+
+    if (blocked) {
+      throw new BadRequestException({
+        error: ErrorCodes.INVALID_INPUT,
+        message: `CFDI is not in a retryable state (${blocked.blockedBy})`,
       });
     }
 
@@ -569,10 +578,14 @@ export class BillingService {
   }
 
   /**
-   * Registra el tax ID en Stripe.
+   * Sincroniza en Stripe el tax ID que gestiona ZPLPDF.
    *
-   * Stripe no permite modificar un tax ID existente, así que el cambio de valor
-   * obliga a borrar el anterior y crear uno nuevo.
+   * Solo toca el suyo, el que quedó apuntado en `stripeTaxIdId`. Un customer de
+   * Stripe admite varios tax IDs —de otras jurisdicciones, o dados de alta a
+   * mano desde el dashboard— y barrerlos todos borraría datos que este perfil no
+   * puso ahí.
+   *
+   * Stripe no permite modificar un tax ID: cambiar de valor es borrar y crear.
    */
   private async syncStripeTaxId(
     userId: string,
@@ -581,8 +594,18 @@ export class BillingService {
   ): Promise<void> {
     const type = profile.type === 'mx' ? 'mx_rfc' : profile.taxIdType;
     const value = profile.type === 'mx' ? profile.rfc : profile.taxIdValue;
+    const managedId = profile.stripeTaxIdId;
 
+    // El usuario declaró no tener identificación fiscal. Dejar el anterior en
+    // Stripe haría que sus próximas facturas siguieran imprimiendo un dato que
+    // él ya borró de su perfil.
     if (!type || !value) {
+      if (managedId) {
+        await this.deleteStripeTaxId(customerId, managedId);
+        await this.firestoreService.saveTaxProfile(userId, {
+          stripeTaxIdId: null,
+        });
+      }
       return;
     }
 
@@ -594,7 +617,9 @@ export class BillingService {
     );
 
     if (alreadyRegistered) {
-      if (profile.stripeTaxIdId !== alreadyRegistered.id) {
+      // Puede haberlo creado el propio usuario desde el portal de Stripe: se
+      // adopta como el gestionado en vez de duplicarlo.
+      if (managedId !== alreadyRegistered.id) {
         await this.firestoreService.saveTaxProfile(userId, {
           stripeTaxIdId: alreadyRegistered.id,
         });
@@ -602,9 +627,8 @@ export class BillingService {
       return;
     }
 
-    // Los tax IDs obsoletos se borran para que Stripe no imprima dos en el PDF.
-    for (const stale of existingTaxIds.data) {
-      await this.stripe.customers.deleteTaxId(customerId, stale.id);
+    if (managedId) {
+      await this.deleteStripeTaxId(customerId, managedId);
     }
 
     const created = await this.stripe.customers.createTaxId(customerId, {
@@ -615,6 +639,24 @@ export class BillingService {
     await this.firestoreService.saveTaxProfile(userId, {
       stripeTaxIdId: created.id,
     });
+  }
+
+  /**
+   * Borra un tax ID tolerando que ya no exista: pudo eliminarlo el usuario desde
+   * el portal de Stripe, y ese 404 no debe frenar el alta del nuevo.
+   */
+  private async deleteStripeTaxId(
+    customerId: string,
+    taxIdId: string,
+  ): Promise<void> {
+    try {
+      await this.stripe.customers.deleteTaxId(customerId, taxIdId);
+    } catch (error) {
+      if (error?.code === 'resource_missing') {
+        return;
+      }
+      throw error;
+    }
   }
 
   /** México usa CFDI; cualquier otro país (o país desconocido) va por Stripe. */

@@ -463,6 +463,12 @@ describe('BillingService — perfil fiscal', () => {
       const deleteTaxId = jest.fn().mockResolvedValue({});
       const createTaxId = jest.fn().mockResolvedValue({ id: 'txi_nuevo' });
       const { service } = buildService({
+        profile: {
+          type: 'mx',
+          rfc: 'XYZ010101AB1',
+          isComplete: true,
+          stripeTaxIdId: 'txi_viejo',
+        },
         listTaxIds: jest.fn().mockResolvedValue({
           data: [{ id: 'txi_viejo', type: 'mx_rfc', value: 'XYZ010101AB1' }],
         }),
@@ -476,6 +482,86 @@ describe('BillingService — perfil fiscal', () => {
       // PDF sale con dos.
       expect(deleteTaxId).toHaveBeenCalledWith('cus_123', 'txi_viejo');
       expect(createTaxId).toHaveBeenCalled();
+    });
+
+    it('no borra tax IDs que no gestiona este perfil', async () => {
+      const deleteTaxId = jest.fn().mockResolvedValue({});
+      const { service } = buildService({
+        profile: {
+          type: 'mx',
+          rfc: 'XYZ010101AB1',
+          isComplete: true,
+          stripeTaxIdId: 'txi_gestionado',
+        },
+        listTaxIds: jest.fn().mockResolvedValue({
+          data: [
+            { id: 'txi_gestionado', type: 'mx_rfc', value: 'XYZ010101AB1' },
+            // Dado de alta a mano desde el dashboard, u otra jurisdicción.
+            { id: 'txi_ajeno', type: 'eu_vat', value: 'ESB12345678' },
+          ],
+        }),
+        deleteTaxId,
+      });
+
+      await service.updateTaxProfile('uid-1', mxDto());
+
+      expect(deleteTaxId).toHaveBeenCalledWith('cus_123', 'txi_gestionado');
+      expect(deleteTaxId).not.toHaveBeenCalledWith('cus_123', 'txi_ajeno');
+    });
+
+    it('adopta un tax ID que ya coincide en vez de duplicarlo', async () => {
+      const createTaxId = jest.fn();
+      const deleteTaxId = jest.fn();
+      const { service, saved } = buildService({
+        listTaxIds: jest.fn().mockResolvedValue({
+          data: [{ id: 'txi_del_portal', type: 'mx_rfc', value: RFC_MORAL }],
+        }),
+        createTaxId,
+        deleteTaxId,
+      });
+
+      // Puede haberlo creado el propio usuario desde el portal de Stripe.
+      await service.updateTaxProfile('uid-1', mxDto());
+
+      expect(createTaxId).not.toHaveBeenCalled();
+      expect(deleteTaxId).not.toHaveBeenCalled();
+      expect(saved.some((s) => s.stripeTaxIdId === 'txi_del_portal')).toBe(
+        true,
+      );
+    });
+
+    it('borra el tax ID en Stripe cuando el usuario lo deja vacío', async () => {
+      const deleteTaxId = jest.fn().mockResolvedValue({});
+      const { service, saved } = buildService({
+        user: { id: 'uid-1', country: 'ES', stripeCustomerId: 'cus_123' },
+        profile: {
+          type: 'international',
+          isComplete: true,
+          taxIdType: 'eu_vat',
+          taxIdValue: 'ESB12345678',
+          stripeTaxIdId: 'txi_viejo',
+        },
+        deleteTaxId,
+      });
+
+      await service.updateTaxProfile('uid-1', {
+        type: 'international',
+        legalName: 'Acme S.L.',
+        billingEmail: 'billing@acme.com',
+        taxIdType: null,
+        taxIdValue: null,
+        address: {
+          line1: 'Calle Mayor 1',
+          city: 'Madrid',
+          postalCode: '28001',
+          country: 'ES',
+        },
+      } as UpdateTaxProfileDto);
+
+      // Si no se borra, las facturas siguientes seguirían imprimiendo un dato
+      // que el usuario ya quitó de su perfil.
+      expect(deleteTaxId).toHaveBeenCalledWith('cus_123', 'txi_viejo');
+      expect(saved.some((s) => s.stripeTaxIdId === null)).toBe(true);
     });
 
     it('guarda el perfil aunque Stripe falle', async () => {
@@ -530,6 +616,7 @@ describe('BillingService — perfil fiscal', () => {
       cfdi?: Record<string, unknown> | null;
       retry?: jest.Mock;
       profile?: Record<string, unknown> | null;
+      claim?: jest.Mock;
     }) {
       const retrieve = overrides.retrieveError
         ? jest.fn().mockRejectedValue(overrides.retrieveError)
@@ -554,6 +641,17 @@ describe('BillingService — perfil fiscal', () => {
           getCfdiByInvoiceId: jest
             .fn()
             .mockResolvedValue(overrides.cfdi ?? null),
+          // El candado devuelve null cuando concede el reintento, o el estado
+          // que lo impide.
+          claimCfdiForRetry:
+            overrides.claim ??
+            jest
+              .fn()
+              .mockResolvedValue(
+                overrides.cfdi && overrides.cfdi.status !== 'failed'
+                  ? { blockedBy: overrides.cfdi.status }
+                  : null,
+              ),
           getTaxProfile: jest
             .fn()
             .mockResolvedValue(
@@ -684,6 +782,47 @@ describe('BillingService — perfil fiscal', () => {
         },
       );
     });
+
+    it('toma el CFDI de forma atómica antes de timbrar', async () => {
+      const claim = jest.fn().mockResolvedValue(null);
+      const service = buildRetryService({ cfdi: { status: 'failed' }, claim });
+
+      await service.retryCfdi('uid-1', 'in_123');
+
+      // Comprobar el estado con una lectura previa no sería candado: un doble
+      // clic bastaría para que dos peticiones vieran `failed` y ambas timbraran.
+      expect(claim).toHaveBeenCalledWith(
+        'in_123',
+        expect.objectContaining({ userId: 'uid-1' }),
+      );
+    });
+
+    it('rechaza el reintento que pierde la carrera por el candado', async () => {
+      // El ganador ya lo dejó en `pending`; este llega tarde.
+      const service = buildRetryService({
+        cfdi: { status: 'failed' },
+        claim: jest.fn().mockResolvedValue({ blockedBy: 'pending' }),
+      });
+
+      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('no llega al candado si la factura es ajena', async () => {
+      const claim = jest.fn();
+      const service = buildRetryService({
+        invoice: { id: 'in_123', customer: 'cus_de_otro' },
+        claim,
+      });
+
+      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      // Tomar el CFDI de otro lo dejaría en `pending` y bloquearía su reintento
+      // legítimo.
+      expect(claim).not.toHaveBeenCalled();
+    });
   });
 
   /**
@@ -734,6 +873,34 @@ describe('BillingService — perfil fiscal', () => {
 
       // Es como el frontend sabe que no debe pintar la columna.
       expect(invoices.every((invoice) => invoice.cfdi === null)).toBe(true);
+    });
+
+    it('conserva los CFDI emitidos aunque el usuario cambie de país', async () => {
+      const service = buildInvoicesService({
+        country: 'ES',
+        cfdis: new Map([
+          [
+            'in_1',
+            {
+              status: 'stamped',
+              uuid: 'UUID-1',
+              pdfPath: 'cfdis/uid-1/in_1.pdf',
+            },
+          ],
+        ]),
+      });
+
+      const { invoices } = await service.getInvoices('uid-1');
+
+      // Un comprobante fiscal se conserva cinco años y esta es la única vía de
+      // descarga: mudarse de país no puede dejar al usuario sin sus facturas.
+      expect(invoices[0].cfdi).toMatchObject({
+        status: 'stamped',
+        uuid: 'UUID-1',
+        pdfUrl: 'https://signed.example/file',
+      });
+      // Las facturas sin CFDI sí siguen el país actual.
+      expect(invoices[1].cfdi).toBeNull();
     });
 
     it('marca not_applicable una factura mexicana sin registro', async () => {

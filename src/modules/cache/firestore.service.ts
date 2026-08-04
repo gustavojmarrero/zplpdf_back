@@ -6960,6 +6960,54 @@ export class FirestoreService {
     }
   }
 
+  /**
+   * Toma el CFDI para reintentar su timbrado, de forma atómica.
+   *
+   * Devuelve el estado que impide el reintento, o `null` si lo ha tomado. Leer
+   * el estado y timbrar después no sirve de candado: dos peticiones simultáneas
+   * —un doble clic basta— leerían `failed` a la vez y ambas llamarían al PAC,
+   * emitiendo dos comprobantes que solo se deshacen cancelándolos ante el SAT.
+   *
+   * La transición `failed → pending` ocurre dentro de la transacción, así que
+   * solo el ganador encuentra `failed` y el resto se topa con `pending`.
+   */
+  async claimCfdiForRetry(
+    stripeInvoiceId: string,
+    data: { userId: string; amount: number; currency: string },
+  ): Promise<{ blockedBy: Cfdi['status'] } | null> {
+    const ref = this.firestore
+      .collection(this.cfdisCollection)
+      .doc(stripeInvoiceId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const now = new Date();
+
+      if (!snapshot.exists) {
+        // Una factura anterior a que el usuario cargara su perfil fiscal no
+        // tiene documento, y debe poder facturarse.
+        transaction.create(ref, {
+          ...data,
+          stripeInvoiceId,
+          status: 'pending',
+          attempts: 0,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return null;
+      }
+
+      const current = snapshot.data() as Cfdi;
+
+      if (current.status !== 'failed') {
+        return { blockedBy: current.status };
+      }
+
+      transaction.update(ref, { status: 'pending', updatedAt: now });
+      return null;
+    });
+  }
+
   async getCfdiByInvoiceId(stripeInvoiceId: string): Promise<Cfdi | null> {
     try {
       const doc = await this.firestore

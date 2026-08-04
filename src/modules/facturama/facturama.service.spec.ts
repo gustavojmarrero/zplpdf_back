@@ -23,6 +23,7 @@ describe('FacturamaService', () => {
       logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
       http: { post, get },
       expeditionPlace: '97308',
+      timezone: 'America/Merida',
     });
 
     return { service, post, get };
@@ -119,12 +120,26 @@ describe('FacturamaService', () => {
   });
 
   describe('fecha de expedición', () => {
-    it('usa la fecha del cobro si está dentro de las 72 horas', async () => {
+    /** Hora local del emisor (Mérida, UTC-6) de un instante dado. */
+    function meridaLocal(date: Date): string {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Merida',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      }).formatToParts(date);
+      const get = (t: string) => parts.find((p) => p.type === t).value;
+      return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`;
+    }
+
+    async function stampWith(chargedAt?: Date) {
       const { service, post } = buildService({
         post: jest.fn().mockResolvedValue(stampedResponse()),
       });
-      const chargedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
-
       await service.stampSubscription({
         receiver,
         total: 199,
@@ -132,44 +147,51 @@ describe('FacturamaService', () => {
         description: 'Suscripción ZPLPDF',
         chargedAt,
       });
+      return sentPayload(post).Date;
+    }
+
+    it('expide en hora local del emisor, no en UTC', async () => {
+      const chargedAt = new Date('2026-08-04T18:30:00.000Z');
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-04T19:00:00.000Z'));
+
+      try {
+        // Facturama lee `Date` como hora local del emisor. Mandarle el UTC
+        // adelantaba seis horas el comprobante y lo dejaba fechado en el futuro,
+        // que el PAC rechaza de plano.
+        expect(await stampWith(chargedAt)).toBe('2026-08-04T12:30:00');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('usa la fecha del cobro si está dentro de las 72 horas', async () => {
+      const chargedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
       // Mantiene cobro y comprobante en el mismo mes cuando el cargo cae a fin
       // de mes y el webhook se procesa ya entrado el siguiente.
-      expect(sentPayload(post).Date).toBe(chargedAt.toISOString().slice(0, 19));
+      expect(await stampWith(chargedAt)).toBe(meridaLocal(chargedAt));
     });
 
-    it('omite la fecha si el cobro tiene más de 72 horas', async () => {
-      const { service, post } = buildService({
-        post: jest.fn().mockResolvedValue(stampedResponse()),
-      });
+    it('expide con la hora actual si el cobro tiene más de 72 horas', async () => {
+      const viejo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
 
-      await service.stampSubscription({
-        receiver,
-        total: 199,
-        currency: 'MXN',
-        description: 'Suscripción ZPLPDF',
-        chargedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
-      });
+      const enviado = await stampWith(viejo);
 
-      // Facturama rechaza cualquier fecha más vieja; sin el campo, sella con la
-      // hora del timbrado y el CFDI sale igualmente.
-      expect(sentPayload(post).Date).toBeUndefined();
+      // Facturama rechaza cualquier fecha más vieja. En un reintento la única
+      // fecha válida es la de ahora, y hay que decirlo explícitamente en vez de
+      // omitir el campo.
+      expect(enviado).not.toBe(meridaLocal(viejo));
+      expect(enviado).toBe(meridaLocal(new Date()));
     });
 
-    it('omite una fecha futura', async () => {
-      const { service, post } = buildService({
-        post: jest.fn().mockResolvedValue(stampedResponse()),
-      });
+    it('expide con la hora actual si el cobro viene en el futuro', async () => {
+      const futuro = new Date(Date.now() + 60 * 60 * 1000);
 
-      await service.stampSubscription({
-        receiver,
-        total: 199,
-        currency: 'MXN',
-        description: 'Suscripción ZPLPDF',
-        chargedAt: new Date(Date.now() + 60 * 60 * 1000),
-      });
+      expect(await stampWith(futuro)).toBe(meridaLocal(new Date()));
+    });
 
-      expect(sentPayload(post).Date).toBeUndefined();
+    it('manda siempre la fecha, aunque no se conozca la del cobro', async () => {
+      expect(await stampWith(undefined)).toBe(meridaLocal(new Date()));
     });
   });
 

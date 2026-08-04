@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type Stripe from 'stripe';
+import { ConfigService } from '@nestjs/config';
+import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { FacturamaService } from '../facturama/facturama.service.js';
@@ -9,7 +10,10 @@ import {
   CfdiErrorCodes,
   type CfdiErrorCode,
 } from '../facturama/facturama.constants.js';
-import { FacturamaError } from '../facturama/interfaces/facturama.interface.js';
+import {
+  FacturamaError,
+  type StampResult,
+} from '../facturama/interfaces/facturama.interface.js';
 import type { Cfdi } from '../../common/interfaces/cfdi.interface.js';
 import type { TaxProfile } from '../../common/interfaces/tax-profile.interface.js';
 import type { User } from '../../common/interfaces/user.interface.js';
@@ -24,12 +28,20 @@ import type { User } from '../../common/interfaces/user.interface.js';
 @Injectable()
 export class CfdiService {
   private readonly logger = new Logger(CfdiService.name);
+  /** Solo se usa para resolver el tipo de tarjeta del cobro. */
+  private readonly stripe: Stripe | null = null;
 
   constructor(
     private readonly firestoreService: FirestoreService,
     private readonly facturamaService: FacturamaService,
     private readonly storageService: StorageService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+    if (stripeSecretKey) {
+      this.stripe = new Stripe(stripeSecretKey);
+    }
+  }
 
   /**
    * Timbra el CFDI de una factura pagada. **Nunca lanza.**
@@ -176,8 +188,12 @@ export class CfdiService {
       return;
     }
 
+    // El try cubre EXCLUSIVAMENTE la llamada al PAC. Todo lo que viene después
+    // ocurre con un comprobante ya emitido ante el SAT, y ahí `failed` es una
+    // mentira peligrosa: habilita un reintento que emitiría un duplicado.
+    let result: StampResult;
     try {
-      const result = await this.facturamaService.stampSubscription({
+      result = await this.facturamaService.stampSubscription({
         receiver: {
           Rfc: profile.rfc,
           Name: profile.legalName,
@@ -188,32 +204,9 @@ export class CfdiService {
         total: money.amount,
         currency: money.currency,
         description: this.buildDescription(invoice, user),
-        paymentForm: this.resolvePaymentForm(invoice),
+        paymentForm: await this.resolvePaymentForm(invoice),
         chargedAt: this.resolveChargedAt(invoice),
       });
-
-      const paths = await this.archiveDocuments(
-        result.facturamaId,
-        user.id,
-        stripeInvoiceId,
-      );
-
-      await this.firestoreService.updateCfdi(stripeInvoiceId, {
-        status: 'stamped',
-        uuid: result.uuid,
-        facturamaId: result.facturamaId,
-        stampedAt: result.stampedAt,
-        attempts,
-        error: null,
-        userId: user.id,
-        amount: money.amount,
-        currency: money.currency,
-        ...paths,
-      });
-
-      this.logger.log(
-        `CFDI timbrado para la factura ${stripeInvoiceId} (usuario ${user.id}): ${result.uuid}`,
-      );
     } catch (error) {
       const code =
         error instanceof FacturamaError ? error.code : CfdiErrorCodes.UNKNOWN;
@@ -228,6 +221,73 @@ export class CfdiService {
 
       if (options.rethrow) {
         throw error;
+      }
+      return;
+    }
+
+    // A partir de aquí el CFDI existe. Se registra antes de archivar nada, para
+    // que la ventana en la que el UUID solo vive en memoria sea la mínima.
+    await this.persistStamped(stripeInvoiceId, {
+      status: 'stamped',
+      uuid: result.uuid,
+      facturamaId: result.facturamaId,
+      stampedAt: result.stampedAt,
+      attempts,
+      error: null,
+      userId: user.id,
+      amount: money.amount,
+      currency: money.currency,
+    });
+
+    this.logger.log(
+      `CFDI timbrado para la factura ${stripeInvoiceId} (usuario ${user.id}): ${result.uuid}`,
+    );
+
+    const paths = await this.archiveDocuments(
+      result.facturamaId,
+      user.id,
+      stripeInvoiceId,
+    );
+
+    if (paths.pdfPath || paths.xmlPath) {
+      try {
+        await this.firestoreService.updateCfdi(stripeInvoiceId, paths);
+      } catch (error) {
+        // Solo se pierden los enlaces de descarga; el comprobante sigue en pie.
+        this.logger.error(
+          `CFDI ${result.uuid} archivado, pero no se pudieron guardar sus rutas: ${error.message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Registra el CFDI como timbrado, reintentando la escritura.
+   *
+   * Es el único punto donde perder una escritura tiene consecuencias fiscales:
+   * el comprobante ya existe ante el SAT y el UUID solo vive en esta variable.
+   * Si aun con reintentos no se persiste, el documento se queda en `pending` —un
+   * estado que el reintento manual rechaza— y se deja constancia del UUID en el
+   * log para reconciliarlo a mano. Nunca `failed`: eso invitaría a duplicarlo.
+   */
+  private async persistStamped(
+    stripeInvoiceId: string,
+    data: Partial<Cfdi>,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await this.firestoreService.updateCfdi(stripeInvoiceId, data);
+        return;
+      } catch (error) {
+        if (attempt === 3) {
+          this.logger.error(
+            `CRÍTICO: CFDI timbrado que no se pudo registrar. Factura ${stripeInvoiceId}, UUID ${data.uuid}, Facturama ${data.facturamaId}. Queda en 'pending' y necesita reconciliación manual. Último error: ${error.message}`,
+          );
+          return;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, 500 * Math.pow(2, attempt - 1)),
+        );
       }
     }
   }
@@ -310,27 +370,68 @@ export class CfdiService {
   }
 
   /**
-   * Distingue tarjeta de crédito de débito en c_FormaPago.
+   * Distingue tarjeta de crédito (04) de débito (28) en c_FormaPago.
    *
-   * Stripe expande `payment_intent` solo bajo petición, así que en el webhook
-   * llega como id y no siempre se puede saber. Ante la duda, crédito: es la
-   * clave que el SAT acepta por defecto para un cobro con tarjeta.
+   * En el webhook `payment_intent` llega como id sin expandir, así que mirar el
+   * objeto de la factura resolvía «crédito» siempre y todo cobro con débito se
+   * timbraba con una clave fiscal que no corresponde. Se recupera el intent
+   * expandiendo el método de pago: una llamada extra por CFDI es irrelevante al
+   * volumen de este servicio y es la única forma de saberlo.
+   *
+   * Si no se puede averiguar, crédito: es la clave habitual para un cobro con
+   * tarjeta y no hay una opción neutra en el catálogo.
    */
-  private resolvePaymentForm(invoice: Stripe.Invoice): string {
-    const intent = (invoice as { payment_intent?: unknown }).payment_intent;
+  private async resolvePaymentForm(invoice: Stripe.Invoice): Promise<string> {
+    const funding = await this.resolveCardFunding(invoice);
 
-    const funding =
-      typeof intent === 'object' && intent !== null
-        ? (
-            intent as {
-              payment_method?: { card?: { funding?: string } };
-            }
-          ).payment_method?.card?.funding
-        : undefined;
+    if (!funding) {
+      this.logger.warn(
+        `No se pudo determinar el tipo de tarjeta de la factura ${invoice.id}; se timbra como crédito (04)`,
+      );
+    }
 
     return funding === 'debit'
       ? CFDI_PAYMENT_FORM_DEBIT_CARD
       : CFDI_PAYMENT_FORM_CREDIT_CARD;
+  }
+
+  private async resolveCardFunding(
+    invoice: Stripe.Invoice,
+  ): Promise<string | null> {
+    const intent = (invoice as { payment_intent?: unknown }).payment_intent;
+
+    // Ya expandido (por ejemplo en un reintento que recuperó la factura).
+    if (typeof intent === 'object' && intent !== null) {
+      const expanded = (
+        intent as { payment_method?: { card?: { funding?: string } } }
+      ).payment_method?.card?.funding;
+      if (expanded) {
+        return expanded;
+      }
+    }
+
+    const intentId = typeof intent === 'string' ? intent : null;
+    if (!intentId || !this.stripe) {
+      return null;
+    }
+
+    try {
+      const retrieved = await this.stripe.paymentIntents.retrieve(intentId, {
+        expand: ['payment_method'],
+      });
+      const method = retrieved.payment_method;
+
+      return typeof method === 'object' && method !== null
+        ? (method.card?.funding ?? null)
+        : null;
+    } catch (error) {
+      // Un fallo aquí no puede impedir el timbrado: la factura se emite igual
+      // con la clave por defecto.
+      this.logger.warn(
+        `No se pudo recuperar el método de pago de ${invoice.id}: ${error.message}`,
+      );
+      return null;
+    }
   }
 
   private resolveChargedAt(invoice: Stripe.Invoice): Date | undefined {

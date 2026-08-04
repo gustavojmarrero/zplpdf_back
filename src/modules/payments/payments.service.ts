@@ -354,6 +354,13 @@ export class PaymentsService {
       });
     }
 
+    // Los datos fiscales tienen que estar en el customer ANTES de abrir el
+    // checkout. Stripe copia el nombre, el domicilio y los tax IDs a la factura
+    // en el momento de finalizarla —lo hace durante el propio checkout— y ya no
+    // vuelve a tocarlos: propagarlos al recibir `checkout.session.completed`
+    // llegaría tarde y el primer PDF saldría sin ellos.
+    await this.billingService.syncTaxProfileToStripe(userId);
+
     // Create checkout session
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
@@ -970,9 +977,10 @@ export class PaymentsService {
 
     this.logger.log(`User ${userId} upgraded to ${plan} plan`);
 
-    // Un usuario puede haber cargado su perfil fiscal antes de tener customer en
-    // Stripe. Sin este segundo intento, su primera factura saldría sin la razón
-    // social ni el tax ID. Es idempotente y no lanza.
+    // Segunda pasada, para las facturas siguientes. La primera ya se propagó
+    // antes de abrir el checkout —Stripe congela los datos fiscales al finalizar
+    // la factura—, pero aquí puede haberse detectado el país desde la dirección
+    // de facturación, y con él cambia el tipo de perfil que corresponde.
     await this.billingService.syncTaxProfileToStripe(userId);
 
     // Determine transaction type based on previous plan

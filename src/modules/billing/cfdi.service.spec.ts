@@ -20,6 +20,7 @@ describe('CfdiService', () => {
       saveFile?: jest.Mock;
       downloadPdf?: jest.Mock;
       downloadXml?: jest.Mock;
+      paymentIntentsRetrieve?: jest.Mock;
     } = {},
   ) {
     const updates: Record<string, unknown>[] = [];
@@ -84,12 +85,16 @@ describe('CfdiService', () => {
       saveFile: overrides.saveFile ?? jest.fn().mockResolvedValue(undefined),
     };
 
+    const paymentIntentsRetrieve =
+      overrides.paymentIntentsRetrieve ?? jest.fn().mockResolvedValue({});
+
     const service = Object.create(CfdiService.prototype) as CfdiService;
     Object.assign(service, {
       logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
       firestoreService,
       facturamaService,
       storageService,
+      stripe: { paymentIntents: { retrieve: paymentIntentsRetrieve } },
     });
 
     return {
@@ -99,6 +104,7 @@ describe('CfdiService', () => {
       storageService,
       stampSubscription,
       reserveCfdi,
+      paymentIntentsRetrieve,
       updates,
     };
   }
@@ -301,9 +307,11 @@ describe('CfdiService', () => {
         expect.any(Buffer),
         'application/xml',
       );
-      expect(updates[0]).toMatchObject({
-        status: 'stamped',
-        uuid: 'UUID-1',
+
+      // El estado timbrado se escribe ANTES de archivar, y las rutas después:
+      // así el UUID pasa el menor tiempo posible viviendo solo en memoria.
+      expect(updates[0]).toMatchObject({ status: 'stamped', uuid: 'UUID-1' });
+      expect(updates[1]).toEqual({
         pdfPath: 'cfdis/uid-1/in_123.pdf',
         xmlPath: 'cfdis/uid-1/in_123.xml',
       });
@@ -319,7 +327,61 @@ describe('CfdiService', () => {
       // El comprobante ya existe ante el SAT. Marcarlo failed llevaría a emitir
       // un duplicado al reintentar; solo se pierden los enlaces de descarga.
       expect(updates[0]).toMatchObject({ status: 'stamped', uuid: 'UUID-1' });
-      expect(updates[0].pdfPath).toBeUndefined();
+      expect(updates).toHaveLength(1);
+    });
+  });
+
+  /**
+   * Un fallo posterior al timbrado ocurre con un comprobante que YA existe ante
+   * el SAT. Marcarlo `failed` sería mentir de la peor forma: habilita un
+   * reintento que emitiría un duplicado, y un duplicado no se borra.
+   */
+  describe('fallo parcial: timbrado bien, persistencia mal', () => {
+    function buildFlakyService(updateBehaviour: jest.Mock) {
+      const base = buildService();
+      Object.assign(base.service, {
+        firestoreService: {
+          ...base.firestoreService,
+          updateCfdi: updateBehaviour,
+        },
+      });
+      return base;
+    }
+
+    it('nunca marca failed si el PAC ya timbró', async () => {
+      const updateCfdi = jest
+        .fn()
+        .mockRejectedValue(new Error('Firestore no disponible'));
+      const { service } = buildFlakyService(updateCfdi);
+
+      await service.stampForInvoice(invoice());
+
+      const escrituras = updateCfdi.mock.calls.map((call) => call[1]);
+      expect(escrituras.every((data) => data.status !== 'failed')).toBe(true);
+    });
+
+    it('reintenta la escritura del UUID antes de rendirse', async () => {
+      const updateCfdi = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('transitorio'))
+        .mockResolvedValue(undefined);
+      const { service } = buildFlakyService(updateCfdi);
+
+      await service.stampForInvoice(invoice());
+
+      // Perder el UUID es lo único con consecuencia fiscal irreversible.
+      expect(updateCfdi.mock.calls[1][1]).toMatchObject({
+        status: 'stamped',
+        uuid: 'UUID-1',
+      });
+    });
+
+    it('no propaga el fallo de persistencia al webhook', async () => {
+      const { service } = buildFlakyService(
+        jest.fn().mockRejectedValue(new Error('Firestore no disponible')),
+      );
+
+      await expect(service.stampForInvoice(invoice())).resolves.toBeUndefined();
     });
   });
 
@@ -348,10 +410,52 @@ describe('CfdiService', () => {
       expect(stampSubscription.mock.calls[0][0].paymentForm).toBe('28');
     });
 
-    it('cae a tarjeta de crédito cuando no puede saberlo', async () => {
-      const { service, stampSubscription } = buildService();
+    it('recupera el intent de Stripe cuando llega como id', async () => {
+      const retrieve = jest.fn().mockResolvedValue({
+        payment_method: { card: { funding: 'debit' } },
+      });
+      const { service, stampSubscription } = buildService({
+        paymentIntentsRetrieve: retrieve,
+      });
 
-      // En el webhook `payment_intent` llega como id sin expandir.
+      // En el webhook `payment_intent` llega SIEMPRE como id sin expandir. Sin
+      // esta llamada, todo cobro con débito se timbraría con FormaPago 04.
+      await service.stampForInvoice(
+        invoice({
+          payment_intent: 'pi_123',
+        } as unknown as Partial<Stripe.Invoice>),
+      );
+
+      expect(retrieve).toHaveBeenCalledWith('pi_123', {
+        expand: ['payment_method'],
+      });
+      expect(stampSubscription.mock.calls[0][0].paymentForm).toBe('28');
+    });
+
+    it('timbra crédito cuando la tarjeta es de crédito', async () => {
+      const { service, stampSubscription } = buildService({
+        paymentIntentsRetrieve: jest.fn().mockResolvedValue({
+          payment_method: { card: { funding: 'credit' } },
+        }),
+      });
+
+      await service.stampForInvoice(
+        invoice({
+          payment_intent: 'pi_123',
+        } as unknown as Partial<Stripe.Invoice>),
+      );
+
+      expect(stampSubscription.mock.calls[0][0].paymentForm).toBe('04');
+    });
+
+    it('timbra igualmente si no se puede consultar el método de pago', async () => {
+      const { service, stampSubscription } = buildService({
+        paymentIntentsRetrieve: jest
+          .fn()
+          .mockRejectedValue(new Error('Stripe caído')),
+      });
+
+      // No saber el tipo de tarjeta no puede impedir la emisión del CFDI.
       await service.stampForInvoice(
         invoice({
           payment_intent: 'pi_123',
