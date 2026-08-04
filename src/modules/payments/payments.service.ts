@@ -496,6 +496,73 @@ export class PaymentsService {
   }
 
   /**
+   * Reconcilia el estado real tras un error de Stripe *indeterminado*.
+   *
+   * `StripeConnectionError` y `StripeAPIError` no significan "no se hizo nada":
+   * Stripe puede haber aplicado y cobrado el cambio y haberse perdido solo la
+   * respuesta. Decirle al cliente "tu plan no ha cambiado" sería falso y le
+   * empujaría a reintentar sobre un cargo ya hecho.
+   *
+   * Devuelve el resultado del upgrade si al releer la suscripción resulta que sí
+   * se aplicó; `null` si se confirma que no, para que el caller trate el error
+   * con normalidad.
+   */
+  private async reconcileIndeterminateUpgrade(
+    error: unknown,
+    userId: string,
+    targetPlan: 'pro' | 'promax',
+    subscriptionId: string,
+    expectedPriceId: string,
+    context: string,
+  ): Promise<{ success: boolean; message: string } | null> {
+    const type = (error as { type?: string }).type;
+    if (type !== 'StripeConnectionError' && type !== 'StripeAPIError') {
+      return null;
+    }
+
+    this.logger.warn(
+      `Error indeterminado de Stripe (${type}) — ${context}. Releyendo la suscripción ` +
+        `para saber si el cambio llegó a aplicarse.`,
+    );
+
+    let current: Stripe.Subscription;
+    try {
+      current = await this.stripe.subscriptions.retrieve(subscriptionId);
+    } catch (retrieveError) {
+      // Sin poder leer el estado no se puede afirmar nada en ninguna dirección.
+      this.logger.error(
+        `CRITICAL: no se pudo reconciliar el upgrade tras un error indeterminado — ${context}. ` +
+          `Revisar la suscripción en Stripe a mano. Detalle: ${(retrieveError as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not confirm whether your plan change went through. Please check your billing ' +
+          'settings before trying again, or contact support@zplpdf.com.',
+      );
+    }
+
+    const applied =
+      !current.pending_update &&
+      current.status === 'active' &&
+      current.items.data.some((item) => item.price?.id === expectedPriceId);
+
+    if (!applied) {
+      return null;
+    }
+
+    // El cambio sí se aplicó: sincronizamos Firestore para no dejar al cliente
+    // pagando un plan que el producto no le reconoce.
+    await this.firestoreService.updateUser(userId, { plan: targetPlan });
+    this.logger.log(
+      `Upgrade reconciliado tras error indeterminado: el cambio sí se aplicó — ${context}.`,
+    );
+
+    return {
+      success: true,
+      message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
+    };
+  }
+
+  /**
    * Upgrade subscription from one paid plan to another (e.g., PRO → PRO MAX)
    * Stripe handles proration automatically
    */
@@ -574,14 +641,40 @@ export class PaymentsService {
             },
           ],
           proration_behavior: 'always_invoice', // Charge/credit immediately
-          // Sin esto, un cobro de proración rechazado NO lanza error: Stripe
-          // cambia el precio igualmente, emite la factura, falla el cargo, deja
-          // la suscripción en past_due y responde 200. El plan superior acababa
-          // marcado en Firestore sin haberse pagado (issue #66).
-          payment_behavior: 'error_if_incomplete',
+          // Con el comportamiento por defecto (allow_incomplete) un cobro
+          // rechazado NO lanza error: Stripe cambia el precio igualmente, falla
+          // el cargo, deja la suscripción en past_due y responde 200; el plan
+          // acababa marcado en Firestore sin haberse pagado (issue #66).
+          //
+          // Se usa pending_if_incomplete y NO error_if_incomplete porque este
+          // último no soporta pagos que requieren autenticación: ante un 3DS/SCA
+          // devuelve error en lugar de crear el PaymentIntent, así que esas
+          // tarjetas jamás podrían completar el upgrade. Con pending_if_incomplete
+          // el cambio queda PENDIENTE y solo se aplica cuando el pago se
+          // confirma, que es exactamente la garantía que se busca.
+          payment_behavior: 'pending_if_incomplete',
+          expand: ['latest_invoice'],
+        },
+        {
+          // Ventana corta a propósito: deduplica un doble envío o un reintento
+          // inmediato tras un timeout (evitando un segundo cargo), pero deja que
+          // un reintento posterior —con la tarjeta ya corregida— llegue a Stripe
+          // en vez de recibir la respuesta cacheada del intento fallido.
+          idempotencyKey: `upgrade:${userId}:${targetPlan}:${Math.floor(Date.now() / 60000)}`,
         },
       );
     } catch (error) {
+      const reconciled = await this.reconcileIndeterminateUpgrade(
+        error,
+        userId,
+        targetPlan,
+        user.stripeSubscriptionId,
+        newPriceId,
+        upgradeContext,
+      );
+      if (reconciled) {
+        return reconciled;
+      }
       this.throwStripeApiError(
         error,
         'subscriptions.update',
@@ -590,8 +683,30 @@ export class PaymentsService {
       );
     }
 
-    // Defensa en profundidad por si algún escenario esquiva el error_if_incomplete:
-    // el plan solo se marca cuando la suscripción queda confirmada como activa.
+    // pending_update presente = el cobro no se completó (tarjeta rechazada o
+    // 3DS sin confirmar) y el cambio NO se ha aplicado. El plan no se toca; se
+    // le da al cliente el enlace de Stripe donde puede pagar o autenticar, y al
+    // confirmarse el pago Stripe aplica el cambio y lo sincroniza por webhook.
+    if (updatedSubscription.pending_update) {
+      const invoice =
+        updatedSubscription.latest_invoice as Stripe.Invoice | null;
+      const payUrl = invoice?.hosted_invoice_url;
+
+      this.logger.warn(
+        `Upgrade pendiente de pago: el cambio quedó en pending_update — ${upgradeContext}. ` +
+          `Plan sin cambiar. Factura: ${invoice?.id ?? 'desconocida'}.`,
+      );
+
+      throw new BadRequestException(
+        `Your plan has not been changed yet: the payment needs to be completed or authenticated. ` +
+          (payUrl
+            ? `Complete it here and the change will apply automatically: ${payUrl}`
+            : `Please check your payment method from your account settings and try again.`),
+      );
+    }
+
+    // Defensa en profundidad: el plan solo se marca cuando la suscripción queda
+    // confirmada como activa.
     if (updatedSubscription.status !== 'active') {
       this.logger.error(
         `Upgrade no confirmado: la suscripción quedó en '${updatedSubscription.status}' ` +

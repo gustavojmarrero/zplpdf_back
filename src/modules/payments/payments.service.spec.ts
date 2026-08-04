@@ -79,8 +79,11 @@ describe('PaymentsService — upgradeSubscription', () => {
         items: [{ id: 'si_123', price: PROMAX_MXN }],
         proration_behavior: 'always_invoice',
         // Sin esto Stripe aplicaría el cambio aunque el cobro sea rechazado.
-        payment_behavior: 'error_if_incomplete',
+        // error_if_incomplete NO vale: rompe las tarjetas con 3DS.
+        payment_behavior: 'pending_if_incomplete',
       }),
+      // Un doble envío no debe traducirse en un segundo cargo.
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
     expect(updateUser).toHaveBeenCalledWith('uid-1', { plan: 'promax' });
   });
@@ -195,6 +198,115 @@ describe('PaymentsService — upgradeSubscription', () => {
     await expect(
       service.upgradeSubscription('uid-1', 'promax'),
     ).rejects.toThrow(BadRequestException);
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Una tarjeta con 3DS no puede completar el pago en la propia llamada: el
+   * cambio queda en `pending_update` hasta que el cliente autentica. Con
+   * error_if_incomplete Stripe devolvía un error sin PaymentIntent y esas
+   * tarjetas no tenían forma alguna de completar el upgrade.
+   */
+  it('deja el plan intacto y da el enlace de pago cuando hace falta autenticar (3DS)', async () => {
+    const { service, updateUser } = buildService({
+      subscription: activeSubscription,
+      updateResult: {
+        status: 'active',
+        id: 'sub_123',
+        pending_update: { expires_at: 1234567890 },
+        latest_invoice: {
+          id: 'in_123',
+          hosted_invoice_url: 'https://invoice.stripe.com/i/test',
+        },
+      },
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    // El cliente necesita saber que sigue igual y adónde ir a completarlo.
+    expect(error.message).toContain('has not been changed');
+    expect(error.message).toContain('https://invoice.stripe.com/i/test');
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('si no hay enlace de factura, remite a los ajustes de la cuenta', async () => {
+    const { service } = buildService({
+      subscription: activeSubscription,
+      updateResult: {
+        status: 'active',
+        id: 'sub_123',
+        pending_update: { expires_at: 1234567890 },
+        latest_invoice: null,
+      },
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error.message).toContain('has not been changed');
+    expect(error.message).toContain('account settings');
+  });
+
+  /**
+   * Un error de red o un 5xx de Stripe son INDETERMINADOS: el cambio puede
+   * haberse aplicado y cobrado aunque la respuesta no llegara. Afirmar que el
+   * plan no cambió sería falso y empujaría al cliente a reintentar sobre un
+   * cargo ya hecho.
+   */
+  it('reconcilia un error de conexión: si el cambio sí se aplicó, lo sincroniza', async () => {
+    const { service, updateUser, retrieve } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeConnectionError', message: 'network error' },
+    });
+    // Al releer, la suscripción ya está en el precio nuevo: Stripe sí lo aplicó.
+    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
+      status: 'active',
+      items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+    });
+
+    const result = await service.upgradeSubscription('uid-1', 'promax');
+
+    expect(result.success).toBe(true);
+    expect(updateUser).toHaveBeenCalledWith('uid-1', { plan: 'promax' });
+  });
+
+  it('tras un error de conexión en el que NO se aplicó, informa del fallo sin tocar el plan', async () => {
+    const { service, updateUser, retrieve } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeConnectionError', message: 'network error' },
+    });
+    // Al releer sigue en el precio viejo: el cambio no llegó a aplicarse.
+    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
+      status: 'active',
+      items: { data: [{ id: 'si_123', price: { id: 'price_pro_mxn' } }] },
+    });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow();
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('si no puede releer el estado, no afirma que el plan siga igual', async () => {
+    const { service, updateUser, retrieve } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeAPIError', message: 'api error' },
+    });
+    retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      .mockRejectedValueOnce(new Error('still down'));
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    // Nunca "your plan has not been changed": no se sabe, y decirlo sería mentir.
+    expect(error.message).toContain('could not confirm');
     expect(updateUser).not.toHaveBeenCalled();
   });
 
