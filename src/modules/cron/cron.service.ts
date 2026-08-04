@@ -7,6 +7,7 @@ import { ExchangeRateService } from '../admin/services/exchange-rate.service.js'
 import { ExpenseService } from '../admin/services/expense.service.js';
 import { GoalsService } from '../admin/services/goals.service.js';
 import { GA4Service } from '../analytics/ga4.service.js';
+import { extractBillingPeriod } from '../../common/utils/stripe-billing-period.util.js';
 
 export interface ResetUsageResult {
   resetCount: number;
@@ -394,14 +395,9 @@ export class CronService {
           );
 
           // Extract period from subscription items
-          const periodStart = (
-            subscription as unknown as { current_period_start: number }
-          ).current_period_start;
-          const periodEnd = (
-            subscription as unknown as { current_period_end: number }
-          ).current_period_end;
+          const period = extractBillingPeriod(subscription);
 
-          if (!periodStart || !periodEnd) {
+          if (!period.start || !period.end) {
             this.logger.warn(
               `User ${user.email}: No period data in subscription`,
             );
@@ -411,16 +407,12 @@ export class CronService {
 
           // Update user in Firestore
           await this.firestoreService.updateUser(user.id, {
-            subscriptionPeriodStart: new Date(periodStart * 1000),
-            subscriptionPeriodEnd: new Date(periodEnd * 1000),
+            subscriptionPeriodStart: period.start,
+            subscriptionPeriodEnd: period.end,
           });
 
-          const startDate = new Date(periodStart * 1000)
-            .toISOString()
-            .split('T')[0];
-          const endDate = new Date(periodEnd * 1000)
-            .toISOString()
-            .split('T')[0];
+          const startDate = period.start.toISOString().split('T')[0];
+          const endDate = period.end.toISOString().split('T')[0];
           this.logger.log(`✅ ${user.email}: ${startDate} → ${endDate}`);
           updated++;
         } catch (error) {

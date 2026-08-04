@@ -17,6 +17,11 @@ import { GA4Service } from '../analytics/ga4.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import { EmailService } from '../email/email.service.js';
 import { BillingService } from '../billing/billing.service.js';
+import {
+  extractBillingPeriod,
+  getSubscriptionIdFromInvoice,
+  type BillingPeriod,
+} from '../../common/utils/stripe-billing-period.util.js';
 import type {
   StripeTransaction,
   SubscriptionEvent,
@@ -40,6 +45,26 @@ export class PaymentsService {
   private litePriceId: string;
   private litePriceIdMxn: string;
   private readonly MAX_RETRIES = 3;
+
+  /**
+   * Resuelve el periodo de la suscripción y deja constancia si no puede.
+   *
+   * El aviso importa: la versión anterior fallaba en silencio y por eso el
+   * periodo llevaba meses sin escribirse sin que nada lo delatara.
+   */
+  private resolveBillingPeriod(
+    subscription: Stripe.Subscription,
+  ): BillingPeriod {
+    const period = extractBillingPeriod(subscription);
+
+    if (!period.start || !period.end) {
+      this.logger.warn(
+        `Subscription ${subscription.id} sin fechas de periodo en items.data[0]; no se actualiza el ciclo de facturación`,
+      );
+    }
+
+    return period;
+  }
 
   /**
    * Ejecuta una operación con reintentos
@@ -920,15 +945,9 @@ export class PaymentsService {
       if (priceId) {
         plan = this.getPlanFromPriceId(priceId);
       }
-      // Extract billing period dates (type cast for Stripe API compatibility)
-      const periodStart = (
-        subscription as unknown as { current_period_start: number }
-      ).current_period_start;
-      const periodEnd = (
-        subscription as unknown as { current_period_end: number }
-      ).current_period_end;
-      if (periodStart) subscriptionPeriodStart = new Date(periodStart * 1000);
-      if (periodEnd) subscriptionPeriodEnd = new Date(periodEnd * 1000);
+      const period = this.resolveBillingPeriod(subscription);
+      subscriptionPeriodStart = period.start;
+      subscriptionPeriodEnd = period.end;
     } catch (error) {
       this.logger.warn(`Failed to get subscription details: ${error.message}`);
     }
@@ -1105,13 +1124,7 @@ export class PaymentsService {
     }
 
     // Check subscription status with retry
-    // Type cast for Stripe API compatibility
-    const periodStart = (
-      subscription as unknown as { current_period_start: number }
-    ).current_period_start;
-    const periodEnd = (
-      subscription as unknown as { current_period_end: number }
-    ).current_period_end;
+    const period = this.resolveBillingPeriod(subscription);
 
     if (subscription.status === 'active') {
       // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
@@ -1119,11 +1132,11 @@ export class PaymentsService {
         plan,
         stripeSubscriptionId: subscription.id,
       };
-      if (periodStart) {
-        activeUpdateData.subscriptionPeriodStart = new Date(periodStart * 1000);
+      if (period.start) {
+        activeUpdateData.subscriptionPeriodStart = period.start;
       }
-      if (periodEnd) {
-        activeUpdateData.subscriptionPeriodEnd = new Date(periodEnd * 1000);
+      if (period.end) {
+        activeUpdateData.subscriptionPeriodEnd = period.end;
       }
       await this.withRetry(
         () => this.firestoreService.updateUser(user.id, activeUpdateData),
@@ -1378,9 +1391,16 @@ export class PaymentsService {
         : 'pro';
     let subscriptionPeriodStart: Date | undefined;
     let subscriptionPeriodEnd: Date | undefined;
-    const subscriptionId = (invoice as { subscription?: string | null })
-      .subscription as string;
-    if (subscriptionId) {
+    const subscriptionId = getSubscriptionIdFromInvoice(invoice);
+
+    if (!subscriptionId) {
+      // Antes se resolvía como `undefined` en todas las facturas y este bloque
+      // no llegaba a ejecutarse nunca, en silencio. Si vuelve a pasar, que se
+      // vea.
+      this.logger.warn(
+        `Invoice ${invoice.id} sin suscripción en parent.subscription_details; no se actualiza plan ni periodo`,
+      );
+    } else {
       try {
         const subscription =
           await this.stripe.subscriptions.retrieve(subscriptionId);
@@ -1391,15 +1411,9 @@ export class PaymentsService {
             plan = resolvedPlan;
           }
         }
-        // Extract new billing period dates (type cast for Stripe API compatibility)
-        const periodStart = (
-          subscription as unknown as { current_period_start: number }
-        ).current_period_start;
-        const periodEnd = (
-          subscription as unknown as { current_period_end: number }
-        ).current_period_end;
-        if (periodStart) subscriptionPeriodStart = new Date(periodStart * 1000);
-        if (periodEnd) subscriptionPeriodEnd = new Date(periodEnd * 1000);
+        const period = this.resolveBillingPeriod(subscription);
+        subscriptionPeriodStart = period.start;
+        subscriptionPeriodEnd = period.end;
       } catch (error) {
         this.logger.warn(
           `Failed to get subscription details for invoice: ${error.message}`,
