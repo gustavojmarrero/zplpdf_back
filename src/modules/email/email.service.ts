@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
-import { DEFAULT_PLAN_LIMITS } from '../../common/interfaces/user.interface.js';
+import {
+  DEFAULT_PLAN_LIMITS,
+  PLAN_ORDER,
+} from '../../common/interfaces/user.interface.js';
+import type { PlanType } from '../../common/interfaces/user.interface.js';
 import type {
   AbVariant,
   EmailLanguage,
@@ -12,6 +16,7 @@ import type {
   FreeReactivationResult,
   ReactivationEmailType,
   PowerUsersResponse,
+  ProPowerUser,
   EmailSkipReasons,
 } from './interfaces/email.interface.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
@@ -1176,6 +1181,11 @@ export class EmailService {
    * Called by cron job monthly (first day of month)
    *
    * Respects the 'enabled' field of the template in email_templates collection
+   *
+   * Cadencia: como máximo un email por período de facturación del usuario. El
+   * cron corre el día 1 de cada mes, pero los períodos son individuales (parten
+   * de la fecha de alta de la suscripción), así que sin esta comprobación un
+   * mismo power user recibiría el email en cada ejecución. Ver issue #62.
    */
   async schedulePowerUserEmails(): Promise<ScheduleEmailsResult> {
     if (!this.isEnabled) {
@@ -1184,11 +1194,7 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    // Sigue en 0 porque aquí no hay nada que descartar: getPowerUsersWithPeriod
-    // es un método de reporting (top 10% por uso) y NO comprueba si el usuario
-    // ya recibió el email. Poblar `skipped` exige antes decidir la política de
-    // cadencia de este envío. Ver issue #60.
-    const skipped = 0;
+    let skipped = 0;
 
     try {
       // Check if template is enabled
@@ -1206,6 +1212,25 @@ export class EmailService {
       });
 
       for (const user of powerUsersResponse.users) {
+        // El percentil se calcula sobre todos los usuarios con uso, no solo los
+        // de pago: sin este filtro un usuario free o lite puede colarse en el
+        // top 10% y recibir un email que le agradece ser usuario PRO.
+        if (PLAN_ORDER[user.plan] < PLAN_ORDER.pro) {
+          skipped++;
+          continue;
+        }
+
+        const alreadyReceived =
+          await this.firestoreService.hasUserReceivedEmailInPeriod(
+            user.userId,
+            'pro_power_user',
+            user.periodStart,
+          );
+        if (alreadyReceived) {
+          skipped++;
+          continue;
+        }
+
         await this.firestoreService.createEmailQueue({
           userId: user.userId,
           userEmail: user.userEmail,
@@ -1223,7 +1248,9 @@ export class EmailService {
         scheduled++;
       }
 
-      this.logger.log(`Power user emails scheduled: ${scheduled}`);
+      this.logger.log(
+        `Power user emails scheduled: ${scheduled}, skipped: ${skipped}`,
+      );
     } catch (error) {
       this.logger.error(`Error scheduling power user emails: ${error.message}`);
     }
@@ -1449,25 +1476,16 @@ export class EmailService {
           pdfCount: 0,
           labelCount: 0,
         };
-        return { user, usage };
+        return { user, usage, periodInfo };
       });
 
-      const allUsersWithUsage: Array<{
-        userId: string;
-        userEmail: string;
-        displayName?: string;
-        language: EmailLanguage;
-        pdfsThisMonth: number;
-        labelsThisMonth: number;
-        monthsAsPro: number;
-        plan: string;
-      }> = [];
+      const allUsersWithUsage: ProPowerUser[] = [];
 
       let totalPdfs = 0;
       let usersWithUsage = 0;
 
       // Process results
-      for (const { user, usage } of usersWithUsageData) {
+      for (const { user, usage, periodInfo } of usersWithUsageData) {
         const pdfCount = usage.pdfCount || 0;
 
         if (pdfCount > 0) {
@@ -1475,7 +1493,7 @@ export class EmailService {
           totalPdfs += pdfCount;
 
           // Count by plan
-          const plan = user.plan || 'free';
+          const plan = (user.plan || 'free') as PlanType;
           if (plan === 'free') summary.byPlan.free++;
           else if (plan === 'lite') summary.byPlan.lite++;
           else if (plan === 'pro') summary.byPlan.pro++;
@@ -1501,6 +1519,10 @@ export class EmailService {
             labelsThisMonth: usage.labelCount || 0,
             monthsAsPro: Math.max(1, monthsAsPro),
             plan,
+            // periodInfo, no usage: PeriodCalculatorService siempre devuelve un
+            // Date, mientras que el periodStart del documento de usage puede
+            // llegar como Timestamp de Firestore.
+            periodStart: periodInfo.periodStart,
           });
         }
       }
@@ -1531,11 +1553,8 @@ export class EmailService {
       const startIndex = (page - 1) * limit;
       const paginatedUsers = powerUsers.slice(startIndex, startIndex + limit);
 
-      // Remove plan field from output
-      const users = paginatedUsers.map(({ plan, ...user }) => user);
-
       return {
-        users,
+        users: paginatedUsers,
         summary,
         pagination: {
           page,

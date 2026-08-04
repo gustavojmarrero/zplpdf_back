@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { EmailService } from './email.service';
 import { FirestoreService } from '../cache/firestore.service';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service';
-import { User } from '../../common/interfaces/user.interface';
+import { User, PlanType } from '../../common/interfaces/user.interface';
 
 describe('EmailService.triggerBlockedEmail', () => {
   let service: EmailService;
@@ -257,5 +257,156 @@ describe('EmailService — métricas de skipped en schedule*Emails', () => {
 
     expect(result).toMatchObject({ scheduled: 0, skipped: 0 });
     expect(firestore.getUsersEligibleForEmail).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * schedulePowerUserEmails era el único schedule* sin deduplicación: sus
+ * candidatos vienen de getPowerUsersWithPeriod, un método de reporting (top 10%
+ * por uso) que no consulta envíos previos ni filtra por plan. Con el cron
+ * mensual activo, cada ejecución reencolaba el mismo email a los mismos
+ * usuarios de pago (issue #62).
+ */
+describe('EmailService.schedulePowerUserEmails', () => {
+  let service: EmailService;
+  let firestore: {
+    isTemplateEnabled: jest.Mock;
+    hasUserReceivedEmailInPeriod: jest.Mock;
+    createEmailQueue: jest.Mock;
+  };
+
+  const periodStart = new Date(2026, 6, 15);
+
+  function powerUser(id: string, plan: PlanType = 'pro') {
+    return {
+      userId: id,
+      userEmail: `${id}@ejemplo.com`,
+      displayName: `User ${id}`,
+      language: 'es' as const,
+      pdfsThisMonth: 120,
+      labelsThisMonth: 3400,
+      monthsAsPro: 5,
+      plan,
+      periodStart,
+    };
+  }
+
+  function mockPowerUsers(users: ReturnType<typeof powerUser>[]) {
+    jest.spyOn(service, 'getPowerUsersWithPeriod').mockResolvedValue({
+      users,
+      summary: {
+        total: users.length,
+        topPerformers: users.length,
+        avgMonthlyPdfs: 120,
+        byPlan: { free: 0, lite: 0, pro: users.length, promax: 0 },
+      },
+      pagination: { page: 1, limit: 50, total: users.length, totalPages: 1 },
+    } as never);
+  }
+
+  beforeEach(async () => {
+    firestore = {
+      isTemplateEnabled: jest.fn().mockResolvedValue(true),
+      hasUserReceivedEmailInPeriod: jest.fn().mockResolvedValue(false),
+      createEmailQueue: jest.fn().mockResolvedValue('queue-id'),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RESEND_API_KEY' ? 'test-key' : undefined,
+          },
+        },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+
+    service = module.get<EmailService>(EmailService);
+  });
+
+  it('no reencola a quien ya recibió el email en su período de facturación', async () => {
+    // 5 power users, 3 ya lo recibieron en este período.
+    mockPowerUsers(['a', 'b', 'c', 'd', 'e'].map((id) => powerUser(id)));
+    firestore.hasUserReceivedEmailInPeriod.mockImplementation(
+      (userId: string) => Promise.resolve(['a', 'b', 'c'].includes(userId)),
+    );
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(2);
+    expect(result.skipped).toBe(3);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('deduplica por período usando el periodStart del propio usuario', async () => {
+    mockPowerUsers([powerUser('a')]);
+
+    await service.schedulePowerUserEmails();
+
+    // Períodos individuales por aniversario de suscripción, no mes calendario.
+    expect(firestore.hasUserReceivedEmailInPeriod).toHaveBeenCalledWith(
+      'a',
+      'pro_power_user',
+      periodStart,
+    );
+  });
+
+  it('es idempotente: la segunda ejecución no crea duplicados', async () => {
+    mockPowerUsers([powerUser('a'), powerUser('b')]);
+    const encolados = new Set<string>();
+    firestore.hasUserReceivedEmailInPeriod.mockImplementation(
+      (userId: string) => Promise.resolve(encolados.has(userId)),
+    );
+    firestore.createEmailQueue.mockImplementation(
+      ({ userId }: { userId: string }) => {
+        encolados.add(userId);
+        return Promise.resolve('queue-id');
+      },
+    );
+
+    const primera = await service.schedulePowerUserEmails();
+    const segunda = await service.schedulePowerUserEmails();
+
+    expect(primera.scheduled).toBe(2);
+    expect(segunda.scheduled).toBe(0);
+    expect(segunda.skipped).toBe(2);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(2);
+  });
+
+  it('no envía el email de PRO a usuarios free ni lite colados en el top 10%', async () => {
+    // El percentil se calcula sobre todos los usuarios con uso, así que un free
+    // puede entrar en el top 10% y recibir un email que le agradece ser PRO.
+    mockPowerUsers([
+      powerUser('gratis', 'free'),
+      powerUser('basico', 'lite'),
+      powerUser('pagado', 'pro'),
+      powerUser('maximo', 'promax'),
+      powerUser('empresa', 'enterprise'),
+    ]);
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(3);
+    expect(result.skipped).toBe(2);
+    const destinatarios = firestore.createEmailQueue.mock.calls.map(
+      ([{ userId }]) => userId,
+    );
+    expect(destinatarios).toEqual(['pagado', 'maximo', 'empresa']);
+  });
+
+  it('no consulta candidatos si el template está deshabilitado', async () => {
+    firestore.isTemplateEnabled.mockResolvedValue(false);
+    const spy = jest.spyOn(service, 'getPowerUsersWithPeriod');
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result).toMatchObject({ scheduled: 0, skipped: 0 });
+    expect(spy).not.toHaveBeenCalled();
+    expect(firestore.createEmailQueue).not.toHaveBeenCalled();
   });
 });
