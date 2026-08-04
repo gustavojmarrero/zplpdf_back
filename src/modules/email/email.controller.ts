@@ -579,7 +579,9 @@ export class EmailController {
               userId: { type: 'string' },
               userEmail: { type: 'string' },
               displayName: { type: 'string', nullable: true },
-              language: { type: 'string', enum: ['es', 'en'] },
+              // Los cuatro valores de EmailLanguage: detectLanguageFromCountry
+              // devuelve zh para CN/TW/HK/SG y pt para BR/PT/AO/MZ.
+              language: { type: 'string', enum: ['en', 'es', 'zh', 'pt'] },
               pdfsThisMonth: { type: 'number' },
               labelsThisMonth: { type: 'number' },
               monthsAsPro: { type: 'number' },

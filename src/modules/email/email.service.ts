@@ -29,15 +29,6 @@ export class EmailService {
   private readonly isEnabled: boolean;
 
   /**
-   * Techo de la cohorte que schedulePowerUserEmails pide al percentil. No es un
-   * tope de envíos: se pide de más precisamente para poder descartar después
-   * por plan y por duplicado sin quedarse corto. getPowerUsersWithPeriod calcula
-   * la lista completa en memoria y solo pagina al final, así que subir este
-   * número no encarece la consulta.
-   */
-  private static readonly POWER_USER_COHORT_LIMIT = 1000;
-
-  /**
    * Tope de emails encolados por ejecución, como salvaguarda ante un pico
    * inesperado de la cohorte. Al alcanzarlo se registra un warning: truncar en
    * silencio haría parecer que se procesó todo.
@@ -1221,22 +1212,19 @@ export class EmailService {
         return { scheduled: 0, skipped: 0, executedAt: new Date() };
       }
 
-      // Cohorte completa del percentil, no la primera página: el filtro por
-      // plan y la deduplicación se aplican aquí abajo, así que truncar antes
-      // haría que los usuarios free/lite del top 10% consumieran cupo y
-      // dejaran fuera a usuarios de pago de las posiciones siguientes.
-      const powerUsersResponse = await this.getPowerUsersWithPeriod({
-        minPercentile: 90,
-        limit: EmailService.POWER_USER_COHORT_LIMIT,
-      });
+      // Cohorte completa y sin paginar: el filtro por plan y la deduplicación
+      // se aplican aquí abajo, así que cualquier truncamiento previo haría que
+      // los usuarios descartables consumieran cupo y dejaran fuera a usuarios
+      // de pago de las posiciones siguientes.
+      const cohort = await this.getPowerUserCohort(90);
 
-      for (const user of powerUsersResponse.users) {
+      for (const user of cohort.users) {
         // El tope cuenta emails encolados, no candidatos examinados: los
         // descartados por plan o por duplicado no consumen cupo.
         if (scheduled >= EmailService.POWER_USER_MAX_PER_RUN) {
           this.logger.warn(
             `Power user emails: alcanzado el tope de ${EmailService.POWER_USER_MAX_PER_RUN} envíos por ejecución. ` +
-              `Quedan candidatos sin procesar de una cohorte de ${powerUsersResponse.users.length}.`,
+              `Quedan candidatos sin procesar de una cohorte de ${cohort.users.length}.`,
           );
           break;
         }
@@ -1457,6 +1445,133 @@ export class EmailService {
   }
 
   /**
+   * Cohorte completa de power users del percentil, SIN paginar.
+   *
+   * getPowerUsersWithPeriod la pagina para el dashboard de admin;
+   * schedulePowerUserEmails la consume entera, porque filtra por plan y
+   * deduplica después: cualquier truncamiento previo dejaría fuera a candidatos
+   * elegibles cuyo puesto ocuparon usuarios que iban a descartarse igualmente.
+   *
+   * El tamaño de la cohorte no es el 10% de los usuarios: el umbral se aplica
+   * con `>=`, así que los empates en pdfsThisMonth (muy probables en la cola de
+   * usuarios con 1-2 PDFs) pueden ensancharla bastante por encima de eso.
+   */
+  private async getPowerUserCohort(minPercentile: number): Promise<{
+    users: ProPowerUser[];
+    summary: PowerUsersResponse['summary'];
+  }> {
+    const summary = {
+      total: 0,
+      topPerformers: 0,
+      avgMonthlyPdfs: 0,
+      byPlan: { free: 0, lite: 0, pro: 0, promax: 0, enterprise: 0 },
+    };
+
+    // Get all users
+    const allUsers = await this.firestoreService.getAllUsers();
+
+    // Calculate periods for all users (sync - no await needed)
+    const userPeriods = allUsers.map((user) => {
+      const periodInfo = this.periodCalculatorService.calculateCurrentPeriod({
+        id: user.id,
+        plan: user.plan as 'free' | 'lite' | 'pro' | 'promax' | 'enterprise',
+        createdAt: user.createdAt,
+        subscriptionPeriodStart: user.subscriptionPeriodStart,
+        subscriptionPeriodEnd: user.subscriptionPeriodEnd,
+      });
+      return { user, periodInfo };
+    });
+
+    // Batch fetch all usage documents in a single Firestore operation
+    const periodIds = userPeriods.map((up) => up.periodInfo.periodId);
+    const usageMap = await this.firestoreService.batchGetUsage(periodIds);
+
+    // Combine user data with usage
+    const usersWithUsageData = userPeriods.map(({ user, periodInfo }) => {
+      const usage = usageMap.get(periodInfo.periodId) || {
+        odId: periodInfo.periodId,
+        userId: user.id,
+        periodStart: periodInfo.periodStart,
+        periodEnd: periodInfo.periodEnd,
+        pdfCount: 0,
+        labelCount: 0,
+      };
+      return { user, usage, periodInfo };
+    });
+
+    const allUsersWithUsage: ProPowerUser[] = [];
+
+    let totalPdfs = 0;
+    let usersWithUsage = 0;
+
+    // Process results
+    for (const { user, usage, periodInfo } of usersWithUsageData) {
+      const pdfCount = usage.pdfCount || 0;
+
+      if (pdfCount > 0) {
+        usersWithUsage++;
+        totalPdfs += pdfCount;
+
+        // Count by plan
+        const plan = (user.plan || 'free') as PlanType;
+        if (plan === 'free') summary.byPlan.free++;
+        else if (plan === 'lite') summary.byPlan.lite++;
+        else if (plan === 'pro') summary.byPlan.pro++;
+        else if (plan === 'promax') summary.byPlan.promax++;
+        else if (plan === 'enterprise') summary.byPlan.enterprise++;
+
+        // Calculate months as PRO
+        const createdAt =
+          user.createdAt instanceof Date
+            ? user.createdAt
+            : new Date(user.createdAt);
+        const monthsAsPro = Math.floor(
+          (new Date().getTime() - createdAt.getTime()) /
+            (30 * 24 * 60 * 60 * 1000),
+        );
+
+        allUsersWithUsage.push({
+          userId: user.id,
+          userEmail: user.email,
+          displayName: user.displayName,
+          language: this.detectLanguageFromCountry(user.country),
+          pdfsThisMonth: pdfCount,
+          labelsThisMonth: usage.labelCount || 0,
+          monthsAsPro: Math.max(1, monthsAsPro),
+          plan,
+          // periodInfo, no usage: PeriodCalculatorService siempre devuelve un
+          // Date, mientras que el periodStart del documento de usage puede
+          // llegar como Timestamp de Firestore.
+          periodStart: periodInfo.periodStart,
+        });
+      }
+    }
+
+    // Sort by PDF count (highest first)
+    allUsersWithUsage.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
+
+    // Calculate percentile threshold
+    const percentileIndex = Math.floor(
+      allUsersWithUsage.length * (1 - minPercentile / 100),
+    );
+    const percentileThreshold =
+      allUsersWithUsage[percentileIndex]?.pdfsThisMonth || 0;
+
+    // Filter to power users (above percentile threshold)
+    const powerUsers = allUsersWithUsage.filter(
+      (u) => u.pdfsThisMonth >= percentileThreshold,
+    );
+
+    // Update summary
+    summary.total = powerUsers.length;
+    summary.topPerformers = Math.min(10, powerUsers.length);
+    summary.avgMonthlyPdfs =
+      usersWithUsage > 0 ? Math.round(totalPdfs / usersWithUsage) : 0;
+
+    return { users: powerUsers, summary };
+  }
+
+  /**
    * Get PRO power users using individual billing periods
    * Unlike getProPowerUsers() which uses calendar month, this method
    * calculates each user's period individually based on their subscription
@@ -1468,122 +1583,16 @@ export class EmailService {
   }): Promise<PowerUsersResponse> {
     const { minPercentile = 90, page = 1, limit = 50 } = params;
 
-    const summary = {
-      total: 0,
-      topPerformers: 0,
-      avgMonthlyPdfs: 0,
-      byPlan: { free: 0, lite: 0, pro: 0, promax: 0, enterprise: 0 },
-    };
-
     try {
-      // Get all users
-      const allUsers = await this.firestoreService.getAllUsers();
-
-      // Calculate periods for all users (sync - no await needed)
-      const userPeriods = allUsers.map((user) => {
-        const periodInfo = this.periodCalculatorService.calculateCurrentPeriod({
-          id: user.id,
-          plan: user.plan as 'free' | 'lite' | 'pro' | 'promax' | 'enterprise',
-          createdAt: user.createdAt,
-          subscriptionPeriodStart: user.subscriptionPeriodStart,
-          subscriptionPeriodEnd: user.subscriptionPeriodEnd,
-        });
-        return { user, periodInfo };
-      });
-
-      // Batch fetch all usage documents in a single Firestore operation
-      const periodIds = userPeriods.map((up) => up.periodInfo.periodId);
-      const usageMap = await this.firestoreService.batchGetUsage(periodIds);
-
-      // Combine user data with usage
-      const usersWithUsageData = userPeriods.map(({ user, periodInfo }) => {
-        const usage = usageMap.get(periodInfo.periodId) || {
-          odId: periodInfo.periodId,
-          userId: user.id,
-          periodStart: periodInfo.periodStart,
-          periodEnd: periodInfo.periodEnd,
-          pdfCount: 0,
-          labelCount: 0,
-        };
-        return { user, usage, periodInfo };
-      });
-
-      const allUsersWithUsage: ProPowerUser[] = [];
-
-      let totalPdfs = 0;
-      let usersWithUsage = 0;
-
-      // Process results
-      for (const { user, usage, periodInfo } of usersWithUsageData) {
-        const pdfCount = usage.pdfCount || 0;
-
-        if (pdfCount > 0) {
-          usersWithUsage++;
-          totalPdfs += pdfCount;
-
-          // Count by plan
-          const plan = (user.plan || 'free') as PlanType;
-          if (plan === 'free') summary.byPlan.free++;
-          else if (plan === 'lite') summary.byPlan.lite++;
-          else if (plan === 'pro') summary.byPlan.pro++;
-          else if (plan === 'promax') summary.byPlan.promax++;
-          else if (plan === 'enterprise') summary.byPlan.enterprise++;
-
-          // Calculate months as PRO
-          const createdAt =
-            user.createdAt instanceof Date
-              ? user.createdAt
-              : new Date(user.createdAt);
-          const monthsAsPro = Math.floor(
-            (new Date().getTime() - createdAt.getTime()) /
-              (30 * 24 * 60 * 60 * 1000),
-          );
-
-          allUsersWithUsage.push({
-            userId: user.id,
-            userEmail: user.email,
-            displayName: user.displayName,
-            language: this.detectLanguageFromCountry(user.country),
-            pdfsThisMonth: pdfCount,
-            labelsThisMonth: usage.labelCount || 0,
-            monthsAsPro: Math.max(1, monthsAsPro),
-            plan,
-            // periodInfo, no usage: PeriodCalculatorService siempre devuelve un
-            // Date, mientras que el periodStart del documento de usage puede
-            // llegar como Timestamp de Firestore.
-            periodStart: periodInfo.periodStart,
-          });
-        }
-      }
-
-      // Sort by PDF count (highest first)
-      allUsersWithUsage.sort((a, b) => b.pdfsThisMonth - a.pdfsThisMonth);
-
-      // Calculate percentile threshold
-      const percentileIndex = Math.floor(
-        allUsersWithUsage.length * (1 - minPercentile / 100),
-      );
-      const percentileThreshold =
-        allUsersWithUsage[percentileIndex]?.pdfsThisMonth || 0;
-
-      // Filter to power users (above percentile threshold)
-      const powerUsers = allUsersWithUsage.filter(
-        (u) => u.pdfsThisMonth >= percentileThreshold,
-      );
-
-      // Update summary
-      summary.total = powerUsers.length;
-      summary.topPerformers = Math.min(10, powerUsers.length);
-      summary.avgMonthlyPdfs =
-        usersWithUsage > 0 ? Math.round(totalPdfs / usersWithUsage) : 0;
+      const { users: powerUsers, summary } =
+        await this.getPowerUserCohort(minPercentile);
 
       // Apply pagination
       const totalPages = Math.ceil(powerUsers.length / limit);
       const startIndex = (page - 1) * limit;
-      const paginatedUsers = powerUsers.slice(startIndex, startIndex + limit);
 
       return {
-        users: paginatedUsers,
+        users: powerUsers.slice(startIndex, startIndex + limit),
         summary,
         pagination: {
           page,
@@ -1598,7 +1607,12 @@ export class EmailService {
       );
       return {
         users: [],
-        summary,
+        summary: {
+          total: 0,
+          topPerformers: 0,
+          avgMonthlyPdfs: 0,
+          byPlan: { free: 0, lite: 0, pro: 0, promax: 0, enterprise: 0 },
+        },
         pagination: { page, limit, total: 0, totalPages: 0 },
       };
     }

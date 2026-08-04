@@ -293,31 +293,28 @@ describe('EmailService.schedulePowerUserEmails', () => {
   }
 
   /**
-   * El mock aplica el `limit` que recibe, igual que hace la paginación real.
-   * Sin eso, un scheduler que pidiera solo la primera página parecería correcto
-   * en los tests aunque en producción dejara candidatos fuera.
+   * Mockea la cohorte SIN paginar, que es lo que el scheduler debe consumir.
+   * Si el scheduler volviera a pedir una página, este mock se lo daría entero
+   * y el test no lo notaría — por eso hay además un caso que comprueba que no
+   * pasa por el método paginado.
    */
-  function mockPowerUsers(users: ReturnType<typeof powerUser>[]) {
-    return jest.spyOn(service, 'getPowerUsersWithPeriod').mockImplementation((({
-      limit = 50,
-    }: {
-      limit?: number;
-    }) =>
-      Promise.resolve({
-        users: users.slice(0, limit),
+  function mockCohort(users: ReturnType<typeof powerUser>[]) {
+    return jest
+      .spyOn(
+        service as unknown as {
+          getPowerUserCohort: (p: number) => Promise<unknown>;
+        },
+        'getPowerUserCohort',
+      )
+      .mockResolvedValue({
+        users,
         summary: {
           total: users.length,
-          topPerformers: users.length,
+          topPerformers: Math.min(10, users.length),
           avgMonthlyPdfs: 120,
           byPlan: { free: 0, lite: 0, pro: users.length, promax: 0 },
         },
-        pagination: {
-          page: 1,
-          limit,
-          total: users.length,
-          totalPages: Math.ceil(users.length / limit),
-        },
-      })) as never);
+      });
   }
 
   beforeEach(async () => {
@@ -347,7 +344,7 @@ describe('EmailService.schedulePowerUserEmails', () => {
 
   it('no reencola a quien ya recibió el email en su período de facturación', async () => {
     // 5 power users, 3 ya lo recibieron en este período.
-    mockPowerUsers(['a', 'b', 'c', 'd', 'e'].map((id) => powerUser(id)));
+    mockCohort(['a', 'b', 'c', 'd', 'e'].map((id) => powerUser(id)));
     firestore.hasUserReceivedEmailInPeriod.mockImplementation(
       (userId: string) => Promise.resolve(['a', 'b', 'c'].includes(userId)),
     );
@@ -360,7 +357,7 @@ describe('EmailService.schedulePowerUserEmails', () => {
   });
 
   it('deduplica por período usando el periodStart del propio usuario', async () => {
-    mockPowerUsers([powerUser('a')]);
+    mockCohort([powerUser('a')]);
 
     await service.schedulePowerUserEmails();
 
@@ -373,7 +370,7 @@ describe('EmailService.schedulePowerUserEmails', () => {
   });
 
   it('es idempotente: la segunda ejecución no crea duplicados', async () => {
-    mockPowerUsers([powerUser('a'), powerUser('b')]);
+    mockCohort([powerUser('a'), powerUser('b')]);
     const encolados = new Set<string>();
     firestore.hasUserReceivedEmailInPeriod.mockImplementation(
       (userId: string) => Promise.resolve(encolados.has(userId)),
@@ -397,7 +394,7 @@ describe('EmailService.schedulePowerUserEmails', () => {
   it('no envía el email de PRO a usuarios free ni lite colados en el top 10%', async () => {
     // El percentil se calcula sobre todos los usuarios con uso, así que un free
     // puede entrar en el top 10% y recibir un email que le agradece ser PRO.
-    mockPowerUsers([
+    mockCohort([
       powerUser('gratis', 'free'),
       powerUser('basico', 'lite'),
       powerUser('pagado', 'pro'),
@@ -427,15 +424,15 @@ describe('EmailService.schedulePowerUserEmails', () => {
   });
 
   it('los free/lite no consumen cupo: los de pago que quedan detrás sí reciben', async () => {
-    // Cohorte de 70 con 30 free/lite por delante. Pidiendo solo la primera
-    // página de 50, los 30 descartados se llevarían por delante a 30 de pago
-    // que nunca se llegarían a examinar.
+    // Cohorte de 70 con 30 free/lite por delante. Con cualquier truncamiento
+    // previo al filtro, esos 30 descartados se llevarían por delante a otros
+    // tantos de pago que nunca se llegarían a examinar.
     const cohorte = [
       ...Array.from({ length: 15 }, (_, i) => powerUser(`free${i}`, 'free')),
       ...Array.from({ length: 15 }, (_, i) => powerUser(`lite${i}`, 'lite')),
       ...Array.from({ length: 40 }, (_, i) => powerUser(`pro${i}`, 'pro')),
     ];
-    mockPowerUsers(cohorte);
+    mockCohort(cohorte);
 
     const result = await service.schedulePowerUserEmails();
 
@@ -443,18 +440,27 @@ describe('EmailService.schedulePowerUserEmails', () => {
     expect(result.skipped).toBe(30);
   });
 
-  it('pide una cohorte mayor que el tope de envíos, no solo la primera página', async () => {
-    const spy = mockPowerUsers([powerUser('a')]);
+  it('consume la cohorte sin paginar, por grande que sea', async () => {
+    // Los empates en pdfsThisMonth pueden ensanchar la cohorte mucho más allá
+    // del 10% nominal, así que no puede haber ningún techo intermedio: aquí los
+    // 1200 primeros son descartables y los elegibles están al final.
+    const paginado = jest.spyOn(service, 'getPowerUsersWithPeriod');
+    mockCohort([
+      ...Array.from({ length: 1200 }, (_, i) => powerUser(`free${i}`, 'free')),
+      ...Array.from({ length: 5 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    ]);
 
-    await service.schedulePowerUserEmails();
+    const result = await service.schedulePowerUserEmails();
 
-    const { limit } = spy.mock.calls[0][0];
-    expect(limit).toBeGreaterThan(50);
+    expect(result.scheduled).toBe(5);
+    expect(result.skipped).toBe(1200);
+    // Si volviera a pasar por el método paginado, habría un techo de nuevo.
+    expect(paginado).not.toHaveBeenCalled();
   });
 
   it('corta en el tope de envíos por ejecución sin truncar en silencio', async () => {
     const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-    mockPowerUsers(
+    mockCohort(
       Array.from({ length: 80 }, (_, i) => powerUser(`pro${i}`, 'pro')),
     );
 
@@ -463,5 +469,27 @@ describe('EmailService.schedulePowerUserEmails', () => {
     expect(result.scheduled).toBe(50);
     expect(firestore.createEmailQueue).toHaveBeenCalledTimes(50);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('tope de 50'));
+  });
+
+  it('el endpoint de admin sigue paginando la misma cohorte', async () => {
+    // El scheduler dejó de paginar, pero el dashboard no: extraer el helper no
+    // puede haberle cambiado el contrato.
+    mockCohort(
+      Array.from({ length: 120 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    );
+
+    const pagina2 = await service.getPowerUsersWithPeriod({
+      page: 2,
+      limit: 50,
+    });
+
+    expect(pagina2.users).toHaveLength(50);
+    expect(pagina2.users[0].userId).toBe('pro50');
+    expect(pagina2.pagination).toMatchObject({
+      page: 2,
+      limit: 50,
+      total: 120,
+      totalPages: 3,
+    });
   });
 });
