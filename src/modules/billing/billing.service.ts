@@ -257,6 +257,22 @@ export class BillingService {
       });
     }
 
+    // El perfil incompleto se comprueba aquí y no dentro del reintento para que
+    // salga como 400: es una precondición que el usuario no ha cumplido, no un
+    // rechazo del PAC. Si se dejara caer al catch se devolvería un 422, que le
+    // diría que su RFC está mal cuando lo que falta es cargarlo.
+    const profile = await this.firestoreService.getTaxProfile(userId);
+    if (!profile?.isComplete || profile.type !== 'mx') {
+      throw new BadRequestException({
+        error: ErrorCodes.INVALID_INPUT,
+        message: 'Tax profile is incomplete',
+        cfdiError: {
+          code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+          message: 'Tax profile is incomplete',
+        },
+      });
+    }
+
     try {
       const updated = await this.cfdiService.retry(invoice, user);
       return this.toCfdiDto(updated);

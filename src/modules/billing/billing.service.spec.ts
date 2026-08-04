@@ -529,6 +529,7 @@ describe('BillingService — perfil fiscal', () => {
       retrieveError?: unknown;
       cfdi?: Record<string, unknown> | null;
       retry?: jest.Mock;
+      profile?: Record<string, unknown> | null;
     }) {
       const retrieve = overrides.retrieveError
         ? jest.fn().mockRejectedValue(overrides.retrieveError)
@@ -553,6 +554,13 @@ describe('BillingService — perfil fiscal', () => {
           getCfdiByInvoiceId: jest
             .fn()
             .mockResolvedValue(overrides.cfdi ?? null),
+          getTaxProfile: jest
+            .fn()
+            .mockResolvedValue(
+              overrides.profile === undefined
+                ? { type: 'mx', isComplete: true }
+                : overrides.profile,
+            ),
         },
         storageService: {
           generateSignedUrlForPath: jest
@@ -611,6 +619,20 @@ describe('BillingService — perfil fiscal', () => {
       });
 
       // Reintentarlo emitiría un duplicado.
+      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('400, no 422, si el perfil fiscal está incompleto', async () => {
+      const service = buildRetryService({
+        cfdi: { status: 'failed' },
+        profile: null,
+      });
+
+      // Es una precondición que el usuario no ha cumplido, no un rechazo del
+      // PAC: un 422 le diría que su RFC está mal cuando lo que falta es
+      // cargarlo.
       await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
         BadRequestException,
       );
