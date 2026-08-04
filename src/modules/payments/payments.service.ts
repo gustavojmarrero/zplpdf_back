@@ -21,6 +21,8 @@ import type {
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
 import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
+import type { PlanType } from '../../common/interfaces/user.interface.js';
+import { randomUUID } from 'node:crypto';
 
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
 /** Planes de pago vendibles por checkout/upgrade (excluye enterprise, que es manual). */
@@ -414,6 +416,12 @@ export class PaymentsService {
     error: unknown,
     operation: string,
     context: string,
+    /**
+     * Aclaración que se añade al mensaje del usuario. Sirve para decirle qué ha
+     * quedado sin cambiar: tras un cobro rechazado, lo primero que necesita
+     * saber es que su plan sigue siendo el de antes.
+     */
+    userSuffix = '',
   ): never {
     const stripeError = error as {
       statusCode?: number;
@@ -438,7 +446,8 @@ export class PaymentsService {
       );
       throw new ServiceUnavailableException(
         'We could not process your plan change right now due to a configuration issue on our side. ' +
-          'Our team has been notified — please contact support@zplpdf.com.',
+          'Our team has been notified — please contact support@zplpdf.com.' +
+          userSuffix,
       );
     }
 
@@ -447,8 +456,9 @@ export class PaymentsService {
         `${operation} falló por la tarjeta — ${context}. Detalle: ${stripeError.message}`,
       );
       throw new BadRequestException(
-        stripeError.message ||
-          'Your card was declined. Please update your payment method and try again.',
+        (stripeError.message ||
+          'Your card was declined. Please update your payment method and try again.') +
+          userSuffix,
       );
     }
 
@@ -457,7 +467,8 @@ export class PaymentsService {
     );
     throw new ServiceUnavailableException(
       'We could not process your plan change right now. Please try again in a few minutes ' +
-        'or contact support@zplpdf.com.',
+        'or contact support@zplpdf.com.' +
+        userSuffix,
     );
   }
 
@@ -484,6 +495,167 @@ export class PaymentsService {
     }
 
     return `${base} Manage your subscription from your account settings before upgrading.`;
+  }
+
+  /** Stripe descarta las claves de idempotencia a las 24 h; no tiene sentido conservarlas más. */
+  private static readonly IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * Clave de idempotencia del intento de upgrade, estable entre reintentos.
+   *
+   * No se deriva del reloj: una cubeta temporal (`Date.now() / 60000`) parte dos
+   * llamadas separadas por segundos si caen a ambos lados del cambio de minuto,
+   * que es justo el caso que hay que cubrir — el reintento inmediato tras un
+   * timeout. Se persiste en el usuario y se reutiliza mientras el intento siga
+   * vivo, de modo que ese reintento llegue a Stripe con la misma clave y no
+   * genere un segundo cargo.
+   */
+  private async getUpgradeIdempotencyKey(
+    userId: string,
+    targetPlan: PlanType,
+    subscriptionId: string,
+  ): Promise<string> {
+    // La adquisición es transaccional: dos upgrades simultáneos no pueden
+    // acabar con claves distintas y, por tanto, con dos mutaciones en Stripe.
+    return this.firestoreService.acquireUpgradeIdempotency(
+      userId,
+      {
+        key: `upgrade_${userId}_${randomUUID()}`,
+        targetPlan,
+        subscriptionId,
+      },
+      PaymentsService.IDEMPOTENCY_TTL_MS,
+    );
+  }
+
+  /**
+   * Libera la clave tras un resultado definitivo (éxito, rechazo de tarjeta,
+   * pago pendiente...). Solo se conserva ante errores indeterminados, que son
+   * los que el cliente debe reintentar con la MISMA clave.
+   *
+   * Se libera comparando: si otro intento posterior ya adquirió una clave
+   * distinta, borrarla lo dejaría sin protección frente a duplicados.
+   */
+  private async clearUpgradeIdempotencyKey(
+    userId: string,
+    key: string,
+  ): Promise<void> {
+    try {
+      await this.firestoreService.releaseUpgradeIdempotency(userId, key);
+    } catch (error) {
+      // No es motivo para tumbar un upgrade que ya se resolvió: como mucho, el
+      // siguiente intento reusa una clave que Stripe descartará en 24 h.
+      this.logger.warn(
+        `No se pudo limpiar la clave de idempotencia de ${userId}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * El cambio de plan quedó en `pending_update`: Stripe lo aplicará solo cuando
+   * el cobro se complete o el cliente autentique (3DS). El plan NO se toca.
+   *
+   * Es importante darle el enlace de la factura y no invitarle a reintentar:
+   * lanzar otro update reemplazaría este pending update y anularía su factura,
+   * dejándole sin la vía de pago que ya tenía abierta.
+   */
+  private throwPendingPaymentError(
+    subscription: Stripe.Subscription,
+    context: string,
+  ): never {
+    const invoice = subscription.latest_invoice as Stripe.Invoice | null;
+    const payUrl = invoice?.hosted_invoice_url;
+
+    this.logger.warn(
+      `Upgrade pendiente de pago: el cambio quedó en pending_update — ${context}. ` +
+        `Plan sin cambiar. Factura: ${invoice?.id ?? 'desconocida'}.`,
+    );
+
+    throw new BadRequestException(
+      `Your plan has not been changed yet: the payment needs to be completed or authenticated. ` +
+        (payUrl
+          ? `Complete it here and the change will apply automatically: ${payUrl}`
+          : `Please check your payment method from your account settings and try again.`),
+    );
+  }
+
+  /**
+   * Reconcilia el estado real tras un error de Stripe *indeterminado*.
+   *
+   * `StripeConnectionError` y `StripeAPIError` no significan "no se hizo nada":
+   * Stripe puede haber aplicado y cobrado el cambio y haberse perdido solo la
+   * respuesta. Decirle al cliente "tu plan no ha cambiado" sería falso y le
+   * empujaría a reintentar sobre un cargo ya hecho.
+   *
+   * Devuelve el resultado del upgrade si al releer la suscripción resulta que sí
+   * se aplicó; `null` si se confirma que no, para que el caller trate el error
+   * con normalidad.
+   */
+  private async reconcileIndeterminateUpgrade(
+    error: unknown,
+    userId: string,
+    targetPlan: 'pro' | 'promax',
+    subscriptionId: string,
+    expectedPriceId: string,
+    context: string,
+  ): Promise<{ success: boolean; message: string } | null> {
+    const type = (error as { type?: string }).type;
+    if (type !== 'StripeConnectionError' && type !== 'StripeAPIError') {
+      return null;
+    }
+
+    this.logger.warn(
+      `Error indeterminado de Stripe (${type}) — ${context}. Releyendo la suscripción ` +
+        `para saber si el cambio llegó a aplicarse.`,
+    );
+
+    let current: Stripe.Subscription;
+    try {
+      current = await this.stripe.subscriptions.retrieve(subscriptionId, {
+        // Necesario para poder devolver el enlace de pago si resulta que la
+        // petición perdida sí llegó a dejar un pending update.
+        expand: ['latest_invoice'],
+      });
+    } catch (retrieveError) {
+      // Sin poder leer el estado no se puede afirmar nada en ninguna dirección.
+      this.logger.error(
+        `CRITICAL: no se pudo reconciliar el upgrade tras un error indeterminado — ${context}. ` +
+          `Revisar la suscripción en Stripe a mano. Detalle: ${(retrieveError as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not confirm whether your plan change went through. Please check your billing ' +
+          'settings before trying again, or contact support@zplpdf.com.',
+      );
+    }
+
+    // Tercer resultado, ni aplicado ni fallido: la petición que se perdió sí
+    // llegó a crear un pending update. Tratarlo como "no aplicado" devolvería un
+    // error genérico y, peor, invitaría a reintentar — y un update nuevo
+    // reemplaza el pending update existente y anula su factura, dejando al
+    // cliente sin el enlace con el que ya podía pagar o autenticar.
+    if (current.pending_update) {
+      this.throwPendingPaymentError(current, context);
+    }
+
+    const applied =
+      current.status === 'active' &&
+      current.items.data.some((item) => item.price?.id === expectedPriceId);
+
+    if (!applied) {
+      return null;
+    }
+
+    // El cambio sí se aplicó: sincronizamos Firestore para no dejar al cliente
+    // pagando un plan que el producto no le reconoce.
+    await this.firestoreService.updateUser(userId, { plan: targetPlan });
+    this.logger.log(
+      `Upgrade reconciliado tras error indeterminado: el cambio sí se aplicó — ${context}.`,
+    );
+
+    return {
+      success: true,
+      message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
+    };
   }
 
   /**
@@ -524,9 +696,19 @@ export class PaymentsService {
     try {
       subscription = await this.stripe.subscriptions.retrieve(
         user.stripeSubscriptionId,
+        // Para poder devolver la factura del cambio pendiente, si lo hay.
+        { expand: ['latest_invoice'] },
       );
     } catch (error) {
       this.throwStripeApiError(error, 'subscriptions.retrieve', upgradeContext);
+    }
+
+    // Ya hay un cambio esperando pago: se devuelve ESA factura en lugar de
+    // lanzar otro update. Un update nuevo reemplazaría el pending update y
+    // anularía su factura, invalidando el enlace que ya se le había dado al
+    // cliente — quedaría persiguiendo una URL muerta.
+    if (subscription.pending_update) {
+      this.throwPendingPaymentError(subscription, upgradeContext);
     }
 
     if (subscription.status !== 'active') {
@@ -552,25 +734,103 @@ export class PaymentsService {
       );
     }
 
+    const idempotencyKey = await this.getUpgradeIdempotencyKey(
+      userId,
+      targetPlan,
+      user.stripeSubscriptionId,
+    );
+
     // Update subscription with proration
+    let updatedSubscription: Stripe.Subscription;
     try {
-      await this.stripe.subscriptions.update(user.stripeSubscriptionId, {
-        items: [
-          {
-            id: subscriptionItemId,
-            price: newPriceId,
-          },
-        ],
-        proration_behavior: 'always_invoice', // Charge/credit immediately
-      });
+      updatedSubscription = await this.stripe.subscriptions.update(
+        user.stripeSubscriptionId,
+        {
+          items: [
+            {
+              id: subscriptionItemId,
+              price: newPriceId,
+            },
+          ],
+          proration_behavior: 'always_invoice', // Charge/credit immediately
+          // Con el comportamiento por defecto (allow_incomplete) un cobro
+          // rechazado NO lanza error: Stripe cambia el precio igualmente, falla
+          // el cargo, deja la suscripción en past_due y responde 200; el plan
+          // acababa marcado en Firestore sin haberse pagado (issue #66).
+          //
+          // Se usa pending_if_incomplete y NO error_if_incomplete porque este
+          // último no soporta pagos que requieren autenticación: ante un 3DS/SCA
+          // devuelve error en lugar de crear el PaymentIntent, así que esas
+          // tarjetas jamás podrían completar el upgrade. Con pending_if_incomplete
+          // el cambio queda PENDIENTE y solo se aplica cuando el pago se
+          // confirma, que es exactamente la garantía que se busca.
+          payment_behavior: 'pending_if_incomplete',
+          expand: ['latest_invoice'],
+        },
+        { idempotencyKey },
+      );
     } catch (error) {
-      this.throwStripeApiError(error, 'subscriptions.update', upgradeContext);
+      const reconciled = await this.reconcileIndeterminateUpgrade(
+        error,
+        userId,
+        targetPlan,
+        user.stripeSubscriptionId,
+        newPriceId,
+        upgradeContext,
+      );
+      if (reconciled) {
+        // La reconciliación es un desenlace definitivo: se sabe que el cambio
+        // se aplicó, así que el próximo intento debe partir de clave nueva.
+        await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
+        return reconciled;
+      }
+      // Solo los errores indeterminados conservan la clave: son los únicos que
+      // el cliente debe reintentar con la misma para no arriesgar otro cargo.
+      const type = (error as { type?: string }).type;
+      if (type !== 'StripeConnectionError' && type !== 'StripeAPIError') {
+        await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
+      }
+      this.throwStripeApiError(
+        error,
+        'subscriptions.update',
+        upgradeContext,
+        ' Your plan has not been changed.',
+      );
+    }
+
+    // pending_update presente = el cobro no se completó (tarjeta rechazada o
+    // 3DS sin confirmar) y el cambio NO se ha aplicado. El plan no se toca; se
+    // le da al cliente el enlace de Stripe donde puede pagar o autenticar, y al
+    // confirmarse el pago Stripe aplica el cambio y lo sincroniza por webhook.
+    if (updatedSubscription.pending_update) {
+      // Definitivo: hay una factura esperando. Si el cliente vuelve a intentarlo
+      // más adelante, debe ser un intento nuevo y no la respuesta cacheada.
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
+      this.throwPendingPaymentError(updatedSubscription, upgradeContext);
+    }
+
+    // Defensa en profundidad: el plan solo se marca cuando la suscripción queda
+    // confirmada como activa.
+    if (updatedSubscription.status !== 'active') {
+      this.logger.error(
+        `Upgrade no confirmado: la suscripción quedó en '${updatedSubscription.status}' ` +
+          `tras el cambio de precio — ${upgradeContext}. No se actualiza el plan en Firestore.`,
+      );
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
+      throw new BadRequestException(
+        `We could not confirm the payment for your plan change (subscription status: ` +
+          `${updatedSubscription.status}). Your plan has not been changed. ` +
+          `Please check your payment method and try again.`,
+      );
     }
 
     // Update user plan in Firestore
     await this.firestoreService.updateUser(userId, {
       plan: targetPlan,
     });
+    // La clave se libera aparte y comparando: borrarla en la misma escritura
+    // sería incondicional y podría pisar la de un intento posterior.
+    await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
 
     this.logger.log(
       `User ${userId} upgraded from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}`,

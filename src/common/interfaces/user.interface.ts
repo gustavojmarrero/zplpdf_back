@@ -34,6 +34,27 @@ export interface User {
   role: UserRole;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
+  /**
+   * Clave de idempotencia del intento de upgrade en curso.
+   *
+   * Se persiste porque un reintento tras un error indeterminado DEBE reusar la
+   * misma clave: Stripe puede aplicar el efecto de la petición original más
+   * tarde, y reintentar con otra clave arriesga un segundo cargo. Se limpia ante
+   * cualquier resultado definitivo, de modo que un intento nuevo —por ejemplo
+   * con la tarjeta ya corregida— no reciba la respuesta cacheada del anterior.
+   */
+  upgradeIdempotency?: {
+    key: string;
+    targetPlan: PlanType;
+    subscriptionId: string;
+    /**
+     * ISO string, no Date: `getUserById` solo convierte los Timestamp de primer
+     * nivel, así que un Date anidado volvería de Firestore como Timestamp y
+     * `new Date(...)` daría Invalid Date — el TTL sería siempre NaN y la clave
+     * no se reutilizaría nunca. Coincide además con la convención del proyecto.
+     */
+    createdAt: string;
+  } | null;
   // Período de facturación (sincronizado desde Stripe webhooks)
   subscriptionPeriodStart?: Date;
   subscriptionPeriodEnd?: Date;

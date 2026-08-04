@@ -592,6 +592,77 @@ export class FirestoreService {
     }
   }
 
+  /**
+   * Adquiere de forma ATÓMICA la clave de idempotencia del upgrade en curso.
+   *
+   * Leer y escribir por separado permitiría que dos upgrades simultáneos vieran
+   * ambos un usuario sin clave, generaran UUIDs distintos y lanzaran dos
+   * mutaciones a Stripe — justo el doble cargo que la idempotencia debe evitar.
+   * La transacción garantiza que solo una gane y que la otra reutilice su clave.
+   *
+   * Devuelve la clave vigente si la hay (mismo plan, misma suscripción y dentro
+   * del TTL); si no, persiste `candidate` y la devuelve.
+   */
+  async acquireUpgradeIdempotency(
+    userId: string,
+    candidate: { key: string; targetPlan: string; subscriptionId: string },
+    ttlMs: number,
+  ): Promise<string> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const stored = snapshot.data()?.upgradeIdempotency;
+
+      // Defensivo con el formato: lo escribimos como ISO string, pero un
+      // documento anterior pudo quedar con Timestamp o Date.
+      const createdAtMs = stored?.createdAt
+        ? new Date(stored.createdAt?.toDate?.() ?? stored.createdAt).getTime()
+        : NaN;
+
+      const vigente =
+        !!stored?.key &&
+        stored.targetPlan === candidate.targetPlan &&
+        stored.subscriptionId === candidate.subscriptionId &&
+        Number.isFinite(createdAtMs) &&
+        Date.now() - createdAtMs < ttlMs;
+
+      if (vigente) {
+        return stored.key as string;
+      }
+
+      transaction.update(ref, {
+        upgradeIdempotency: {
+          ...candidate,
+          createdAt: new Date().toISOString(),
+        },
+        updatedAt: new Date(),
+      });
+      return candidate.key;
+    });
+  }
+
+  /**
+   * Libera la clave SOLO si sigue siendo la del intento que terminó.
+   *
+   * Un borrado incondicional podría eliminar la clave que otro intento más
+   * reciente acaba de adquirir, dejándolo sin protección frente a duplicados.
+   */
+  async releaseUpgradeIdempotency(userId: string, key: string): Promise<void> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    await this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      if (snapshot.data()?.upgradeIdempotency?.key !== key) {
+        return;
+      }
+      transaction.update(ref, {
+        upgradeIdempotency: null,
+        updatedAt: new Date(),
+      });
+    });
+  }
+
   async getUserByStripeCustomerId(customerId: string): Promise<User | null> {
     try {
       const snapshot = await this.firestore
