@@ -790,6 +790,25 @@ export class PaymentsService {
       user.stripeSubscriptionId,
     );
 
+    // `always_invoice` emite y cobra la factura de la proración dentro del
+    // propio update, y Stripe congela en ella los datos fiscales del customer al
+    // finalizarla. Igual que en el checkout, hay que propagarlos antes y en modo
+    // estricto: si el guardado del perfil no llegó a Stripe en su momento, esta
+    // factura saldría con datos viejos o sin ellos, y ya no habría forma de
+    // corregirla.
+    try {
+      await this.billingService.syncTaxProfileToStripe(userId, {
+        throwOnError: true,
+      });
+    } catch (error) {
+      this.logger.error(
+        `No se pudo propagar el perfil fiscal de ${userId} antes del upgrade: ${error.message}`,
+      );
+      throw new ServiceUnavailableException(
+        'No se pudieron sincronizar tus datos de facturación. Inténtalo de nuevo en unos momentos.',
+      );
+    }
+
     // Update subscription with proration
     let updatedSubscription: Stripe.Subscription;
     try {

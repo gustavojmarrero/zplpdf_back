@@ -221,12 +221,32 @@ export class CfdiService {
         error instanceof FacturamaError ? error.code : CfdiErrorCodes.UNKNOWN;
       const message =
         error instanceof Error ? error.message : 'Error desconocido';
+      const indeterminate =
+        error instanceof FacturamaError && error.indeterminate;
 
       this.logger.error(
         `Fallo al timbrar la factura ${stripeInvoiceId} (usuario ${user.id}) [${code}]: ${message}`,
       );
 
-      await this.persistFailure(stripeInvoiceId, attempts, code, message);
+      if (indeterminate) {
+        // Un timeout o un 5xx no dicen que el CFDI no se emitiera: dicen que no
+        // se sabe. Marcarlo `failed` habilitaría un reintento que emitiría un
+        // segundo comprobante, y un duplicado solo se deshace cancelándolo ante
+        // el SAT. Se deja en `pending`, que el reintento rechaza, hasta que
+        // alguien lo reconcilie contra Facturama.
+        this.logger.error(
+          `CRÍTICO: resultado indeterminado al timbrar la factura ${stripeInvoiceId} (usuario ${user.id}). ` +
+            `Puede existir un CFDI emitido sin registrar. Queda en 'pending' y requiere reconciliación manual contra Facturama antes de reintentar.`,
+        );
+        await this.persistIndeterminate(
+          stripeInvoiceId,
+          attempts,
+          code,
+          message,
+        );
+      } else {
+        await this.persistFailure(stripeInvoiceId, attempts, code, message);
+      }
 
       if (options.rethrow) {
         throw error;
@@ -309,6 +329,26 @@ export class CfdiService {
   ): Promise<void> {
     await this.firestoreService.updateCfdi(stripeInvoiceId, {
       status: 'failed',
+      attempts,
+      error: { code, message },
+    });
+  }
+
+  /**
+   * Registra un timbrado cuyo resultado no se conoce.
+   *
+   * Queda en `pending` —el único estado que el reintento rechaza— porque puede
+   * haber un CFDI emitido en Facturama que no llegamos a registrar. Marcarlo
+   * `failed` invitaría a reintentar y a duplicar el comprobante.
+   */
+  private async persistIndeterminate(
+    stripeInvoiceId: string,
+    attempts: number,
+    code: CfdiErrorCode,
+    message: string,
+  ): Promise<void> {
+    await this.firestoreService.updateCfdi(stripeInvoiceId, {
+      status: 'pending',
       attempts,
       error: { code, message },
     });

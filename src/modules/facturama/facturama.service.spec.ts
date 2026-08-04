@@ -286,6 +286,46 @@ describe('FacturamaService', () => {
       expect(error.code).toBe(CfdiErrorCodes.PAC_UNAVAILABLE);
     });
 
+    it('marca indeterminado el timbrado que expira sin respuesta', async () => {
+      const error = await stampExpectingCode(
+        jest.fn().mockRejectedValue(axiosError(undefined, undefined)),
+      );
+
+      // El POST pudo procesarse en el PAC y perderse solo la respuesta: quien lo
+      // reciba no debe reintentar a ciegas.
+      expect(error.indeterminate).toBe(true);
+    });
+
+    it('marca indeterminado un 5xx del PAC', async () => {
+      const error = await stampExpectingCode(
+        jest.fn().mockRejectedValue(axiosError(502, {})),
+      );
+
+      expect(error.indeterminate).toBe(true);
+    });
+
+    it('NO marca indeterminado un 401: consta que no se timbró', async () => {
+      const error = await stampExpectingCode(
+        jest.fn().mockRejectedValue(axiosError(401, {})),
+      );
+
+      expect(error.indeterminate).toBe(false);
+    });
+
+    it('NO marca indeterminada una descarga fallida', async () => {
+      const { service } = buildService({
+        get: jest.fn().mockRejectedValue(axiosError(503, {})),
+      });
+
+      try {
+        await service.downloadPdf('cfdi_123');
+        throw new Error('Se esperaba un FacturamaError');
+      } catch (error) {
+        // Una descarga no crea nada; repetirla no tiene riesgo.
+        expect((error as FacturamaError).indeterminate).toBe(false);
+      }
+    });
+
     it('clasifica un 401 como pac_unavailable, no como error del usuario', async () => {
       const error = await stampExpectingCode(
         jest.fn().mockRejectedValue(axiosError(401, {})),

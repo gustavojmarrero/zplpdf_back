@@ -285,6 +285,53 @@ describe('CfdiService', () => {
       });
     });
 
+    /**
+     * Un timeout o un 5xx no dicen que el CFDI no se emitiera: dicen que no se
+     * sabe. El POST pudo procesarse en el PAC y perderse solo la respuesta.
+     */
+    it('deja en pending, no en failed, un timbrado de resultado indeterminado', async () => {
+      const { service, updates } = buildService({
+        stampSubscription: jest
+          .fn()
+          .mockRejectedValue(
+            new FacturamaError(
+              CfdiErrorCodes.PAC_UNAVAILABLE,
+              'timeout of 30000ms exceeded',
+              undefined,
+              true,
+            ),
+          ),
+      });
+
+      await service.stampForInvoice(invoice());
+
+      // `failed` habilitaría el reintento del usuario y podría emitir un segundo
+      // comprobante; un CFDI duplicado solo se deshace cancelándolo ante el SAT.
+      expect(updates[0]).toMatchObject({
+        status: 'pending',
+        error: { code: CfdiErrorCodes.PAC_UNAVAILABLE },
+      });
+    });
+
+    it('deja en failed un pac_unavailable del que consta que no timbró', async () => {
+      const { service, updates } = buildService({
+        stampSubscription: jest
+          .fn()
+          .mockRejectedValue(
+            new FacturamaError(
+              CfdiErrorCodes.PAC_UNAVAILABLE,
+              'credenciales rechazadas',
+            ),
+          ),
+      });
+
+      await service.stampForInvoice(invoice());
+
+      // Un 401 es determinado: el PAC no procesó nada, así que reintentar tras
+      // corregir la configuración es seguro.
+      expect(updates[0]).toMatchObject({ status: 'failed' });
+    });
+
     it('cuenta los intentos acumulados sobre un CFDI ya fallido', async () => {
       const { service, updates } = buildService({
         previousAttempts: 2,

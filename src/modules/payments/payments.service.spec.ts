@@ -30,6 +30,7 @@ describe('PaymentsService — upgradeSubscription', () => {
      * queda activa; los tests que simulan un cobro fallido la pasan en past_due.
      */
     updateResult?: unknown;
+    syncTaxProfileToStripe?: jest.Mock;
   }) {
     const retrieve = overrides.retrieveError
       ? jest.fn().mockRejectedValue(overrides.retrieveError)
@@ -112,6 +113,10 @@ describe('PaymentsService — upgradeSubscription', () => {
         }
       });
 
+    const syncTaxProfileToStripe =
+      overrides.syncTaxProfileToStripe ??
+      jest.fn().mockResolvedValue(undefined);
+
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = { subscriptions: { retrieve, update } };
     service.firestoreService = {
@@ -122,9 +127,13 @@ describe('PaymentsService — upgradeSubscription', () => {
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.promaxPriceIdMxn = PROMAX_MXN;
+    // El upgrade emite y cobra la factura de la proración dentro del update, así
+    // que propaga el perfil fiscal antes y en modo estricto.
+    service.billingService = { syncTaxProfileToStripe: syncTaxProfileToStripe };
 
     return {
       service,
+      syncTaxProfileToStripe,
       retrieve,
       update,
       updateUser,
@@ -647,5 +656,52 @@ describe('PaymentsService — upgradeSubscription', () => {
       BadRequestException,
     );
     expect(update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `always_invoice` emite y cobra la factura de la proración dentro del propio
+   * update, y Stripe congela en ella los datos fiscales al finalizarla. Si la
+   * propagación no ocurre antes, esa factura sale con datos viejos o sin ellos y
+   * ya no hay forma de corregirla.
+   */
+  describe('sincronización fiscal previa', () => {
+    it('propaga el perfil fiscal antes de tocar la suscripción', async () => {
+      const { service, update, syncTaxProfileToStripe } = buildService({
+        subscription: {
+          id: 'sub_123',
+          status: 'active',
+          items: { data: [{ id: 'si_1', price: { id: 'price_pro_mxn' } }] },
+        },
+      });
+
+      await service.upgradeSubscription('uid-1', 'promax');
+
+      expect(syncTaxProfileToStripe).toHaveBeenCalledWith('uid-1', {
+        throwOnError: true,
+      });
+      // El orden importa: después del update ya no sirve de nada.
+      expect(syncTaxProfileToStripe.mock.invocationCallOrder[0]).toBeLessThan(
+        update.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('aborta el upgrade si la sincronización falla', async () => {
+      const { service, update } = buildService({
+        subscription: {
+          id: 'sub_123',
+          status: 'active',
+          items: { data: [{ id: 'si_1', price: { id: 'price_pro_mxn' } }] },
+        },
+        syncTaxProfileToStripe: jest
+          .fn()
+          .mockRejectedValue(new Error('Stripe caído')),
+      });
+
+      await expect(
+        service.upgradeSubscription('uid-1', 'promax'),
+      ).rejects.toThrow(ServiceUnavailableException);
+      // Sin cobro no hay factura con datos fiscales congelados que corregir.
+      expect(update).not.toHaveBeenCalled();
+    });
   });
 });

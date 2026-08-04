@@ -31,6 +31,7 @@ import {
   RFC_REGEX,
   SAT_CFDI_USES,
   SAT_FISCAL_REGIMES,
+  STRIPE_TAX_ID_TYPES,
   getSatPersonType,
   isCfdiUseValidForPerson,
   isRegimeValidForPerson,
@@ -248,6 +249,21 @@ export class BillingService {
       (invoice.customer as string) !== user.stripeCustomerId
     ) {
       throw new ForbiddenException('Invoice does not belong to this user');
+    }
+
+    // Un CFDI de ingreso ampara un cobro efectivo. El flujo automático solo se
+    // dispara sobre `invoice.payment_succeeded`, pero aquí la factura la elige
+    // el cliente: sin esta comprobación podría mandar al PAC una factura suya
+    // abierta, anulada o de importe cero y timbrar un ingreso que no existió.
+    if (invoice.status !== 'paid' || (invoice.amount_paid ?? 0) <= 0) {
+      throw new BadRequestException({
+        error: ErrorCodes.INVALID_INPUT,
+        message: `Invoice is not payable for CFDI (status: ${invoice.status}, amount_paid: ${invoice.amount_paid ?? 0})`,
+        cfdiError: {
+          code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+          message: 'La factura no corresponde a un cobro efectivo',
+        },
+      });
     }
 
     // El perfil incompleto se comprueba aquí y no dentro del reintento para que
@@ -755,7 +771,8 @@ export class BillingService {
     }
 
     // Un tipo sin valor (o al revés) deja un tax ID a medias que Stripe rechaza.
-    const hasType = Boolean(dto.taxIdType?.trim());
+    const taxIdType = dto.taxIdType?.trim();
+    const hasType = Boolean(taxIdType);
     const hasValue = Boolean(dto.taxIdValue?.trim());
     if (hasType !== hasValue) {
       if (hasType) {
@@ -763,6 +780,11 @@ export class BillingService {
       } else {
         errors.taxIdType = 'tax_id_type_required';
       }
+    } else if (hasType && !STRIPE_TAX_ID_TYPES.includes(taxIdType)) {
+      // El valor acaba en un cast al enum de Stripe. Sin esta comprobación el
+      // perfil se guardaba como completo, la propagación fallaba en silencio y
+      // el usuario descubría el problema como un 503 en su siguiente pago.
+      errors.taxIdType = 'tax_id_type_unknown';
     }
 
     return errors;
