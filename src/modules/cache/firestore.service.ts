@@ -14,6 +14,11 @@ import type {
   FeedbackSummary,
 } from '../../common/interfaces/feedback.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
+import type { TaxProfile } from '../../common/interfaces/tax-profile.interface.js';
+import type {
+  Cfdi,
+  CfdiClaim,
+} from '../../common/interfaces/cfdi.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
@@ -6839,6 +6844,251 @@ export class FirestoreService {
       };
     } catch (error) {
       this.logger.error(`Error getting ZPL debug file: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== Tax Profiles (Perfil fiscal / CFDI) ==============
+
+  private readonly taxProfilesCollection = 'tax_profiles';
+
+  /**
+   * Devuelve el perfil fiscal del usuario, o `null` si nunca lo cargó.
+   *
+   * Vive en su propia colección con docId = userId: el doc de `users` se lee en
+   * casi cada request y no tiene por qué cargar con el RFC y el domicilio.
+   */
+  async getTaxProfile(userId: string): Promise<TaxProfile | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.taxProfilesCollection)
+        .doc(userId)
+        .get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        ...data,
+        userId,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+      } as TaxProfile;
+    } catch (error) {
+      this.logger.error(`Error al obtener perfil fiscal: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Crea o actualiza el perfil fiscal.
+   *
+   * Se usa `set` con merge en lugar de `update` porque el primer guardado crea el
+   * documento, y `createdAt` solo se fija si no existía.
+   */
+  async saveTaxProfile(
+    userId: string,
+    data: Partial<TaxProfile>,
+  ): Promise<void> {
+    try {
+      const ref = this.firestore
+        .collection(this.taxProfilesCollection)
+        .doc(userId);
+      const existing = await ref.get();
+
+      await ref.set(
+        {
+          ...data,
+          userId,
+          ...(existing.exists ? {} : { createdAt: new Date() }),
+          updatedAt: new Date(),
+        },
+        { merge: true },
+      );
+
+      this.logger.log(`Perfil fiscal guardado: ${userId}`);
+    } catch (error) {
+      this.logger.error(`Error al guardar perfil fiscal: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== CFDIs ==============
+
+  private readonly cfdisCollection = 'cfdis';
+
+  /**
+   * Reserva el CFDI de una factura, o devuelve `null` si ya estaba reservado.
+   *
+   * El docId es el `stripeInvoiceId` y se usa `create`, que falla si el documento
+   * existe. Ahí está la idempotencia: dos entregas simultáneas del mismo webhook
+   * pueden pasar a la vez cualquier comprobación de aplicación, pero solo una
+   * gana el `create`. Un CFDI duplicado no se borra —se cancela a mano ante el
+   * SAT—, así que la garantía tiene que ser atómica.
+   */
+  async reserveCfdi(data: {
+    stripeInvoiceId: string;
+    userId: string;
+    amount: number;
+    currency: string;
+  }): Promise<Cfdi | null> {
+    const now = new Date();
+    const record: Cfdi = {
+      ...data,
+      status: 'pending',
+      attempts: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    try {
+      await this.firestore
+        .collection(this.cfdisCollection)
+        .doc(data.stripeInvoiceId)
+        .create(record);
+
+      return record;
+    } catch (error) {
+      // ALREADY_EXISTS (código 6): otro intento ya lo reservó.
+      if (error?.code === 6) {
+        this.logger.log(
+          `CFDI de ${data.stripeInvoiceId} ya reservado; no se timbra de nuevo`,
+        );
+        return null;
+      }
+      this.logger.error(`Error al reservar CFDI: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Toma el CFDI para reintentar su timbrado, de forma atómica.
+   *
+   * Devuelve el estado que impide el reintento, o `null` si lo ha tomado. Leer
+   * el estado y timbrar después no sirve de candado: dos peticiones simultáneas
+   * —un doble clic basta— leerían `failed` a la vez y ambas llamarían al PAC,
+   * emitiendo dos comprobantes que solo se deshacen cancelándolos ante el SAT.
+   *
+   * La transición `failed → pending` ocurre dentro de la transacción, así que
+   * solo el ganador encuentra `failed` y el resto se topa con `pending`.
+   */
+  async claimCfdiForRetry(
+    stripeInvoiceId: string,
+    data: { userId: string; amount: number; currency: string },
+  ): Promise<CfdiClaim> {
+    const ref = this.firestore
+      .collection(this.cfdisCollection)
+      .doc(stripeInvoiceId);
+
+    // El genérico va explícito para que el literal de `outcome` no se ensanche
+    // a `string` y la unión siga discriminando en quien la consume.
+    return this.firestore.runTransaction<CfdiClaim>(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const now = new Date();
+
+      if (!snapshot.exists) {
+        // Una factura anterior a que el usuario cargara su perfil fiscal no
+        // tiene documento, y debe poder facturarse.
+        transaction.create(ref, {
+          ...data,
+          stripeInvoiceId,
+          status: 'pending',
+          attempts: 0,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return { outcome: 'granted', attempts: 0 };
+      }
+
+      const current = snapshot.data() as Cfdi;
+
+      if (current.status !== 'failed') {
+        return { outcome: 'blocked', blockedBy: current.status };
+      }
+
+      transaction.update(ref, { status: 'pending', updatedAt: now });
+      // Los intentos acumulados salen de aquí, y no de una lectura posterior:
+      // el documento ya está en `pending` y un fallo al releerlo lo dejaría
+      // clavado en ese estado, bloqueando todos los reintentos futuros.
+      return { outcome: 'granted', attempts: current.attempts ?? 0 };
+    });
+  }
+
+  async getCfdiByInvoiceId(stripeInvoiceId: string): Promise<Cfdi | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.cfdisCollection)
+        .doc(stripeInvoiceId)
+        .get();
+
+      if (!doc.exists) return null;
+
+      const data = doc.data();
+      return {
+        ...data,
+        stampedAt: data.stampedAt?.toDate?.() || data.stampedAt || null,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+      } as Cfdi;
+    } catch (error) {
+      this.logger.error(`Error al obtener CFDI: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Resuelve varios CFDIs en una sola lectura para enriquecer el listado de
+   * facturas sin una consulta por fila.
+   */
+  async getCfdisByInvoiceIds(
+    stripeInvoiceIds: string[],
+  ): Promise<Map<string, Cfdi>> {
+    const result = new Map<string, Cfdi>();
+    const uniqueIds = [...new Set(stripeInvoiceIds.filter(Boolean))];
+
+    if (uniqueIds.length === 0) {
+      return result;
+    }
+
+    try {
+      const refs = uniqueIds.map((id) =>
+        this.firestore.collection(this.cfdisCollection).doc(id),
+      );
+      const docs = await this.firestore.getAll(...refs);
+
+      for (const doc of docs) {
+        if (!doc.exists) continue;
+        const data = doc.data();
+        result.set(doc.id, {
+          ...data,
+          stampedAt: data.stampedAt?.toDate?.() || data.stampedAt || null,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+          updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+        } as Cfdi);
+      }
+
+      return result;
+    } catch (error) {
+      // El CFDI enriquece el listado de facturas; un fallo aquí no debe dejar al
+      // usuario sin ver sus facturas de Stripe.
+      this.logger.error(`Error al obtener CFDIs en lote: ${error.message}`);
+      return result;
+    }
+  }
+
+  async updateCfdi(
+    stripeInvoiceId: string,
+    data: Partial<Cfdi>,
+  ): Promise<void> {
+    try {
+      await this.firestore
+        .collection(this.cfdisCollection)
+        .doc(stripeInvoiceId)
+        .set({ ...data, updatedAt: new Date() }, { merge: true });
+    } catch (error) {
+      this.logger.error(`Error al actualizar CFDI: ${error.message}`);
       throw error;
     }
   }

@@ -16,6 +16,7 @@ import {
 import { GA4Service } from '../analytics/ga4.service.js';
 import { ExchangeRateService } from '../admin/services/exchange-rate.service.js';
 import { EmailService } from '../email/email.service.js';
+import { BillingService } from '../billing/billing.service.js';
 import type {
   StripeTransaction,
   SubscriptionEvent,
@@ -75,6 +76,7 @@ export class PaymentsService {
     private readonly exchangeRateService: ExchangeRateService,
     @Inject(forwardRef(() => EmailService))
     private readonly emailService: EmailService,
+    private readonly billingService: BillingService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     const nodeEnv = this.configService.get<string>('NODE_ENV');
@@ -350,6 +352,29 @@ export class PaymentsService {
       await this.firestoreService.updateUser(userId, {
         stripeCustomerId: customerId,
       });
+    }
+
+    // Los datos fiscales tienen que estar en el customer ANTES de abrir el
+    // checkout. Stripe copia el nombre, el domicilio y los tax IDs a la factura
+    // en el momento de finalizarla —lo hace durante el propio checkout— y ya no
+    // vuelve a tocarlos: propagarlos al recibir `checkout.session.completed`
+    // llegaría tarde y el primer PDF saldría sin ellos.
+    //
+    // En modo estricto, para que el fallo detenga el checkout. Es preferible que
+    // el usuario reintente el pago a emitirle una factura fiscalmente incompleta
+    // que después no hay forma de corregir. Solo afecta a quien tiene perfil
+    // fiscal cargado: sin él la sincronización no hace nada y no puede fallar.
+    try {
+      await this.billingService.syncTaxProfileToStripe(userId, {
+        throwOnError: true,
+      });
+    } catch (error) {
+      this.logger.error(
+        `No se pudo propagar el perfil fiscal de ${userId} antes del checkout: ${error.message}`,
+      );
+      throw new ServiceUnavailableException(
+        'No se pudieron sincronizar tus datos de facturación. Inténtalo de nuevo en unos momentos.',
+      );
     }
 
     // Create checkout session
@@ -967,6 +992,12 @@ export class PaymentsService {
     );
 
     this.logger.log(`User ${userId} upgraded to ${plan} plan`);
+
+    // Segunda pasada, para las facturas siguientes. La primera ya se propagó
+    // antes de abrir el checkout —Stripe congela los datos fiscales al finalizar
+    // la factura—, pero aquí puede haberse detectado el país desde la dirección
+    // de facturación, y con él cambia el tipo de perfil que corresponde.
+    await this.billingService.syncTaxProfileToStripe(userId);
 
     // Determine transaction type based on previous plan
     const previousPlan = user?.plan || 'free';

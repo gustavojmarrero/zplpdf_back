@@ -74,6 +74,24 @@ export class StorageService {
   }
 
   /**
+   * Guarda un archivo en una ruta arbitraria del bucket.
+   *
+   * Sin URL firmada de vuelta: los CFDI se conservan cinco años y su descarga se
+   * autoriza por usuario en cada petición, así que la URL se genera al leer y no
+   * al guardar.
+   */
+  async saveFile(
+    filePath: string,
+    content: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    await this.storage
+      .bucket(this.bucketName)
+      .file(filePath)
+      .save(content, { metadata: { contentType } });
+  }
+
+  /**
    * Genera una URL firmada para cualquier archivo en el bucket
    * @param filePath Path del archivo en el bucket (ej: label-xxx.pdf)
    * @param downloadFilename Nombre del archivo para descarga (opcional)

@@ -1,4 +1,13 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -11,10 +20,15 @@ import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import {
+  CfdiRetryResponseDto,
   InvoicesResponseDto,
   PaymentMethodsResponseDto,
   SubscriptionResponseDto,
 } from './dto/billing.dto.js';
+import {
+  TaxProfileResponseDto,
+  UpdateTaxProfileDto,
+} from './dto/tax-profile.dto.js';
 
 @ApiTags('billing')
 @ApiBearerAuth()
@@ -68,5 +82,79 @@ export class BillingController {
     @CurrentUser() user: FirebaseUser,
   ): Promise<SubscriptionResponseDto | null> {
     return this.billingService.getSubscription(user.uid);
+  }
+
+  @Get('tax-profile')
+  @ApiOperation({
+    summary: 'Get the tax profile of the authenticated user',
+    description:
+      'Devuelve `isComplete: false` en lugar de 404 cuando el usuario todavía no ha cargado sus datos. El campo `type` lo deriva el backend de `user.country`.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Tax profile (may be empty)',
+    type: TaxProfileResponseDto,
+  })
+  async getTaxProfile(
+    @CurrentUser() user: FirebaseUser,
+  ): Promise<TaxProfileResponseDto> {
+    return this.billingService.getTaxProfile(user.uid);
+  }
+
+  @Put('tax-profile')
+  @ApiOperation({
+    summary: 'Create or update the tax profile',
+    description:
+      'Persiste el perfil y lo propaga al customer de Stripe (name, address y tax ID) para que el PDF que genera Stripe salga con los datos fiscales del cliente.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Saved tax profile',
+    type: TaxProfileResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Validación fallida. El detalle por campo llega en `data.errors` como códigos estables (p. ej. `rfc_invalid_format`) que el frontend traduce.',
+  })
+  async updateTaxProfile(
+    @CurrentUser() user: FirebaseUser,
+    @Body() dto: UpdateTaxProfileDto,
+  ): Promise<TaxProfileResponseDto> {
+    return this.billingService.updateTaxProfile(user.uid, dto);
+  }
+
+  @Post('invoices/:invoiceId/cfdi/retry')
+  @ApiOperation({
+    summary: 'Retry stamping a failed CFDI',
+    description:
+      'Salida del usuario cuando corrige su RFC o su código postal. Solo aplica a un CFDI en `failed`: reintentar uno ya timbrado emitiría un duplicado que hay que cancelar a mano ante el SAT.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'CFDI stamped',
+    type: CfdiRetryResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'El CFDI no está en `failed`, o el perfil fiscal está incompleto',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'La factura no pertenece al usuario',
+  })
+  @ApiResponse({ status: 404, description: 'La factura no existe' })
+  @ApiResponse({
+    status: 422,
+    description:
+      'El PAC volvió a rechazar el timbrado. El body incluye `data.cfdiError.code`, el mismo código estable del fallo original.',
+  })
+  async retryCfdi(
+    @CurrentUser() user: FirebaseUser,
+    @Param('invoiceId') invoiceId: string,
+  ): Promise<CfdiRetryResponseDto> {
+    const cfdi = await this.billingService.retryCfdi(user.uid, invoiceId);
+    return { success: true, cfdi };
   }
 }
