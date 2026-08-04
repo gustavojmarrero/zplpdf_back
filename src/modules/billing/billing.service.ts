@@ -1,8 +1,22 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
+import { StorageService } from '../storage/storage.service.js';
+import { CfdiService } from './cfdi.service.js';
+import { CfdiErrorCodes } from '../facturama/facturama.constants.js';
+import { FacturamaError } from '../facturama/interfaces/facturama.interface.js';
+import type { Cfdi } from '../../common/interfaces/cfdi.interface.js';
+import type { User } from '../../common/interfaces/user.interface.js';
 import {
+  CfdiDto,
   InvoicesResponseDto,
   PaymentMethodsResponseDto,
   SubscriptionResponseDto,
@@ -58,6 +72,8 @@ export class BillingService {
   constructor(
     private readonly configService: ConfigService,
     private readonly firestoreService: FirestoreService,
+    private readonly storageService: StorageService,
+    private readonly cfdiService: CfdiService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
 
@@ -88,6 +104,8 @@ export class BillingService {
         limit,
       });
 
+      const cfdis = await this.resolveCfdis(user, invoices.data);
+
       return {
         invoices: invoices.data.map((inv) => ({
           id: inv.id,
@@ -102,6 +120,7 @@ export class BillingService {
           hostedInvoiceUrl: inv.hosted_invoice_url,
           invoicePdf: inv.invoice_pdf,
           description: inv.description,
+          cfdi: cfdis.get(inv.id) ?? null,
         })),
         hasMore: invoices.has_more,
       };
@@ -110,6 +129,152 @@ export class BillingService {
         `Error fetching invoices for user ${userId}: ${error.message}`,
       );
       throw new BadRequestException('Failed to fetch invoices');
+    }
+  }
+
+  /**
+   * Resuelve el bloque `cfdi` de cada factura en una sola lectura.
+   *
+   * Los usuarios no mexicanos reciben un mapa vacío y el campo queda a `null`,
+   * que es como el frontend sabe que no debe pintar la columna. Para los
+   * mexicanos, una factura sin registro es `not_applicable`: normalmente una
+   * anterior a que cargaran su perfil fiscal.
+   */
+  private async resolveCfdis(
+    user: User,
+    invoices: Stripe.Invoice[],
+  ): Promise<Map<string, CfdiDto>> {
+    const result = new Map<string, CfdiDto>();
+
+    if (user.country?.toUpperCase() !== 'MX') {
+      return result;
+    }
+
+    const records = await this.firestoreService.getCfdisByInvoiceIds(
+      invoices.map((invoice) => invoice.id),
+    );
+
+    for (const invoice of invoices) {
+      const record = records.get(invoice.id);
+
+      if (!record) {
+        result.set(invoice.id, {
+          status: 'not_applicable',
+          uuid: null,
+          pdfUrl: null,
+          xmlUrl: null,
+          stampedAt: null,
+          error: null,
+        });
+        continue;
+      }
+
+      result.set(invoice.id, await this.toCfdiDto(record));
+    }
+
+    return result;
+  }
+
+  /**
+   * Las URLs de descarga se firman al leer y caducan en 15 minutos: el CFDI es
+   * un documento fiscal con el RFC y el domicilio del cliente, así que un enlace
+   * permanente en el bucket sería un enlace permanente a sus datos.
+   */
+  private async toCfdiDto(record: Cfdi): Promise<CfdiDto> {
+    const [pdfUrl, xmlUrl] = await Promise.all([
+      this.signCfdiFile(record.pdfPath, `CFDI-${record.uuid}.pdf`),
+      this.signCfdiFile(record.xmlPath, `CFDI-${record.uuid}.xml`),
+    ]);
+
+    return {
+      status: record.status,
+      uuid: record.uuid ?? null,
+      pdfUrl,
+      xmlUrl,
+      stampedAt:
+        record.stampedAt instanceof Date
+          ? record.stampedAt.toISOString()
+          : (record.stampedAt ?? null),
+      error: record.error ?? null,
+    };
+  }
+
+  private async signCfdiFile(
+    path: string | null | undefined,
+    filename: string,
+  ): Promise<string | null> {
+    if (!path) {
+      return null;
+    }
+
+    try {
+      return await this.storageService.generateSignedUrlForPath(path, filename);
+    } catch (error) {
+      // Un enlace que no se pudo firmar no debe tumbar el listado de facturas.
+      this.logger.error(`Error firmando ${path}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Reintenta el timbrado de un CFDI que quedó en `failed`.
+   *
+   * Es la salida del usuario cuando corrige su RFC o su código postal: sin esto
+   * dependería de soporte para recuperar una factura que ya pagó.
+   */
+  async retryCfdi(userId: string, invoiceId: string): Promise<CfdiDto> {
+    if (!this.stripe) {
+      throw new BadRequestException('Billing system not configured');
+    }
+
+    const user = await this.firestoreService.getUserById(userId);
+
+    let invoice: Stripe.Invoice;
+    try {
+      invoice = await this.stripe.invoices.retrieve(invoiceId);
+    } catch (error) {
+      if (error?.code === 'resource_missing') {
+        throw new NotFoundException('Invoice not found');
+      }
+      throw error;
+    }
+
+    if (
+      !user?.stripeCustomerId ||
+      (invoice.customer as string) !== user.stripeCustomerId
+    ) {
+      throw new ForbiddenException('Invoice does not belong to this user');
+    }
+
+    const record = await this.firestoreService.getCfdiByInvoiceId(invoiceId);
+
+    // Reintentar uno ya timbrado emitiría un duplicado, que solo se deshace
+    // cancelándolo a mano ante el SAT.
+    if (record && record.status !== 'failed') {
+      throw new BadRequestException({
+        error: ErrorCodes.INVALID_INPUT,
+        message: `CFDI is not in a retryable state (${record.status})`,
+      });
+    }
+
+    try {
+      const updated = await this.cfdiService.retry(invoice, user);
+      return this.toCfdiDto(updated);
+    } catch (error) {
+      const code =
+        error instanceof FacturamaError ? error.code : CfdiErrorCodes.UNKNOWN;
+
+      // 422: la petición era válida, pero el PAC volvió a rechazar el contenido.
+      // El `code` viaja igual que en el fallo original para que el frontend lo
+      // explique con el mismo diccionario.
+      throw new UnprocessableEntityException({
+        error: ErrorCodes.INVALID_INPUT,
+        message: error?.message ?? 'CFDI stamping failed',
+        cfdiError: {
+          code,
+          message: error?.message ?? 'CFDI stamping failed',
+        },
+      });
     }
   }
 

@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PaymentsService } from '../payments/payments.service.js';
+import { CfdiService } from '../billing/cfdi.service.js';
 
 @Injectable()
 export class WebhooksService {
@@ -12,6 +13,7 @@ export class WebhooksService {
   constructor(
     private readonly configService: ConfigService,
     private readonly paymentsService: PaymentsService,
+    private readonly cfdiService: CfdiService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     this.webhookSecret = this.configService.get<string>(
@@ -73,11 +75,20 @@ export class WebhooksService {
         );
         break;
 
-      case 'invoice.payment_succeeded':
-        await this.paymentsService.handleInvoicePaid(
-          event.data.object as Stripe.Invoice,
-        );
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object as Stripe.Invoice;
+
+        // El CFDI va aparte de `handleInvoicePaid` y antes que él a propósito.
+        // Aquel descarta `billing_reason: 'subscription_create'` porque el alta
+        // la resuelve `checkout.session.completed`, así que colgar de él el
+        // timbrado dejaría sin comprobante el primer cobro de cada cliente
+        // —justo el que más reclaman—. Fiscalmente se factura todo cobro, sea
+        // alta, renovación o cambio de plan.
+        await this.cfdiService.stampForInvoice(invoice);
+
+        await this.paymentsService.handleInvoicePaid(invoice);
         break;
+      }
 
       default:
         this.logger.log(`Unhandled event type: ${event.type}`);

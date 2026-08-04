@@ -1,5 +1,62 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+/**
+ * Estado del CFDI tal como lo pinta la UI.
+ *
+ * `not_applicable` es «se evaluó y este cobro no lleva comprobante» —una factura
+ * anterior a que el usuario cargara su perfil fiscal, por ejemplo—. El campo
+ * completo llega a `null` cuando el módulo no aplica: usuarios no mexicanos.
+ */
+export type CfdiApiStatus =
+  | 'stamped'
+  | 'pending'
+  | 'failed'
+  | 'canceled'
+  | 'not_applicable';
+
+export class CfdiErrorDto {
+  @ApiProperty({
+    description:
+      'Código estable que traduce el frontend: rfc_not_found, name_mismatch, postal_code_mismatch, regime_mismatch, cfdi_use_invalid, pac_unavailable, invoice_not_stampable, unknown',
+    example: 'rfc_not_found',
+  })
+  code: string;
+
+  @ApiProperty({
+    description:
+      'Texto libre para logs y diagnóstico. La UI solo cae aquí si el código no está mapeado.',
+  })
+  message: string;
+}
+
+export class CfdiDto {
+  @ApiProperty({
+    enum: ['stamped', 'pending', 'failed', 'canceled', 'not_applicable'],
+  })
+  status: CfdiApiStatus;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Folio fiscal del SAT' })
+  uuid: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'URL firmada, válida 15 minutos',
+  })
+  pdfUrl: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'URL firmada, válida 15 minutos',
+  })
+  xmlUrl: string | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'ISO 8601' })
+  stampedAt: string | null;
+
+  @ApiPropertyOptional({ type: CfdiErrorDto, nullable: true })
+  error: CfdiErrorDto | null;
+}
+
 // Invoice DTOs
 export class InvoiceDto {
   @ApiProperty()
@@ -37,6 +94,14 @@ export class InvoiceDto {
 
   @ApiPropertyOptional()
   description: string | null;
+
+  @ApiPropertyOptional({
+    type: CfdiDto,
+    nullable: true,
+    description:
+      'CFDI asociado al cobro. `null` cuando el módulo no aplica (usuario no mexicano).',
+  })
+  cfdi?: CfdiDto | null;
 }
 
 export class InvoicesResponseDto {
@@ -45,6 +110,14 @@ export class InvoicesResponseDto {
 
   @ApiProperty()
   hasMore: boolean;
+}
+
+export class CfdiRetryResponseDto {
+  @ApiProperty()
+  success: boolean;
+
+  @ApiProperty({ type: CfdiDto })
+  cfdi: CfdiDto;
 }
 
 // Payment Method DTOs
