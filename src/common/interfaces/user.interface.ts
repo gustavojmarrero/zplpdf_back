@@ -34,6 +34,21 @@ export interface User {
   role: UserRole;
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
+  /**
+   * Clave de idempotencia del intento de upgrade en curso.
+   *
+   * Se persiste porque un reintento tras un error indeterminado DEBE reusar la
+   * misma clave: Stripe puede aplicar el efecto de la petición original más
+   * tarde, y reintentar con otra clave arriesga un segundo cargo. Se limpia ante
+   * cualquier resultado definitivo, de modo que un intento nuevo —por ejemplo
+   * con la tarjeta ya corregida— no reciba la respuesta cacheada del anterior.
+   */
+  upgradeIdempotency?: {
+    key: string;
+    targetPlan: PlanType;
+    subscriptionId: string;
+    createdAt: Date;
+  } | null;
   // Período de facturación (sincronizado desde Stripe webhooks)
   subscriptionPeriodStart?: Date;
   subscriptionPeriodEnd?: Date;
