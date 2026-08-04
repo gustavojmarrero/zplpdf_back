@@ -88,12 +88,19 @@ export interface StampResult {
  *
  * Se modela como clase para poder distinguirlo con `instanceof` de un fallo
  * cualquiera al capturarlo en el webhook.
+ *
+ * `indeterminate` distingue el fallo que deja el resultado en el aire —un
+ * timeout, un 5xx, una conexión cortada— de aquel en que consta que el
+ * comprobante NO se emitió. Importa porque un POST que expira pudo haberse
+ * procesado igualmente en el PAC: reintentarlo emitiría un segundo CFDI, y un
+ * duplicado no se borra, se cancela a mano ante el SAT.
  */
 export class FacturamaError extends Error {
   constructor(
     readonly code: CfdiErrorCode,
     message: string,
     readonly raw?: unknown,
+    readonly indeterminate = false,
   ) {
     super(message);
     this.name = 'FacturamaError';

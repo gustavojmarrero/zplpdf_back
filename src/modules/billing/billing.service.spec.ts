@@ -373,6 +373,37 @@ describe('BillingService — perfil fiscal', () => {
       ).resolves.toBeDefined();
     });
 
+    it('rechaza un taxIdType que Stripe no conoce', async () => {
+      const { service } = buildService({
+        user: { id: 'uid-1', country: 'ES' },
+      });
+
+      // El valor acaba en un cast al enum de Stripe: sin validarlo, el perfil se
+      // guardaba completo y el usuario descubría el problema como un 503 en su
+      // siguiente intento de pago.
+      await expectFieldError(
+        service,
+        intlDto({ taxIdType: 'es_nif_inventado' }),
+        'taxIdType',
+        'tax_id_type_unknown',
+      );
+    });
+
+    it('acepta los tipos reales del catálogo de Stripe', async () => {
+      const { service } = buildService({
+        user: { id: 'uid-1', country: 'ES' },
+      });
+
+      for (const tipo of ['eu_vat', 'mx_rfc', 'br_cnpj', 'us_ein', 'gb_vat']) {
+        await expect(
+          service.updateTaxProfile(
+            'uid-1',
+            intlDto({ taxIdType: tipo, taxIdValue: 'X123' }),
+          ),
+        ).resolves.toBeDefined();
+      }
+    });
+
     it('rechaza un país que no es ISO alpha-2', async () => {
       const { service } = buildService({
         user: { id: 'uid-1', country: 'ES' },
@@ -620,11 +651,14 @@ describe('BillingService — perfil fiscal', () => {
     }) {
       const retrieve = overrides.retrieveError
         ? jest.fn().mockRejectedValue(overrides.retrieveError)
-        : jest
-            .fn()
-            .mockResolvedValue(
-              overrides.invoice ?? { id: 'in_123', customer: 'cus_123' },
-            );
+        : jest.fn().mockResolvedValue(
+            overrides.invoice ?? {
+              id: 'in_123',
+              customer: 'cus_123',
+              status: 'paid',
+              amount_paid: 19900,
+            },
+          );
 
       const service = Object.create(BillingService.prototype) as BillingService;
       Object.assign(service, {
@@ -780,6 +814,57 @@ describe('BillingService — perfil fiscal', () => {
         {
           status: 'stamped',
         },
+      );
+    });
+
+    it('rechaza una factura que no está pagada', async () => {
+      const claim = jest.fn();
+      const service = buildRetryService({
+        invoice: {
+          id: 'in_123',
+          customer: 'cus_123',
+          status: 'open',
+          amount_paid: 0,
+        },
+        claim,
+      });
+
+      // La factura la elige el cliente: sin esta comprobación podría mandar al
+      // PAC una factura suya abierta y timbrar un ingreso que no existió.
+      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(claim).not.toHaveBeenCalled();
+    });
+
+    it('rechaza una factura pagada de importe cero', async () => {
+      const service = buildRetryService({
+        invoice: {
+          id: 'in_123',
+          customer: 'cus_123',
+          status: 'paid',
+          amount_paid: 0,
+        },
+      });
+
+      // Cupón al 100 % o prueba gratuita: no ampara ningún ingreso.
+      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('rechaza una factura anulada', async () => {
+      const service = buildRetryService({
+        invoice: {
+          id: 'in_123',
+          customer: 'cus_123',
+          status: 'void',
+          amount_paid: 19900,
+        },
+      });
+
+      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
+        BadRequestException,
       );
     });
 

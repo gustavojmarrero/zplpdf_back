@@ -292,7 +292,9 @@ export class FacturamaService {
     const status = error.response?.status;
     const data = error.response?.data;
 
-    // Sin respuesta, timeout o 5xx: el PAC no está disponible.
+    // Sin respuesta, timeout o 5xx: no se sabe si el comprobante llegó a
+    // emitirse. La petición pudo procesarse y perderse solo la respuesta, así
+    // que este caso se marca indeterminado y NO se reintenta a ciegas.
     if (!status || status >= 500) {
       this.logger.error(
         `Facturama no disponible en ${path}: ${error.message} (status ${status ?? 'sin respuesta'})`,
@@ -301,12 +303,16 @@ export class FacturamaService {
         CfdiErrorCodes.PAC_UNAVAILABLE,
         `Facturama no disponible: ${error.message}`,
         data,
+        // Solo el timbrado deja el resultado en el aire; una descarga fallida no
+        // crea nada y se puede repetir sin riesgo.
+        path === '/3/cfdis',
       );
     }
 
     if (status === 401 || status === 403) {
       // Credenciales o permisos: es un fallo de configuración nuestro, no del
-      // usuario, y no se arregla reintentando el mismo CFDI.
+      // usuario. A diferencia del timeout, aquí consta que el PAC no procesó
+      // nada, así que el reintento es seguro una vez corregido.
       this.logger.error(
         `Facturama rechazó las credenciales en ${path} (status ${status})`,
       );
