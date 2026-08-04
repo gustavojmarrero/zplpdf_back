@@ -25,13 +25,22 @@ describe('PaymentsService — upgradeSubscription', () => {
     subscription?: unknown;
     retrieveError?: unknown;
     updateError?: unknown;
+    /**
+     * Suscripción que devuelve Stripe DESPUÉS del cambio de precio. Por defecto
+     * queda activa; los tests que simulan un cobro fallido la pasan en past_due.
+     */
+    updateResult?: unknown;
   }) {
     const retrieve = overrides.retrieveError
       ? jest.fn().mockRejectedValue(overrides.retrieveError)
       : jest.fn().mockResolvedValue(overrides.subscription);
     const update = overrides.updateError
       ? jest.fn().mockRejectedValue(overrides.updateError)
-      : jest.fn().mockResolvedValue({});
+      : jest
+          .fn()
+          .mockResolvedValue(
+            overrides.updateResult ?? { status: 'active', id: 'sub_123' },
+          );
     const updateUser = jest.fn().mockResolvedValue(undefined);
 
     const service: any = Object.create(PaymentsService.prototype);
@@ -69,6 +78,8 @@ describe('PaymentsService — upgradeSubscription', () => {
       expect.objectContaining({
         items: [{ id: 'si_123', price: PROMAX_MXN }],
         proration_behavior: 'always_invoice',
+        // Sin esto Stripe aplicaría el cambio aunque el cobro sea rechazado.
+        payment_behavior: 'error_if_incomplete',
       }),
     );
     expect(updateUser).toHaveBeenCalledWith('uid-1', { plan: 'promax' });
@@ -132,7 +143,7 @@ describe('PaymentsService — upgradeSubscription', () => {
   });
 
   it('propaga el rechazo de la tarjeta como error del usuario (400)', async () => {
-    const { service } = buildService({
+    const { service, updateUser } = buildService({
       subscription: activeSubscription,
       updateError: {
         statusCode: 402,
@@ -141,9 +152,50 @@ describe('PaymentsService — upgradeSubscription', () => {
       },
     });
 
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    // Tras un cobro rechazado lo primero que necesita saber el cliente es que
+    // sigue en su plan de antes, no solo que la tarjeta falló.
+    expect(error.message).toContain('has not been changed');
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Caso del cliente sistemas@prodisab2b.com (issue #66): `subscriptions.update`
+   * no lanza cuando el cobro de la proración se rechaza — Stripe cambia el
+   * precio, deja la suscripción en past_due y responde 200. El plan acababa
+   * marcado en Firestore sin haberse pagado.
+   */
+  it('no marca el plan si la suscripción no queda activa tras el cambio', async () => {
+    const { service, updateUser } = buildService({
+      subscription: activeSubscription,
+      updateResult: { status: 'past_due', id: 'sub_123' },
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error.message).toContain('past_due');
+    expect(error.message).toContain('has not been changed');
+    // Lo esencial: el usuario NO queda en promax sin haberlo pagado.
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
+  it('tampoco lo marca si la suscripción queda incompleta a la espera de autenticación', async () => {
+    const { service, updateUser } = buildService({
+      subscription: activeSubscription,
+      updateResult: { status: 'incomplete', id: 'sub_123' },
+    });
+
     await expect(
       service.upgradeSubscription('uid-1', 'promax'),
     ).rejects.toThrow(BadRequestException);
+    expect(updateUser).not.toHaveBeenCalled();
   });
 
   it('en un estado de cobro pide actualizar el método de pago', async () => {

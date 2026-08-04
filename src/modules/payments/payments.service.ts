@@ -414,6 +414,12 @@ export class PaymentsService {
     error: unknown,
     operation: string,
     context: string,
+    /**
+     * Aclaración que se añade al mensaje del usuario. Sirve para decirle qué ha
+     * quedado sin cambiar: tras un cobro rechazado, lo primero que necesita
+     * saber es que su plan sigue siendo el de antes.
+     */
+    userSuffix = '',
   ): never {
     const stripeError = error as {
       statusCode?: number;
@@ -438,7 +444,8 @@ export class PaymentsService {
       );
       throw new ServiceUnavailableException(
         'We could not process your plan change right now due to a configuration issue on our side. ' +
-          'Our team has been notified — please contact support@zplpdf.com.',
+          'Our team has been notified — please contact support@zplpdf.com.' +
+          userSuffix,
       );
     }
 
@@ -447,8 +454,9 @@ export class PaymentsService {
         `${operation} falló por la tarjeta — ${context}. Detalle: ${stripeError.message}`,
       );
       throw new BadRequestException(
-        stripeError.message ||
-          'Your card was declined. Please update your payment method and try again.',
+        (stripeError.message ||
+          'Your card was declined. Please update your payment method and try again.') +
+          userSuffix,
       );
     }
 
@@ -457,7 +465,8 @@ export class PaymentsService {
     );
     throw new ServiceUnavailableException(
       'We could not process your plan change right now. Please try again in a few minutes ' +
-        'or contact support@zplpdf.com.',
+        'or contact support@zplpdf.com.' +
+        userSuffix,
     );
   }
 
@@ -553,18 +562,46 @@ export class PaymentsService {
     }
 
     // Update subscription with proration
+    let updatedSubscription: Stripe.Subscription;
     try {
-      await this.stripe.subscriptions.update(user.stripeSubscriptionId, {
-        items: [
-          {
-            id: subscriptionItemId,
-            price: newPriceId,
-          },
-        ],
-        proration_behavior: 'always_invoice', // Charge/credit immediately
-      });
+      updatedSubscription = await this.stripe.subscriptions.update(
+        user.stripeSubscriptionId,
+        {
+          items: [
+            {
+              id: subscriptionItemId,
+              price: newPriceId,
+            },
+          ],
+          proration_behavior: 'always_invoice', // Charge/credit immediately
+          // Sin esto, un cobro de proración rechazado NO lanza error: Stripe
+          // cambia el precio igualmente, emite la factura, falla el cargo, deja
+          // la suscripción en past_due y responde 200. El plan superior acababa
+          // marcado en Firestore sin haberse pagado (issue #66).
+          payment_behavior: 'error_if_incomplete',
+        },
+      );
     } catch (error) {
-      this.throwStripeApiError(error, 'subscriptions.update', upgradeContext);
+      this.throwStripeApiError(
+        error,
+        'subscriptions.update',
+        upgradeContext,
+        ' Your plan has not been changed.',
+      );
+    }
+
+    // Defensa en profundidad por si algún escenario esquiva el error_if_incomplete:
+    // el plan solo se marca cuando la suscripción queda confirmada como activa.
+    if (updatedSubscription.status !== 'active') {
+      this.logger.error(
+        `Upgrade no confirmado: la suscripción quedó en '${updatedSubscription.status}' ` +
+          `tras el cambio de precio — ${upgradeContext}. No se actualiza el plan en Firestore.`,
+      );
+      throw new BadRequestException(
+        `We could not confirm the payment for your plan change (subscription status: ` +
+          `${updatedSubscription.status}). Your plan has not been changed. ` +
+          `Please check your payment method and try again.`,
+      );
     }
 
     // Update user plan in Firestore
