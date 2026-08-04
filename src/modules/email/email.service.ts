@@ -28,6 +28,22 @@ export class EmailService {
   private readonly fromEmail: string;
   private readonly isEnabled: boolean;
 
+  /**
+   * Techo de la cohorte que schedulePowerUserEmails pide al percentil. No es un
+   * tope de envíos: se pide de más precisamente para poder descartar después
+   * por plan y por duplicado sin quedarse corto. getPowerUsersWithPeriod calcula
+   * la lista completa en memoria y solo pagina al final, así que subir este
+   * número no encarece la consulta.
+   */
+  private static readonly POWER_USER_COHORT_LIMIT = 1000;
+
+  /**
+   * Tope de emails encolados por ejecución, como salvaguarda ante un pico
+   * inesperado de la cohorte. Al alcanzarlo se registra un warning: truncar en
+   * silencio haría parecer que se procesó todo.
+   */
+  private static readonly POWER_USER_MAX_PER_RUN = 50;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly firestoreService: FirestoreService,
@@ -1205,13 +1221,26 @@ export class EmailService {
         return { scheduled: 0, skipped: 0, executedAt: new Date() };
       }
 
-      // Get power users using each user's billing period (top 10%)
+      // Cohorte completa del percentil, no la primera página: el filtro por
+      // plan y la deduplicación se aplican aquí abajo, así que truncar antes
+      // haría que los usuarios free/lite del top 10% consumieran cupo y
+      // dejaran fuera a usuarios de pago de las posiciones siguientes.
       const powerUsersResponse = await this.getPowerUsersWithPeriod({
         minPercentile: 90,
-        limit: 50,
+        limit: EmailService.POWER_USER_COHORT_LIMIT,
       });
 
       for (const user of powerUsersResponse.users) {
+        // El tope cuenta emails encolados, no candidatos examinados: los
+        // descartados por plan o por duplicado no consumen cupo.
+        if (scheduled >= EmailService.POWER_USER_MAX_PER_RUN) {
+          this.logger.warn(
+            `Power user emails: alcanzado el tope de ${EmailService.POWER_USER_MAX_PER_RUN} envíos por ejecución. ` +
+              `Quedan candidatos sin procesar de una cohorte de ${powerUsersResponse.users.length}.`,
+          );
+          break;
+        }
+
         // El percentil se calcula sobre todos los usuarios con uso, no solo los
         // de pago: sin este filtro un usuario free o lite puede colarse en el
         // top 10% y recibir un email que le agradece ser usuario PRO.

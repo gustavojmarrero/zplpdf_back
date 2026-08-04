@@ -579,9 +579,22 @@ export class EmailController {
               userId: { type: 'string' },
               userEmail: { type: 'string' },
               displayName: { type: 'string', nullable: true },
+              language: { type: 'string', enum: ['es', 'en'] },
               pdfsThisMonth: { type: 'number' },
               labelsThisMonth: { type: 'number' },
               monthsAsPro: { type: 'number' },
+              plan: {
+                type: 'string',
+                enum: ['free', 'lite', 'pro', 'promax', 'enterprise'],
+                description:
+                  'El percentil se calcula sobre todos los usuarios con uso, no solo los de pago: filtrar por plan es responsabilidad del consumidor.',
+              },
+              periodStart: {
+                type: 'string',
+                format: 'date-time',
+                description:
+                  'Inicio del período de facturación del usuario (por aniversario de suscripción, no mes calendario).',
+              },
             },
           },
         },
@@ -595,6 +608,7 @@ export class EmailController {
               type: 'object',
               properties: {
                 free: { type: 'number' },
+                lite: { type: 'number' },
                 pro: { type: 'number' },
                 promax: { type: 'number' },
                 enterprise: { type: 'number' },

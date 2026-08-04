@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service';
 import { FirestoreService } from '../cache/firestore.service';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service';
@@ -291,17 +292,32 @@ describe('EmailService.schedulePowerUserEmails', () => {
     };
   }
 
+  /**
+   * El mock aplica el `limit` que recibe, igual que hace la paginación real.
+   * Sin eso, un scheduler que pidiera solo la primera página parecería correcto
+   * en los tests aunque en producción dejara candidatos fuera.
+   */
   function mockPowerUsers(users: ReturnType<typeof powerUser>[]) {
-    jest.spyOn(service, 'getPowerUsersWithPeriod').mockResolvedValue({
-      users,
-      summary: {
-        total: users.length,
-        topPerformers: users.length,
-        avgMonthlyPdfs: 120,
-        byPlan: { free: 0, lite: 0, pro: users.length, promax: 0 },
-      },
-      pagination: { page: 1, limit: 50, total: users.length, totalPages: 1 },
-    } as never);
+    return jest.spyOn(service, 'getPowerUsersWithPeriod').mockImplementation((({
+      limit = 50,
+    }: {
+      limit?: number;
+    }) =>
+      Promise.resolve({
+        users: users.slice(0, limit),
+        summary: {
+          total: users.length,
+          topPerformers: users.length,
+          avgMonthlyPdfs: 120,
+          byPlan: { free: 0, lite: 0, pro: users.length, promax: 0 },
+        },
+        pagination: {
+          page: 1,
+          limit,
+          total: users.length,
+          totalPages: Math.ceil(users.length / limit),
+        },
+      })) as never);
   }
 
   beforeEach(async () => {
@@ -408,5 +424,44 @@ describe('EmailService.schedulePowerUserEmails', () => {
     expect(result).toMatchObject({ scheduled: 0, skipped: 0 });
     expect(spy).not.toHaveBeenCalled();
     expect(firestore.createEmailQueue).not.toHaveBeenCalled();
+  });
+
+  it('los free/lite no consumen cupo: los de pago que quedan detrás sí reciben', async () => {
+    // Cohorte de 70 con 30 free/lite por delante. Pidiendo solo la primera
+    // página de 50, los 30 descartados se llevarían por delante a 30 de pago
+    // que nunca se llegarían a examinar.
+    const cohorte = [
+      ...Array.from({ length: 15 }, (_, i) => powerUser(`free${i}`, 'free')),
+      ...Array.from({ length: 15 }, (_, i) => powerUser(`lite${i}`, 'lite')),
+      ...Array.from({ length: 40 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    ];
+    mockPowerUsers(cohorte);
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(40);
+    expect(result.skipped).toBe(30);
+  });
+
+  it('pide una cohorte mayor que el tope de envíos, no solo la primera página', async () => {
+    const spy = mockPowerUsers([powerUser('a')]);
+
+    await service.schedulePowerUserEmails();
+
+    const { limit } = spy.mock.calls[0][0];
+    expect(limit).toBeGreaterThan(50);
+  });
+
+  it('corta en el tope de envíos por ejecución sin truncar en silencio', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    mockPowerUsers(
+      Array.from({ length: 80 }, (_, i) => powerUser(`pro${i}`, 'pro')),
+    );
+
+    const result = await service.schedulePowerUserEmails();
+
+    expect(result.scheduled).toBe(50);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(50);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('tope de 50'));
   });
 });
