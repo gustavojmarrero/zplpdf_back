@@ -114,7 +114,11 @@ export class CfdiService {
       return;
     }
 
-    await this.stamp(invoice, user, profile, { amount, currency });
+    await this.stamp(invoice, user, profile, {
+      amount,
+      currency,
+      attempts: reserved.attempts,
+    });
   }
 
   /**
@@ -122,8 +126,16 @@ export class CfdiService {
    *
    * A diferencia de `stampForInvoice`, aquí sí se propaga el error: hay un
    * usuario esperando la respuesta y necesita saber si su corrección funcionó.
+   *
+   * Los intentos previos vienen de quien tomó el candado, no de una lectura
+   * nueva: el documento ya está en `pending` y releerlo sería otra operación que
+   * puede fallar y dejarlo bloqueado.
    */
-  async retry(invoice: Stripe.Invoice, user: User): Promise<Cfdi> {
+  async retry(
+    invoice: Stripe.Invoice,
+    user: User,
+    previousAttempts: number,
+  ): Promise<Cfdi> {
     const profile = await this.firestoreService.getTaxProfile(user.id);
 
     if (!profile?.isComplete || profile.type !== 'mx') {
@@ -140,6 +152,7 @@ export class CfdiService {
       {
         amount: (invoice.amount_paid ?? 0) / 100,
         currency: (invoice.currency || 'mxn').toLowerCase(),
+        attempts: previousAttempts,
       },
       { rethrow: true },
     );
@@ -160,13 +173,15 @@ export class CfdiService {
     invoice: Stripe.Invoice,
     user: User,
     profile: TaxProfile,
-    money: { amount: number; currency: string },
+    money: { amount: number; currency: string; attempts: number },
     options: { rethrow?: boolean } = {},
   ): Promise<void> {
     const stripeInvoiceId = invoice.id;
-    const existing =
-      await this.firestoreService.getCfdiByInvoiceId(stripeInvoiceId);
-    const attempts = (existing?.attempts ?? 0) + 1;
+    // Los intentos previos los trae quien tomó el documento. Releerlos aquí
+    // añadía una operación de Firestore fuera de todo manejo de error, con el
+    // CFDI ya en `pending`: un fallo transitorio lo dejaba clavado en ese estado
+    // sin haber llamado siquiera al PAC, bloqueando todo reintento posterior.
+    const attempts = money.attempts + 1;
 
     // Los precios en MXN son finales y el CFDI los desglosa hacia atrás. Un
     // cobro en otra divisa necesitaría TipoCambio, y emitirlo como si fuera
@@ -398,32 +413,31 @@ export class CfdiService {
   private async resolveCardFunding(
     invoice: Stripe.Invoice,
   ): Promise<string | null> {
-    const intent = (invoice as { payment_intent?: unknown }).payment_intent;
-
-    // Ya expandido (por ejemplo en un reintento que recuperó la factura).
-    if (typeof intent === 'object' && intent !== null) {
-      const expanded = (
-        intent as { payment_method?: { card?: { funding?: string } } }
-      ).payment_method?.card?.funding;
-      if (expanded) {
-        return expanded;
-      }
-    }
-
-    const intentId = typeof intent === 'string' ? intent : null;
-    if (!intentId || !this.stripe) {
+    if (!this.stripe) {
       return null;
     }
 
     try {
+      const intent = await this.resolvePaymentIntent(invoice);
+
+      if (!intent) {
+        return null;
+      }
+
+      // Ya expandido: el objeto trae el método de pago dentro.
+      if (typeof intent !== 'string') {
+        const funding = this.readFunding(intent);
+        if (funding) {
+          return funding;
+        }
+      }
+
+      const intentId = typeof intent === 'string' ? intent : intent.id;
       const retrieved = await this.stripe.paymentIntents.retrieve(intentId, {
         expand: ['payment_method'],
       });
-      const method = retrieved.payment_method;
 
-      return typeof method === 'object' && method !== null
-        ? (method.card?.funding ?? null)
-        : null;
+      return this.readFunding(retrieved);
     } catch (error) {
       // Un fallo aquí no puede impedir el timbrado: la factura se emite igual
       // con la clave por defecto.
@@ -432,6 +446,57 @@ export class CfdiService {
       );
       return null;
     }
+  }
+
+  /**
+   * Localiza el PaymentIntent de la factura.
+   *
+   * Desde la versión de API `2025-03-31.basil`, `Invoice` ya no expone
+   * `payment_intent` en el nivel superior: los cobros viven en `payments`, una
+   * lista de InvoicePayment donde el intent está en `payment.payment_intent`.
+   * Leer el campo viejo devolvía `undefined` siempre, y con él toda tarjeta de
+   * débito se habría timbrado como crédito.
+   */
+  private async resolvePaymentIntent(
+    invoice: Stripe.Invoice,
+  ): Promise<string | Stripe.PaymentIntent | null> {
+    const fromInvoice = this.pickIntentFromPayments(invoice.payments?.data);
+    if (fromInvoice) {
+      return fromInvoice;
+    }
+
+    // `payments` no viaja expandido en el evento del webhook.
+    const listed = await this.stripe.invoicePayments.list({
+      invoice: invoice.id,
+      limit: 10,
+    });
+
+    return this.pickIntentFromPayments(listed.data);
+  }
+
+  private pickIntentFromPayments(
+    payments: Stripe.InvoicePayment[] | undefined,
+  ): string | Stripe.PaymentIntent | null {
+    if (!payments?.length) {
+      return null;
+    }
+
+    // Una factura puede acumular intentos fallidos antes del que cobró; el que
+    // describe fiscalmente la operación es el que tuvo éxito.
+    const paid =
+      payments.find((payment) => payment.status === 'paid') ?? payments[0];
+
+    return paid?.payment?.type === 'payment_intent'
+      ? (paid.payment.payment_intent ?? null)
+      : null;
+  }
+
+  private readFunding(intent: Stripe.PaymentIntent): string | null {
+    const method = intent.payment_method;
+
+    return typeof method === 'object' && method !== null
+      ? (method.card?.funding ?? null)
+      : null;
   }
 
   private resolveChargedAt(invoice: Stripe.Invoice): Date | undefined {

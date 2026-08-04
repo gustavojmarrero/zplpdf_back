@@ -44,3 +44,18 @@ export interface Cfdi {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * Resultado de tomar un CFDI para timbrarlo.
+ *
+ * Lleva los intentos acumulados para que quien lo obtiene no tenga que releer el
+ * documento: en ese momento ya está en `pending`, y un fallo de lectura posterior
+ * lo dejaría clavado ahí, bloqueando cualquier reintento futuro.
+ *
+ * El discriminante es texto y no un booleano porque el proyecto compila con
+ * `strictNullChecks: false`, y sin esa opción TypeScript no estrecha uniones
+ * discriminadas por literales booleanos.
+ */
+export type CfdiClaim =
+  | { outcome: 'granted'; attempts: number }
+  | { outcome: 'blocked'; blockedBy: CfdiStatus };

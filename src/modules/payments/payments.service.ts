@@ -359,7 +359,23 @@ export class PaymentsService {
     // en el momento de finalizarla —lo hace durante el propio checkout— y ya no
     // vuelve a tocarlos: propagarlos al recibir `checkout.session.completed`
     // llegaría tarde y el primer PDF saldría sin ellos.
-    await this.billingService.syncTaxProfileToStripe(userId);
+    //
+    // En modo estricto, para que el fallo detenga el checkout. Es preferible que
+    // el usuario reintente el pago a emitirle una factura fiscalmente incompleta
+    // que después no hay forma de corregir. Solo afecta a quien tiene perfil
+    // fiscal cargado: sin él la sincronización no hace nada y no puede fallar.
+    try {
+      await this.billingService.syncTaxProfileToStripe(userId, {
+        throwOnError: true,
+      });
+    } catch (error) {
+      this.logger.error(
+        `No se pudo propagar el perfil fiscal de ${userId} antes del checkout: ${error.message}`,
+      );
+      throw new ServiceUnavailableException(
+        'No se pudieron sincronizar tus datos de facturación. Inténtalo de nuevo en unos momentos.',
+      );
+    }
 
     // Create checkout session
     const session = await this.stripe.checkout.sessions.create({

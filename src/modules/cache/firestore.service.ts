@@ -15,7 +15,10 @@ import type {
 } from '../../common/interfaces/feedback.interface.js';
 import type { Usage } from '../../common/interfaces/usage.interface.js';
 import type { TaxProfile } from '../../common/interfaces/tax-profile.interface.js';
-import type { Cfdi } from '../../common/interfaces/cfdi.interface.js';
+import type {
+  Cfdi,
+  CfdiClaim,
+} from '../../common/interfaces/cfdi.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
@@ -6974,12 +6977,14 @@ export class FirestoreService {
   async claimCfdiForRetry(
     stripeInvoiceId: string,
     data: { userId: string; amount: number; currency: string },
-  ): Promise<{ blockedBy: Cfdi['status'] } | null> {
+  ): Promise<CfdiClaim> {
     const ref = this.firestore
       .collection(this.cfdisCollection)
       .doc(stripeInvoiceId);
 
-    return this.firestore.runTransaction(async (transaction) => {
+    // El genérico va explícito para que el literal de `outcome` no se ensanche
+    // a `string` y la unión siga discriminando en quien la consume.
+    return this.firestore.runTransaction<CfdiClaim>(async (transaction) => {
       const snapshot = await transaction.get(ref);
       const now = new Date();
 
@@ -6994,17 +6999,20 @@ export class FirestoreService {
           createdAt: now,
           updatedAt: now,
         });
-        return null;
+        return { outcome: 'granted', attempts: 0 };
       }
 
       const current = snapshot.data() as Cfdi;
 
       if (current.status !== 'failed') {
-        return { blockedBy: current.status };
+        return { outcome: 'blocked', blockedBy: current.status };
       }
 
       transaction.update(ref, { status: 'pending', updatedAt: now });
-      return null;
+      // Los intentos acumulados salen de aquí, y no de una lectura posterior:
+      // el documento ya está en `pending` y un fallo al releerlo lo dejaría
+      // clavado en ese estado, bloqueando todos los reintentos futuros.
+      return { outcome: 'granted', attempts: current.attempts ?? 0 };
     });
   }
 

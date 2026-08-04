@@ -269,21 +269,25 @@ export class BillingService {
     // Tomar el CFDI es lo que autoriza a timbrar, y es atómico. Comprobar el
     // estado con una lectura previa no serviría de candado: un doble clic
     // bastaría para que dos peticiones vieran `failed` y ambas llamaran al PAC.
-    const blocked = await this.firestoreService.claimCfdiForRetry(invoiceId, {
+    const claim = await this.firestoreService.claimCfdiForRetry(invoiceId, {
       userId,
       amount: (invoice.amount_paid ?? 0) / 100,
       currency: (invoice.currency || 'mxn').toLowerCase(),
     });
 
-    if (blocked) {
+    if (claim.outcome === 'blocked') {
       throw new BadRequestException({
         error: ErrorCodes.INVALID_INPUT,
-        message: `CFDI is not in a retryable state (${blocked.blockedBy})`,
+        message: `CFDI is not in a retryable state (${claim.blockedBy})`,
       });
     }
 
     try {
-      const updated = await this.cfdiService.retry(invoice, user);
+      const updated = await this.cfdiService.retry(
+        invoice,
+        user,
+        claim.attempts,
+      );
       return this.toCfdiDto(updated);
     } catch (error) {
       const code =
@@ -519,13 +523,22 @@ export class BillingService {
   }
 
   /**
-   * Propaga el perfil fiscal al customer de Stripe. Idempotente y silenciosa.
+   * Propaga el perfil fiscal al customer de Stripe. Idempotente.
    *
-   * Se invoca al guardar el perfil y también al completarse un checkout, porque
-   * un usuario puede cargar sus datos fiscales antes de tener customer: sin el
-   * segundo disparo, su primera factura saldría sin ellos.
+   * Tiene dos modos porque las consecuencias de fallar no son las mismas:
+   *
+   * - **Silencioso** (por defecto), al guardar el perfil. El dato ya está en
+   *   Firestore y solo queda pendiente cómo se imprime el PDF; tumbar el guardado
+   *   haría perder lo que el usuario acaba de escribir.
+   * - **Estricto** (`throwOnError`), antes de abrir un checkout. Ahí el fallo no
+   *   es recuperable después: Stripe copia nombre, domicilio y tax IDs a la
+   *   factura al finalizarla y ya no vuelve a tocarlos, así que seguir adelante
+   *   produciría un comprobante fiscalmente incompleto para siempre.
    */
-  async syncTaxProfileToStripe(userId: string): Promise<void> {
+  async syncTaxProfileToStripe(
+    userId: string,
+    options: { throwOnError?: boolean } = {},
+  ): Promise<void> {
     if (!this.stripe) {
       return;
     }
@@ -569,11 +582,13 @@ export class BillingService {
 
       this.logger.log(`Perfil fiscal propagado a Stripe: ${userId}`);
     } catch (error) {
-      // No relanzamos: el perfil ya está persistido y este paso solo afecta a
-      // cómo se imprime el PDF de Stripe, no a la validez del dato.
       this.logger.error(
         `Error propagando el perfil fiscal de ${userId} a Stripe: ${error.message}`,
       );
+
+      if (options.throwOnError) {
+        throw error;
+      }
     }
   }
 
@@ -620,6 +635,12 @@ export class BillingService {
       // Puede haberlo creado el propio usuario desde el portal de Stripe: se
       // adopta como el gestionado en vez de duplicarlo.
       if (managedId !== alreadyRegistered.id) {
+        // Antes de adoptarlo hay que retirar el que veníamos gestionando, o el
+        // customer se queda con los dos y las facturas siguientes imprimirían
+        // también el RFC viejo.
+        if (managedId) {
+          await this.deleteStripeTaxId(customerId, managedId);
+        }
         await this.firestoreService.saveTaxProfile(userId, {
           stripeTaxIdId: alreadyRegistered.id,
         });

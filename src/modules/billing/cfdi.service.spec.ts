@@ -21,6 +21,8 @@ describe('CfdiService', () => {
       downloadPdf?: jest.Mock;
       downloadXml?: jest.Mock;
       paymentIntentsRetrieve?: jest.Mock;
+      invoicePaymentsList?: jest.Mock;
+      previousAttempts?: number;
     } = {},
   ) {
     const updates: Record<string, unknown>[] = [];
@@ -35,7 +37,9 @@ describe('CfdiService', () => {
     const reserveCfdi = jest
       .fn()
       .mockResolvedValue(
-        overrides.reserved === false ? null : { status: 'pending' },
+        overrides.reserved === false
+          ? null
+          : { status: 'pending', attempts: overrides.previousAttempts ?? 0 },
       );
 
     const firestoreService = {
@@ -87,6 +91,9 @@ describe('CfdiService', () => {
 
     const paymentIntentsRetrieve =
       overrides.paymentIntentsRetrieve ?? jest.fn().mockResolvedValue({});
+    const invoicePaymentsList =
+      overrides.invoicePaymentsList ??
+      jest.fn().mockResolvedValue({ data: [] });
 
     const service = Object.create(CfdiService.prototype) as CfdiService;
     Object.assign(service, {
@@ -94,7 +101,10 @@ describe('CfdiService', () => {
       firestoreService,
       facturamaService,
       storageService,
-      stripe: { paymentIntents: { retrieve: paymentIntentsRetrieve } },
+      stripe: {
+        paymentIntents: { retrieve: paymentIntentsRetrieve },
+        invoicePayments: { list: invoicePaymentsList },
+      },
     });
 
     return {
@@ -105,6 +115,7 @@ describe('CfdiService', () => {
       stampSubscription,
       reserveCfdi,
       paymentIntentsRetrieve,
+      invoicePaymentsList,
       updates,
     };
   }
@@ -276,7 +287,7 @@ describe('CfdiService', () => {
 
     it('cuenta los intentos acumulados sobre un CFDI ya fallido', async () => {
       const { service, updates } = buildService({
-        existingCfdi: { attempts: 2, status: 'failed' },
+        previousAttempts: 2,
         stampSubscription: jest
           .fn()
           .mockRejectedValue(
@@ -396,36 +407,82 @@ describe('CfdiService', () => {
       expect(description).toContain('periodo');
     });
 
-    it('usa la forma de pago de débito cuando Stripe la informa', async () => {
+    /**
+     * Desde la API `2025-03-31.basil`, `Invoice` ya no lleva `payment_intent` en
+     * el nivel superior: los cobros viven en `payments`, una lista de
+     * InvoicePayment. Leer el campo viejo devolvía `undefined` siempre y toda
+     * tarjeta de débito se habría timbrado como crédito.
+     */
+    function invoiceWithPayments(payments: unknown[]): Partial<Stripe.Invoice> {
+      return {
+        payments: { data: payments },
+      } as unknown as Partial<Stripe.Invoice>;
+    }
+
+    function paymentEntry(
+      intent: unknown,
+      status = 'paid',
+    ): Record<string, unknown> {
+      return {
+        status,
+        payment: { type: 'payment_intent', payment_intent: intent },
+      };
+    }
+
+    it('lee el intent expandido dentro de invoice.payments', async () => {
       const { service, stampSubscription } = buildService();
 
       await service.stampForInvoice(
-        invoice({
-          payment_intent: {
-            payment_method: { card: { funding: 'debit' } },
-          },
-        } as unknown as Partial<Stripe.Invoice>),
+        invoice(
+          invoiceWithPayments([
+            paymentEntry({
+              id: 'pi_123',
+              payment_method: { card: { funding: 'debit' } },
+            }),
+          ]),
+        ),
       );
 
       expect(stampSubscription.mock.calls[0][0].paymentForm).toBe('28');
     });
 
-    it('recupera el intent de Stripe cuando llega como id', async () => {
+    it('ignora los intentos fallidos y usa el cobro que sí pasó', async () => {
       const retrieve = jest.fn().mockResolvedValue({
         payment_method: { card: { funding: 'debit' } },
       });
-      const { service, stampSubscription } = buildService({
-        paymentIntentsRetrieve: retrieve,
-      });
+      const { service } = buildService({ paymentIntentsRetrieve: retrieve });
 
-      // En el webhook `payment_intent` llega SIEMPRE como id sin expandir. Sin
-      // esta llamada, todo cobro con débito se timbraría con FormaPago 04.
       await service.stampForInvoice(
-        invoice({
-          payment_intent: 'pi_123',
-        } as unknown as Partial<Stripe.Invoice>),
+        invoice(
+          invoiceWithPayments([
+            paymentEntry('pi_fallido', 'canceled'),
+            paymentEntry('pi_bueno', 'paid'),
+          ]),
+        ),
       );
 
+      // El que describe fiscalmente la operación es el que cobró.
+      expect(retrieve).toHaveBeenCalledWith('pi_bueno', {
+        expand: ['payment_method'],
+      });
+    });
+
+    it('lista los pagos cuando la factura del webhook no los trae', async () => {
+      const retrieve = jest.fn().mockResolvedValue({
+        payment_method: { card: { funding: 'debit' } },
+      });
+      const list = jest
+        .fn()
+        .mockResolvedValue({ data: [paymentEntry('pi_123')] });
+      const { service, stampSubscription } = buildService({
+        paymentIntentsRetrieve: retrieve,
+        invoicePaymentsList: list,
+      });
+
+      // El evento del webhook no expande `payments`.
+      await service.stampForInvoice(invoice());
+
+      expect(list).toHaveBeenCalledWith({ invoice: 'in_123', limit: 10 });
       expect(retrieve).toHaveBeenCalledWith('pi_123', {
         expand: ['payment_method'],
       });
@@ -440,9 +497,7 @@ describe('CfdiService', () => {
       });
 
       await service.stampForInvoice(
-        invoice({
-          payment_intent: 'pi_123',
-        } as unknown as Partial<Stripe.Invoice>),
+        invoice(invoiceWithPayments([paymentEntry('pi_123')])),
       );
 
       expect(stampSubscription.mock.calls[0][0].paymentForm).toBe('04');
@@ -457,9 +512,7 @@ describe('CfdiService', () => {
 
       // No saber el tipo de tarjeta no puede impedir la emisión del CFDI.
       await service.stampForInvoice(
-        invoice({
-          payment_intent: 'pi_123',
-        } as unknown as Partial<Stripe.Invoice>),
+        invoice(invoiceWithPayments([paymentEntry('pi_123')])),
       );
 
       expect(stampSubscription.mock.calls[0][0].paymentForm).toBe('04');
@@ -477,7 +530,7 @@ describe('CfdiService', () => {
       });
 
       await expect(
-        service.retry(invoice(), { id: 'uid-1', country: 'MX' } as never),
+        service.retry(invoice(), { id: 'uid-1', country: 'MX' } as never, 0),
       ).rejects.toThrow(FacturamaError);
     });
 
@@ -485,7 +538,7 @@ describe('CfdiService', () => {
       const { service } = buildService({ profile: null });
 
       await expect(
-        service.retry(invoice(), { id: 'uid-1', country: 'MX' } as never),
+        service.retry(invoice(), { id: 'uid-1', country: 'MX' } as never, 0),
       ).rejects.toMatchObject({ code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE });
     });
   });

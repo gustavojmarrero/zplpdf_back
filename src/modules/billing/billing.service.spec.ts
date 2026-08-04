@@ -649,8 +649,8 @@ describe('BillingService — perfil fiscal', () => {
               .fn()
               .mockResolvedValue(
                 overrides.cfdi && overrides.cfdi.status !== 'failed'
-                  ? { blockedBy: overrides.cfdi.status }
-                  : null,
+                  ? { outcome: 'blocked', blockedBy: overrides.cfdi.status }
+                  : { outcome: 'granted', attempts: 0 },
               ),
           getTaxProfile: jest
             .fn()
@@ -784,7 +784,9 @@ describe('BillingService — perfil fiscal', () => {
     });
 
     it('toma el CFDI de forma atómica antes de timbrar', async () => {
-      const claim = jest.fn().mockResolvedValue(null);
+      const claim = jest
+        .fn()
+        .mockResolvedValue({ outcome: 'granted', attempts: 0 });
       const service = buildRetryService({ cfdi: { status: 'failed' }, claim });
 
       await service.retryCfdi('uid-1', 'in_123');
@@ -801,7 +803,9 @@ describe('BillingService — perfil fiscal', () => {
       // El ganador ya lo dejó en `pending`; este llega tarde.
       const service = buildRetryService({
         cfdi: { status: 'failed' },
-        claim: jest.fn().mockResolvedValue({ blockedBy: 'pending' }),
+        claim: jest
+          .fn()
+          .mockResolvedValue({ outcome: 'blocked', blockedBy: 'pending' }),
       });
 
       await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
