@@ -59,13 +59,80 @@ describe('PaymentsService — upgradeSubscription', () => {
       ...userDoc,
     }));
 
+    /**
+     * Reproduce la semántica transaccional real: reutiliza la clave vigente y,
+     * si no la hay, persiste la candidata. El TTL se evalúa sobre el valor
+     * almacenado tal cual, para que un `createdAt` mal serializado se note.
+     */
+    const acquireUpgradeIdempotency = jest.fn().mockImplementation(
+      async (
+        _id: string,
+        candidate: {
+          key: string;
+          targetPlan: string;
+          subscriptionId: string;
+        },
+        ttlMs: number,
+      ) => {
+        const stored = userDoc.upgradeIdempotency as
+          | Record<string, any>
+          | null
+          | undefined;
+        const createdAtMs = stored?.createdAt
+          ? new Date(stored.createdAt?.toDate?.() ?? stored.createdAt).getTime()
+          : NaN;
+        const vigente =
+          !!stored?.key &&
+          stored.targetPlan === candidate.targetPlan &&
+          stored.subscriptionId === candidate.subscriptionId &&
+          Number.isFinite(createdAtMs) &&
+          Date.now() - createdAtMs < ttlMs;
+
+        if (vigente) {
+          return stored.key;
+        }
+        userDoc.upgradeIdempotency = {
+          ...candidate,
+          createdAt: new Date().toISOString(),
+        };
+        return candidate.key;
+      },
+    );
+
+    const releaseUpgradeIdempotency = jest
+      .fn()
+      .mockImplementation(async (_id: string, key: string) => {
+        const stored = userDoc.upgradeIdempotency as
+          | Record<string, any>
+          | null
+          | undefined;
+        // Compare-and-delete: no pisar la clave de un intento posterior.
+        if (stored?.key === key) {
+          userDoc.upgradeIdempotency = null;
+        }
+      });
+
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = { subscriptions: { retrieve, update } };
-    service.firestoreService = { getUserById, updateUser };
+    service.firestoreService = {
+      getUserById,
+      updateUser,
+      acquireUpgradeIdempotency,
+      releaseUpgradeIdempotency,
+    };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.promaxPriceIdMxn = PROMAX_MXN;
 
-    return { service, retrieve, update, updateUser, getUserById, userDoc };
+    return {
+      service,
+      retrieve,
+      update,
+      updateUser,
+      getUserById,
+      userDoc,
+      acquireUpgradeIdempotency,
+      releaseUpgradeIdempotency,
+    };
   }
 
   /**
@@ -105,11 +172,101 @@ describe('PaymentsService — upgradeSubscription', () => {
       // Un doble envío no debe traducirse en un segundo cargo.
       expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
-    expect(updateUser).toHaveBeenCalledWith('uid-1', {
-      plan: 'promax',
-      // El intento se cierra: el siguiente parte de clave nueva.
-      upgradeIdempotency: null,
+    expect(updateUser).toHaveBeenCalledWith('uid-1', { plan: 'promax' });
+  });
+
+  /**
+   * `updateUser` guarda un Date anidado como Timestamp de Firestore, y
+   * `getUserById` solo convierte los de primer nivel. Si `createdAt` volviera
+   * como Timestamp, `new Date(...)` daría Invalid Date, el TTL sería NaN y la
+   * clave no se reutilizaría jamás: la idempotencia quedaría inservible.
+   */
+  it('reutiliza la clave aunque Firestore devuelva createdAt como Timestamp', async () => {
+    const { service, update, userDoc, retrieve } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeConnectionError', message: 'timeout' },
     });
+    retrieve.mockResolvedValue(activeSubscription);
+
+    await service.upgradeSubscription('uid-1', 'promax').catch(() => undefined);
+
+    // Simula el viaje de ida y vuelta por Firestore: el ISO string vuelve
+    // envuelto en un Timestamp con toDate().
+    const guardado = userDoc.upgradeIdempotency as Record<string, any>;
+    const comoTimestamp = new Date(guardado.createdAt);
+    userDoc.upgradeIdempotency = {
+      ...guardado,
+      createdAt: { toDate: () => comoTimestamp },
+    };
+
+    await service.upgradeSubscription('uid-1', 'promax').catch(() => undefined);
+
+    expect(claveUsada(update, 0)).toBe(claveUsada(update, 1));
+  });
+
+  it('persiste createdAt como ISO string, no como Date', async () => {
+    const { service, userDoc, retrieve } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeConnectionError', message: 'timeout' },
+    });
+    retrieve.mockResolvedValue(activeSubscription);
+
+    await service.upgradeSubscription('uid-1', 'promax').catch(() => undefined);
+
+    const guardado = userDoc.upgradeIdempotency as Record<string, any>;
+    expect(typeof guardado.createdAt).toBe('string');
+    expect(Number.isNaN(Date.parse(guardado.createdAt))).toBe(false);
+  });
+
+  /**
+   * Dos upgrades simultáneos leyendo un usuario sin clave generarían UUIDs
+   * distintos y dos mutaciones en Stripe — el doble cargo que la idempotencia
+   * debe evitar. La adquisición tiene que ser atómica.
+   */
+  it('adquiere la clave de forma atómica, no leyendo y escribiendo por separado', async () => {
+    const { service, acquireUpgradeIdempotency, getUserById } = buildService({
+      subscription: activeSubscription,
+    });
+
+    await service.upgradeSubscription('uid-1', 'promax');
+
+    expect(acquireUpgradeIdempotency).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({
+        key: expect.any(String),
+        targetPlan: 'promax',
+        subscriptionId: 'sub_123',
+      }),
+      expect.any(Number),
+    );
+    // La clave no se decide a partir del usuario leído antes de la transacción.
+    expect(getUserById).toHaveBeenCalledTimes(1);
+  });
+
+  it('dos upgrades concurrentes comparten clave y no duplican la mutación', async () => {
+    const { service, update } = buildService({
+      subscription: activeSubscription,
+    });
+
+    await Promise.all([
+      service.upgradeSubscription('uid-1', 'promax'),
+      service.upgradeSubscription('uid-1', 'promax'),
+    ]);
+
+    // Misma clave ⇒ Stripe deduplica y solo se cobra una vez.
+    expect(claveUsada(update, 0)).toBe(claveUsada(update, 1));
+  });
+
+  it('libera la clave comparando, sin pisar la de un intento posterior', async () => {
+    const { service, releaseUpgradeIdempotency, userDoc } = buildService({
+      subscription: activeSubscription,
+    });
+
+    await service.upgradeSubscription('uid-1', 'promax');
+
+    const [, claveLiberada] = releaseUpgradeIdempotency.mock.calls[0];
+    expect(typeof claveLiberada).toBe('string');
+    expect(userDoc.upgradeIdempotency).toBeNull();
   });
 
   it('devuelve 503 —no 500— si la API key no tiene permisos para modificar la suscripción', async () => {
@@ -374,6 +531,46 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(update).toHaveBeenCalledTimes(2);
     expect(claveUsada(update, 0)).toBe(claveUsada(update, 1));
     reloj.mockRestore();
+  });
+
+  /**
+   * Si ya hay un cambio esperando pago, repetir el endpoint no debe lanzar otro
+   * update: Stripe reemplazaría el pending update y anularía su factura, con lo
+   * que el enlace que el cliente ya tenía dejaría de funcionar.
+   */
+  it('con un pending update en curso devuelve su factura y no toca Stripe', async () => {
+    const { service, update } = buildService({
+      subscription: {
+        status: 'active',
+        pending_update: { expires_at: 1234567890 },
+        items: { data: [{ id: 'si_123' }] },
+        latest_invoice: {
+          id: 'in_encurso',
+          hosted_invoice_url: 'https://invoice.stripe.com/i/encurso',
+        },
+      },
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error.message).toContain('https://invoice.stripe.com/i/encurso');
+    // Lo esencial: no se lanza un update que invalidaría ese enlace.
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('expande la factura al leer la suscripción, o no habría enlace que devolver', async () => {
+    const { service, retrieve } = buildService({
+      subscription: activeSubscription,
+    });
+
+    await service.upgradeSubscription('uid-1', 'promax');
+
+    expect(retrieve).toHaveBeenCalledWith(
+      'sub_123',
+      expect.objectContaining({ expand: ['latest_invoice'] }),
+    );
   });
 
   it('un intento nuevo tras un rechazo definitivo parte de otra clave', async () => {

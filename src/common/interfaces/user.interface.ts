@@ -47,7 +47,13 @@ export interface User {
     key: string;
     targetPlan: PlanType;
     subscriptionId: string;
-    createdAt: Date;
+    /**
+     * ISO string, no Date: `getUserById` solo convierte los Timestamp de primer
+     * nivel, así que un Date anidado volvería de Firestore como Timestamp y
+     * `new Date(...)` daría Invalid Date — el TTL sería siempre NaN y la clave
+     * no se reutilizaría nunca. Coincide además con la convención del proyecto.
+     */
+    createdAt: string;
   } | null;
   // Período de facturación (sincronizado desde Stripe webhooks)
   subscriptionPeriodStart?: Date;

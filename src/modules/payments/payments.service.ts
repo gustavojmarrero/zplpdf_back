@@ -21,7 +21,7 @@ import type {
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
 import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
-import type { User, PlanType } from '../../common/interfaces/user.interface.js';
+import type { PlanType } from '../../common/interfaces/user.interface.js';
 import { randomUUID } from 'node:crypto';
 
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
@@ -511,48 +511,37 @@ export class PaymentsService {
    * genere un segundo cargo.
    */
   private async getUpgradeIdempotencyKey(
-    user: User,
+    userId: string,
     targetPlan: PlanType,
     subscriptionId: string,
   ): Promise<string> {
-    const stored = user.upgradeIdempotency;
-    const createdAt = stored?.createdAt
-      ? new Date(stored.createdAt).getTime()
-      : 0;
-    const vigente =
-      !!stored?.key &&
-      stored.targetPlan === targetPlan &&
-      stored.subscriptionId === subscriptionId &&
-      Date.now() - createdAt < PaymentsService.IDEMPOTENCY_TTL_MS;
-
-    if (vigente) {
-      return stored.key;
-    }
-
-    // Intento nuevo (otro plan, otra suscripción, o el anterior ya se resolvió):
-    // clave nueva, para no recibir la respuesta cacheada de un intento pasado.
-    const key = `upgrade_${user.id}_${randomUUID()}`;
-    await this.firestoreService.updateUser(user.id, {
-      upgradeIdempotency: {
-        key,
+    // La adquisición es transaccional: dos upgrades simultáneos no pueden
+    // acabar con claves distintas y, por tanto, con dos mutaciones en Stripe.
+    return this.firestoreService.acquireUpgradeIdempotency(
+      userId,
+      {
+        key: `upgrade_${userId}_${randomUUID()}`,
         targetPlan,
         subscriptionId,
-        createdAt: new Date(),
       },
-    });
-    return key;
+      PaymentsService.IDEMPOTENCY_TTL_MS,
+    );
   }
 
   /**
    * Libera la clave tras un resultado definitivo (éxito, rechazo de tarjeta,
    * pago pendiente...). Solo se conserva ante errores indeterminados, que son
    * los que el cliente debe reintentar con la MISMA clave.
+   *
+   * Se libera comparando: si otro intento posterior ya adquirió una clave
+   * distinta, borrarla lo dejaría sin protección frente a duplicados.
    */
-  private async clearUpgradeIdempotencyKey(userId: string): Promise<void> {
+  private async clearUpgradeIdempotencyKey(
+    userId: string,
+    key: string,
+  ): Promise<void> {
     try {
-      await this.firestoreService.updateUser(userId, {
-        upgradeIdempotency: null,
-      });
+      await this.firestoreService.releaseUpgradeIdempotency(userId, key);
     } catch (error) {
       // No es motivo para tumbar un upgrade que ya se resolvió: como mucho, el
       // siguiente intento reusa una clave que Stripe descartará en 24 h.
@@ -707,9 +696,19 @@ export class PaymentsService {
     try {
       subscription = await this.stripe.subscriptions.retrieve(
         user.stripeSubscriptionId,
+        // Para poder devolver la factura del cambio pendiente, si lo hay.
+        { expand: ['latest_invoice'] },
       );
     } catch (error) {
       this.throwStripeApiError(error, 'subscriptions.retrieve', upgradeContext);
+    }
+
+    // Ya hay un cambio esperando pago: se devuelve ESA factura en lugar de
+    // lanzar otro update. Un update nuevo reemplazaría el pending update y
+    // anularía su factura, invalidando el enlace que ya se le había dado al
+    // cliente — quedaría persiguiendo una URL muerta.
+    if (subscription.pending_update) {
+      this.throwPendingPaymentError(subscription, upgradeContext);
     }
 
     if (subscription.status !== 'active') {
@@ -736,7 +735,7 @@ export class PaymentsService {
     }
 
     const idempotencyKey = await this.getUpgradeIdempotencyKey(
-      user,
+      userId,
       targetPlan,
       user.stripeSubscriptionId,
     );
@@ -782,14 +781,14 @@ export class PaymentsService {
       if (reconciled) {
         // La reconciliación es un desenlace definitivo: se sabe que el cambio
         // se aplicó, así que el próximo intento debe partir de clave nueva.
-        await this.clearUpgradeIdempotencyKey(userId);
+        await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
         return reconciled;
       }
       // Solo los errores indeterminados conservan la clave: son los únicos que
       // el cliente debe reintentar con la misma para no arriesgar otro cargo.
       const type = (error as { type?: string }).type;
       if (type !== 'StripeConnectionError' && type !== 'StripeAPIError') {
-        await this.clearUpgradeIdempotencyKey(userId);
+        await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
       }
       this.throwStripeApiError(
         error,
@@ -806,7 +805,7 @@ export class PaymentsService {
     if (updatedSubscription.pending_update) {
       // Definitivo: hay una factura esperando. Si el cliente vuelve a intentarlo
       // más adelante, debe ser un intento nuevo y no la respuesta cacheada.
-      await this.clearUpgradeIdempotencyKey(userId);
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
       this.throwPendingPaymentError(updatedSubscription, upgradeContext);
     }
 
@@ -817,7 +816,7 @@ export class PaymentsService {
         `Upgrade no confirmado: la suscripción quedó en '${updatedSubscription.status}' ` +
           `tras el cambio de precio — ${upgradeContext}. No se actualiza el plan en Firestore.`,
       );
-      await this.clearUpgradeIdempotencyKey(userId);
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
       throw new BadRequestException(
         `We could not confirm the payment for your plan change (subscription status: ` +
           `${updatedSubscription.status}). Your plan has not been changed. ` +
@@ -825,12 +824,13 @@ export class PaymentsService {
       );
     }
 
-    // Update user plan in Firestore. El upgrade se completó, así que la clave
-    // del intento se libera en la misma escritura.
+    // Update user plan in Firestore
     await this.firestoreService.updateUser(userId, {
       plan: targetPlan,
-      upgradeIdempotency: null,
     });
+    // La clave se libera aparte y comparando: borrarla en la misma escritura
+    // sería incondicional y podría pisar la de un intento posterior.
+    await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
 
     this.logger.log(
       `User ${userId} upgraded from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}`,
