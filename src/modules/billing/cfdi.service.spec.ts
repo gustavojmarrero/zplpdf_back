@@ -530,16 +530,46 @@ describe('CfdiService', () => {
       });
 
       await expect(
-        service.retry(invoice(), { id: 'uid-1', country: 'MX' } as never, 0),
+        service.retry(
+          invoice(),
+          { id: 'uid-1', country: 'MX' } as never,
+          {
+            type: 'mx',
+            isComplete: true,
+            rfc: 'ABC010101AB1',
+            legalName: 'EMPRESA DEMO',
+            cfdiUse: 'G03',
+            taxRegime: '601',
+            postalCode: '97000',
+          } as never,
+          0,
+        ),
       ).rejects.toThrow(FacturamaError);
     });
 
-    it('rechaza el reintento si el perfil fiscal está incompleto', async () => {
-      const { service } = buildService({ profile: null });
+    it('no relee el perfil: lo recibe ya validado de quien tomó el candado', async () => {
+      const { service, firestoreService } = buildService();
+      firestoreService.getTaxProfile.mockClear();
 
-      await expect(
-        service.retry(invoice(), { id: 'uid-1', country: 'MX' } as never, 0),
-      ).rejects.toMatchObject({ code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE });
+      await service.retry(
+        invoice(),
+        { id: 'uid-1', country: 'MX' } as never,
+        {
+          type: 'mx',
+          isComplete: true,
+          rfc: 'ABC010101AB1',
+          legalName: 'EMPRESA DEMO',
+          cfdiUse: 'G03',
+          taxRegime: '601',
+          postalCode: '97000',
+        } as never,
+        0,
+      );
+
+      // Entre el candado y el PAC no puede quedar ninguna lectura que falle: el
+      // documento ya está en `pending` y un error ahí lo dejaría clavado,
+      // bloqueando todos los reintentos posteriores.
+      expect(firestoreService.getTaxProfile).not.toHaveBeenCalled();
     });
   });
 });

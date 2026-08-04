@@ -127,24 +127,18 @@ export class CfdiService {
    * A diferencia de `stampForInvoice`, aquí sí se propaga el error: hay un
    * usuario esperando la respuesta y necesita saber si su corrección funcionó.
    *
-   * Los intentos previos vienen de quien tomó el candado, no de una lectura
-   * nueva: el documento ya está en `pending` y releerlo sería otra operación que
-   * puede fallar y dejarlo bloqueado.
+   * Recibe el perfil y los intentos ya resueltos por quien tomó el candado, en
+   * vez de releerlos. Entre el candado y el PAC no puede quedar ninguna lectura
+   * que pueda fallar: en ese tramo el documento ya está en `pending`, así que
+   * cualquier error previo a llamar a Facturama lo dejaría clavado en ese estado
+   * y bloquearía todos los reintentos posteriores. Quien reserva, valida.
    */
   async retry(
     invoice: Stripe.Invoice,
     user: User,
+    profile: TaxProfile,
     previousAttempts: number,
   ): Promise<Cfdi> {
-    const profile = await this.firestoreService.getTaxProfile(user.id);
-
-    if (!profile?.isComplete || profile.type !== 'mx') {
-      throw new FacturamaError(
-        CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
-        'El perfil fiscal está incompleto',
-      );
-    }
-
     await this.stamp(
       invoice,
       user,

@@ -283,9 +283,13 @@ export class BillingService {
     }
 
     try {
+      // El perfil viaja ya validado desde arriba: releerlo dentro del reintento
+      // metería una operación que puede fallar entre el candado y el PAC, con el
+      // documento ya en `pending`.
       const updated = await this.cfdiService.retry(
         invoice,
         user,
+        profile,
         claim.attempts,
       );
       return this.toCfdiDto(updated);
