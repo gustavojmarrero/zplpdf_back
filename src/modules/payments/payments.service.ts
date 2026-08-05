@@ -552,15 +552,22 @@ export class PaymentsService {
   private static readonly IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 
   /**
-   * Cuánto se considera que un upgrade puede seguir en vuelo, y por tanto
-   * durante cuánto se rechaza otro hacia un destino distinto (issue #73).
+   * Lease del upgrade en curso: durante cuánto se rechaza otro hacia un destino
+   * distinto sin haber recibido señal de que el primero terminó (issue #73).
    *
-   * Dimensionado sobre el timeout por defecto del SDK de Stripe (80 s) con algo
-   * de margen. No se usa el TTL de 24 h: el 3DS no lo necesita —ese camino
-   * libera la clave al devolver el enlace de pago— y un intento que quedó a
-   * medias no debe secuestrar el plan del usuario durante un día entero.
+   * Dimensionado sobre el peor caso REAL de la única llamada que queda dentro
+   * del candado, `subscriptions.update`: el SDK se instancia con sus valores por
+   * defecto, o sea 80 s de timeout y 2 reintentos de red, luego hasta 240 s más
+   * backoff. Cinco minutos lo cubren con margen.
+   *
+   * El lease casi nunca llega a agotarse: todos los desenlaces definitivos
+   * liberan la clave —incluido el 3DS, que la suelta al devolver el enlace de
+   * pago—, así que solo cuenta cuando la petición sigue viva de verdad, murió
+   * sin liberar, o terminó en el error indeterminado, donde la clave se conserva
+   * a propósito. Tampoco puede ser el TTL de 24 h: eso dejaría al cliente sin
+   * poder cambiar de plan durante un día por un intento que quedó a medias.
    */
-  private static readonly UPGRADE_IN_FLIGHT_MS = 90 * 1000;
+  private static readonly UPGRADE_LEASE_MS = 5 * 60 * 1000;
 
   /**
    * Clave de idempotencia del intento de upgrade, estable entre reintentos.
@@ -587,7 +594,7 @@ export class PaymentsService {
         subscriptionId,
       },
       PaymentsService.IDEMPOTENCY_TTL_MS,
-      PaymentsService.UPGRADE_IN_FLIGHT_MS,
+      PaymentsService.UPGRADE_LEASE_MS,
     );
 
     // Dos destinos distintos no pueden compartir clave, así que serializarlos es
@@ -824,12 +831,6 @@ export class PaymentsService {
       );
     }
 
-    const idempotencyKey = await this.getUpgradeIdempotencyKey(
-      userId,
-      targetPlan,
-      user.stripeSubscriptionId,
-    );
-
     // `always_invoice` emite y cobra la factura de la proración dentro del
     // propio update, y Stripe congela en ella los datos fiscales del customer al
     // finalizarla. Igual que en el checkout, hay que propagarlos antes y en modo
@@ -848,6 +849,19 @@ export class PaymentsService {
         'No se pudieron sincronizar tus datos de facturación. Inténtalo de nuevo en unos momentos.',
       );
     }
+
+    // La clave se toma DESPUÉS de la sincronización fiscal y justo antes de la
+    // única llamada que mueve dinero. Tomarla al principio metía dentro del
+    // candado las tres llamadas del perfil fiscal, y el peor caso pasaba a ser
+    // cuatro veces el de una sola —el SDK reintenta hasta 3 veces con 80 s de
+    // timeout—, imposible de cubrir con un lease razonable. El sync no cobra
+    // nada y es idempotente, así que dejarlo fuera no arriesga un doble cargo;
+    // además, así un fallo suyo ya no retiene una clave que nadie liberará.
+    const idempotencyKey = await this.getUpgradeIdempotencyKey(
+      userId,
+      targetPlan,
+      user.stripeSubscriptionId,
+    );
 
     // Update subscription with proration
     let updatedSubscription: Stripe.Subscription;

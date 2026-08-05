@@ -143,7 +143,7 @@ describe('FirestoreService — updateUserSubscriptionState', () => {
  */
 describe('FirestoreService — acquireUpgradeIdempotency', () => {
   const TTL_MS = 24 * 60 * 60 * 1000;
-  const IN_FLIGHT_MS = 90 * 1000;
+  const LEASE_MS = 5 * 60 * 1000;
 
   function buildService(stored?: Record<string, unknown>) {
     const docData: Record<string, unknown> = stored
@@ -181,22 +181,71 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
 
   it('reutiliza la clave del mismo destino dentro del TTL', async () => {
     // El caso original: el reintento del mismo upgrade no debe cobrar dos veces.
-    const { service, update } = buildService({
+    // El instante se captura UNA vez: dos llamadas a `hace()` difieren en algún
+    // milisegundo y la comparación quedaría a merced del reloj.
+    const haceUnaHora = hace(60 * 60 * 1000);
+    const { service, docData } = buildService({
       key: 'upgrade_previo',
       targetPlan: 'promax',
       subscriptionId: 'sub_123',
-      createdAt: hace(60 * 60 * 1000),
+      createdAt: haceUnaHora,
+      lastAttemptAt: haceUnaHora,
     });
 
     const result = await service.acquireUpgradeIdempotency(
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'ok', key: 'upgrade_previo' });
-    expect(update).not.toHaveBeenCalled();
+    // La edad de la clave no se toca —de ella depende el TTL—, pero el lease sí
+    // se renueva: es una ejecución nueva.
+    expect((docData.upgradeIdempotency as any).createdAt).toBe(haceUnaHora);
+    expect(
+      new Date((docData.upgradeIdempotency as any).lastAttemptAt).getTime(),
+    ).toBeGreaterThan(new Date(haceUnaHora).getTime());
+  });
+
+  /**
+   * El escenario que el lease existe para cubrir: un reintento reutiliza la
+   * clave, pero con la antigüedad congelada en `createdAt` su ejecución quedaba
+   * desprotegida en cuanto la clave envejecía más que la ventana, y otro destino
+   * entraba con clave propia mientras el reintento seguía vivo.
+   */
+  it('renueva el lease al reutilizar, de modo que el reintento sigue excluyendo a otros destinos', async () => {
+    const haceMediaHora = hace(30 * 60 * 1000);
+    const { service, docData } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'promax',
+      subscriptionId: 'sub_123',
+      // Clave nacida hace media hora: el lease original expiró hace mucho.
+      createdAt: haceMediaHora,
+      lastAttemptAt: haceMediaHora,
+    });
+
+    // El cliente reintenta el MISMO upgrade: reutiliza la clave.
+    const reintento = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      LEASE_MS,
+    );
+    expect(reintento).toEqual({ status: 'ok', key: 'upgrade_previo' });
+
+    // Y ahora entra otro destino, con el reintento todavía en curso.
+    const otroDestino = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('pro'),
+      TTL_MS,
+      LEASE_MS,
+    );
+
+    // Sin renovar el lease, este habría entrado con clave propia y las dos
+    // mutaciones habrían salido hacia Stripe.
+    expect(otroDestino).toEqual({ status: 'conflict', targetPlan: 'promax' });
+    expect((docData.upgradeIdempotency as any).key).toBe('upgrade_previo');
   });
 
   it('rechaza otro destino sobre la misma suscripción mientras pueda estar en vuelo', async () => {
@@ -211,7 +260,7 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'conflict', targetPlan: 'pro' });
@@ -234,7 +283,7 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
@@ -255,7 +304,7 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
@@ -273,7 +322,7 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
@@ -291,7 +340,7 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
@@ -311,7 +360,7 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'conflict', targetPlan: 'pro' });
@@ -330,7 +379,7 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       'uid-1',
       candidato('promax'),
       TTL_MS,
-      IN_FLIGHT_MS,
+      LEASE_MS,
     );
 
     expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });

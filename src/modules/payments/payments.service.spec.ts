@@ -63,10 +63,10 @@ describe('PaymentsService — upgradeSubscription', () => {
 
     /**
      * Reproduce la semántica transaccional real: reutiliza la clave vigente del
-     * mismo destino, rechaza un destino distinto mientras el anterior pueda
-     * seguir en vuelo, y en el resto de casos persiste la candidata. Las dos
-     * ventanas se evalúan sobre el valor almacenado tal cual, para que un
-     * `createdAt` mal serializado se note.
+     * mismo destino RENOVANDO su lease, rechaza un destino distinto mientras el
+     * anterior siga vivo, y en el resto de casos persiste la candidata. Las dos
+     * ventanas se evalúan sobre marcas distintas y sobre el valor almacenado tal
+     * cual, para que un `createdAt` mal serializado se note.
      */
     const acquireUpgradeIdempotency = jest.fn().mockImplementation(
       async (
@@ -77,32 +77,39 @@ describe('PaymentsService — upgradeSubscription', () => {
           subscriptionId: string;
         },
         ttlMs: number,
-        inFlightMs: number,
+        leaseMs: number,
       ) => {
         const stored = userDoc.upgradeIdempotency as
           | Record<string, any>
           | null
           | undefined;
-        const createdAtMs = stored?.createdAt
-          ? new Date(stored.createdAt?.toDate?.() ?? stored.createdAt).getTime()
-          : NaN;
-        const edadMs = Date.now() - createdAtMs;
+        const enMs = (value: any) =>
+          value ? new Date(value?.toDate?.() ?? value).getTime() : NaN;
+        const createdAtMs = enMs(stored?.createdAt);
+        const lastAttemptMs = enMs(stored?.lastAttemptAt ?? stored?.createdAt);
+        const ahora = new Date().toISOString();
         const mismoContrato =
           !!stored?.key &&
           Number.isFinite(createdAtMs) &&
           stored.subscriptionId === candidate.subscriptionId;
 
         if (mismoContrato && stored.targetPlan === candidate.targetPlan) {
-          if (edadMs < ttlMs) {
+          if (Date.now() - createdAtMs < ttlMs) {
+            userDoc.upgradeIdempotency = { ...stored, lastAttemptAt: ahora };
             return { status: 'ok', key: stored.key };
           }
-        } else if (mismoContrato && edadMs < inFlightMs) {
+        } else if (
+          mismoContrato &&
+          Number.isFinite(lastAttemptMs) &&
+          Date.now() - lastAttemptMs < leaseMs
+        ) {
           return { status: 'conflict', targetPlan: stored.targetPlan };
         }
 
         userDoc.upgradeIdempotency = {
           ...candidate,
-          createdAt: new Date().toISOString(),
+          createdAt: ahora,
+          lastAttemptAt: ahora,
         };
         return { status: 'ok', key: candidate.key };
       },
@@ -269,10 +276,10 @@ describe('PaymentsService — upgradeSubscription', () => {
         targetPlan: 'promax',
         subscriptionId: 'sub_123',
       }),
-      // TTL de reutilización (24 h) y ventana de exclusión entre destinos
-      // distintos (segundos): son dos cosas y no pueden ser el mismo número.
+      // TTL de reutilización (24 h) y lease de exclusión entre destinos
+      // distintos (minutos): son dos cosas y no pueden ser el mismo número.
       24 * 60 * 60 * 1000,
-      90 * 1000,
+      5 * 60 * 1000,
     );
     // La clave no se decide a partir del usuario leído antes de la transacción.
     expect(getUserById).toHaveBeenCalledTimes(1);
@@ -321,20 +328,22 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
-  it('permite cambiar de destino cuando el intento anterior ya no puede estar en vuelo', async () => {
+  it('permite cambiar de destino cuando el intento anterior ya no puede estar vivo', async () => {
     const { service, update, userDoc } = buildService({
       subscription: activeSubscription,
     });
     userDoc.plan = 'lite';
     service.proPriceIdMxn = 'price_pro_mxn';
-    // Intento anterior a otro plan, de hace dos minutos: pasada la ventana en
-    // vuelo. Sigue dentro del TTL de 24 h, y ahí está la trampa — usar el TTL
+    // Intento anterior a otro plan, de hace media hora: el lease expiró hace
+    // mucho. Sigue dentro del TTL de 24 h, y ahí está la trampa — usar el TTL
     // para excluir dejaría al cliente sin poder cambiar de plan durante un día.
+    const haceMediaHora = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     userDoc.upgradeIdempotency = {
       key: 'upgrade_uid-1_viejo',
       targetPlan: 'pro',
       subscriptionId: 'sub_123',
-      createdAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+      createdAt: haceMediaHora,
+      lastAttemptAt: haceMediaHora,
     };
 
     await expect(

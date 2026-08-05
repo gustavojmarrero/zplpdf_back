@@ -605,42 +605,51 @@ export class FirestoreService {
    * mutaciones a Stripe — justo el doble cargo que la idempotencia debe evitar.
    * La transacción garantiza que solo una gane y que la otra reutilice su clave.
    *
-   * Hay dos ventanas distintas, y confundirlas rompe uno u otro caso:
+   * Hay dos ventanas distintas, medidas sobre marcas distintas, y confundirlas
+   * rompe uno u otro caso:
    *
-   * - `ttlMs` (24 h) gobierna la REUTILIZACIÓN de la clave para el MISMO
-   *   destino. Es lo que hace que el reintento de un upgrade que falló llegue a
-   *   Stripe con la misma clave y no cobre dos veces.
-   * - `inFlightMs` (segundos) gobierna la EXCLUSIÓN entre destinos DISTINTOS
-   *   sobre la misma suscripción. Dos cambios distintos no pueden compartir
-   *   clave, así que la única forma de que no salgan los dos hacia Stripe es
-   *   rechazar el segundo mientras el primero pueda seguir en vuelo.
+   * - `ttlMs` (24 h) sobre `createdAt` gobierna la REUTILIZACIÓN de la clave
+   *   para el MISMO destino. Es lo que hace que el reintento de un upgrade que
+   *   falló llegue a Stripe con la misma clave y no cobre dos veces.
+   * - `leaseMs` (minutos) sobre `lastAttemptAt` gobierna la EXCLUSIÓN entre
+   *   destinos DISTINTOS sobre la misma suscripción. Dos cambios distintos no
+   *   pueden compartir clave, así que la única forma de que no salgan los dos
+   *   hacia Stripe es rechazar el segundo mientras el primero siga vivo.
    *
-   * La exclusión NO usa el TTL a propósito (issue #73): un intento que quedó a
-   * medias —el caso del error indeterminado, donde la clave se conserva
-   * deliberadamente— bloquearía durante 24 h un cambio de plan legítimo. Pasada
-   * la ventana en vuelo, un destino distinto sobrescribe la clave con
-   * normalidad.
+   * `lastAttemptAt` no puede ser `createdAt`: un reintento REUTILIZA la clave
+   * pero abre una ejecución NUEVA, y con la marca de nacimiento congelada esa
+   * ejecución quedaría desprotegida en cuanto la clave envejeciera más que el
+   * lease. Por eso la reutilización también escribe: renueva el lease.
+   *
+   * La exclusión tampoco usa el TTL (issue #73): un intento que quedó a medias
+   * —el caso del error indeterminado, donde la clave se conserva
+   * deliberadamente— bloquearía durante 24 h un cambio de plan legítimo.
    */
   async acquireUpgradeIdempotency(
     userId: string,
     candidate: { key: string; targetPlan: string; subscriptionId: string },
     ttlMs: number,
-    inFlightMs: number,
+    leaseMs: number,
   ): Promise<
     { status: 'ok'; key: string } | { status: 'conflict'; targetPlan: string }
   > {
     const ref = this.firestore.collection(this.usersCollection).doc(userId);
 
+    // Defensivo con el formato: lo escribimos como ISO string, pero un
+    // documento anterior pudo quedar con Timestamp o Date.
+    const enMs = (value: unknown): number =>
+      value
+        ? new Date((value as any)?.toDate?.() ?? (value as any)).getTime()
+        : NaN;
+
     return this.firestore.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(ref);
       const stored = snapshot.data()?.upgradeIdempotency;
+      const ahora = new Date().toISOString();
 
-      // Defensivo con el formato: lo escribimos como ISO string, pero un
-      // documento anterior pudo quedar con Timestamp o Date.
-      const createdAtMs = stored?.createdAt
-        ? new Date(stored.createdAt?.toDate?.() ?? stored.createdAt).getTime()
-        : NaN;
-      const edadMs = Date.now() - createdAtMs;
+      const createdAtMs = enMs(stored?.createdAt);
+      // Documentos escritos antes de existir el lease solo tienen `createdAt`.
+      const lastAttemptMs = enMs(stored?.lastAttemptAt ?? stored?.createdAt);
 
       // Un intento sobre OTRA suscripción no dice nada del contrato actual.
       const mismoContrato =
@@ -649,11 +658,21 @@ export class FirestoreService {
         stored.subscriptionId === candidate.subscriptionId;
 
       if (mismoContrato && stored.targetPlan === candidate.targetPlan) {
-        if (edadMs < ttlMs) {
+        if (Date.now() - createdAtMs < ttlMs) {
+          // Misma clave, ejecución nueva: hay que renovar el lease o esta
+          // quedaría sin exclusión frente a otros destinos.
+          transaction.update(ref, {
+            upgradeIdempotency: { ...stored, lastAttemptAt: ahora },
+            updatedAt: new Date(),
+          });
           return { status: 'ok' as const, key: stored.key as string };
         }
-      } else if (mismoContrato && edadMs < inFlightMs) {
-        // Otro destino sobre la misma suscripción, aún posiblemente en vuelo.
+      } else if (
+        mismoContrato &&
+        Number.isFinite(lastAttemptMs) &&
+        Date.now() - lastAttemptMs < leaseMs
+      ) {
+        // Otro destino sobre la misma suscripción, con un intento aún vivo.
         // Sobrescribir la clave dejaría salir las dos mutaciones hacia Stripe y
         // la suscripción acabaría en la que llegara última, con una proración
         // que el usuario no pidió y Firestore apuntando a otro plan.
@@ -666,7 +685,8 @@ export class FirestoreService {
       transaction.update(ref, {
         upgradeIdempotency: {
           ...candidate,
-          createdAt: new Date().toISOString(),
+          createdAt: ahora,
+          lastAttemptAt: ahora,
         },
         updatedAt: new Date(),
       });
