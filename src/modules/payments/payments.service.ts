@@ -1268,6 +1268,16 @@ export class PaymentsService {
       // y la respuesta no afirma que el plan haya quedado igual.
       const type = (error as { type?: string }).type;
       if (type === 'StripeConnectionError' || type === 'StripeAPIError') {
+        // Se registra aquí porque este `throw` no pasa por throwStripeApiError,
+        // que es quien normalmente deja el rastro. Sin esto, el desenlace con un
+        // cobro posiblemente en vuelo sería el peor instrumentado de todo el
+        // flujo: solo quedaría el warn de la reconciliación, sin el mensaje
+        // original de Stripe y un nivel por debajo del que disparan las alertas.
+        this.logger.error(
+          `CRITICAL: subscriptions.update quedó indeterminado (${type}) y la reconciliación ` +
+            `no pudo confirmar el desenlace — ${upgradeContext}. La clave de idempotencia se ` +
+            `conserva para el reintento. Detalle: ${(error as { message?: string }).message}`,
+        );
         throw new ServiceUnavailableException(
           'We could not confirm whether your plan change went through. Please check your billing ' +
             'settings before trying again, or contact support@zplpdf.com.',

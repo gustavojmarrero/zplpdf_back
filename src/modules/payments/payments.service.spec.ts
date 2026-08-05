@@ -528,6 +528,35 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(error.message).toContain('went through');
   });
 
+  it('rechaza la bajada que solo Stripe conoce, sin confundirla con el caso idempotente', async () => {
+    // La recuperación idempotente solo cubre destino == vigente. Si Stripe está
+    // en un plan SUPERIOR al pedido, sigue siendo una bajada y debe rechazarse:
+    // es la única rama que queda viva en esa guarda, y la protección de fondo
+    // del método.
+    //
+    // Firestore dice lite, así que las dos guardas contra el documento dejan
+    // pasar un lite→pro; solo la comprobación contra el precio vigente en Stripe
+    // ve que en realidad es promax→pro.
+    const { service, update, updateUser, userDoc } = buildService({
+      subscription: {
+        status: 'active',
+        items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+      },
+    });
+    userDoc.plan = 'lite';
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'pro')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    // PROMAX, no LITE: prueba que el rechazo viene de la guarda contra Stripe y
+    // no de las anteriores, que habrían dejado pasar este cambio.
+    expect(error.message).toBe('Cannot upgrade from PROMAX to PRO.');
+    expect(update).not.toHaveBeenCalled();
+    expect(escriturasDePlan(updateUser)).toHaveLength(0);
+  });
+
   it('aborta si la suscripción dejó de estar activa mientras se preparaba', async () => {
     const { service, update, retrieve } = buildService({
       subscription: activeSubscription,
@@ -1002,6 +1031,15 @@ describe('PaymentsService — upgradeSubscription', () => {
         targetPlan: 'promax',
         subscriptionId: 'sub_123',
       });
+      // Este throw no pasa por throwStripeApiError, así que el rastro tiene que
+      // dejarlo él: sin esto, el desenlace con un cobro quizá en vuelo sería el
+      // único del flujo sin el mensaje original de Stripe ni nivel `error`.
+      const registrado = service.logger.error.mock.calls
+        .map(([mensaje]: [string]) => mensaje)
+        .join('\n');
+      expect(registrado).toContain(type);
+      expect(registrado).toContain('indeterminate error');
+      expect(registrado).toContain('uid-1');
     },
   );
 
