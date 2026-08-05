@@ -816,14 +816,30 @@ export class PaymentsService {
 
     // El cambio sí se aplicó: sincronizamos Firestore para no dejar al cliente
     // pagando un plan que el producto no le reconoce.
-    const persisted = await this.firestoreService.updateUserSubscriptionState(
-      userId,
-      { plan: targetPlan },
-      readAt,
-      lockToken,
-    );
+    //
+    // Se captura el RECHAZO además del `false`: si Firestore cae aquí, el cobro
+    // ya está confirmado y dejar escapar la excepción daría un 500 genérico
+    // sobre un cargo real. Los dos desenlaces son el mismo para el cliente.
+    let persisted = false;
+    try {
+      persisted = await this.firestoreService.updateUserSubscriptionState(
+        userId,
+        { plan: targetPlan },
+        readAt,
+        lockToken,
+      );
+    } catch (persistError) {
+      this.logger.error(
+        `No se pudo escribir el plan reconciliado — ${context}. ` +
+          `Detalle: ${(persistError as Error).message}`,
+      );
+    }
 
     if (!persisted) {
+      // Desenlace definitivo con cobro hecho: la clave sale de circulación o
+      // seguiría marcando un intento vivo y bloquearía otros destinos durante
+      // todo el lease, pese a que este ya terminó.
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
       this.throwUnsyncedUpgradeError(targetPlan, context);
     }
 
@@ -1224,12 +1240,23 @@ export class PaymentsService {
     // camino, y sin un reloj común una lectura suya anterior a este cambio
     // podría aterrizar después y revertir el plan recién pagado (issue #74).
     // Cualquier lectura previa a esta respuesta es, por definición, más vieja.
-    const persisted = await this.firestoreService.updateUserSubscriptionState(
-      userId,
-      { plan: targetPlan },
-      confirmedAt,
-      lockToken,
-    );
+    // El rechazo se trata igual que el `false`: llegados aquí Stripe ya cobró y
+    // confirmó, así que una caída de Firestore no puede convertirse en un 500
+    // genérico —el cliente leería "error" sobre un cargo que sí ocurrió—.
+    let persisted = false;
+    try {
+      persisted = await this.firestoreService.updateUserSubscriptionState(
+        userId,
+        { plan: targetPlan },
+        confirmedAt,
+        lockToken,
+      );
+    } catch (persistError) {
+      this.logger.error(
+        `No se pudo escribir el plan tras el cobro — ${upgradeContext}. ` +
+          `Detalle: ${(persistError as Error).message}`,
+      );
+    }
 
     // La clave se libera aparte y comparando: borrarla en la misma escritura
     // sería incondicional y podría pisar la de un intento posterior. Va antes de
@@ -1301,6 +1328,28 @@ export class PaymentsService {
     const plan = await this.withSubscriptionSyncLock(
       userId,
       async (lockToken) => {
+        // El usuario se relee dentro del lease: el leído fuera pudo esperar aquí
+        // mientras otro ciclo cambiaba el contrato, y el aviso de duplicado —y
+        // la decisión de adoptar esta suscripción— deben partir de datos
+        // vigentes, no de los de hace unos minutos.
+        const vigente =
+          (await this.firestoreService.getUserById(userId)) ?? user;
+
+        if (
+          vigente?.stripeSubscriptionId &&
+          vigente.stripeSubscriptionId !== subscriptionId
+        ) {
+          // Se adopta igualmente: un checkout completado es un alta real y esta
+          // es la suscripción por la que el cliente acaba de pagar. Lo que se
+          // corrige es que la traza salga de una lectura fresca.
+          this.logger.warn(
+            `DUPLICATE CHECKOUT (revalidado en el lease): el usuario ${userId} ` +
+              `tenía ${vigente.stripeSubscriptionId} y el checkout trae ` +
+              `${subscriptionId}. Se adopta la nueva; la anterior puede quedar ` +
+              `huérfana en Stripe.`,
+          );
+        }
+
         let resuelto: PaidPlanType | null = null;
         let periodStart: Date | undefined;
         let periodEnd: Date | undefined;
@@ -1608,10 +1657,30 @@ export class PaymentsService {
   }
 
   private async syncSubscriptionState(
-    user: User,
+    userPrevio: User,
     subscription: Stripe.Subscription,
     lockToken: string,
   ): Promise<void> {
+    // El mutex ordena las ejecuciones, pero no demuestra que el evento siga
+    // siendo del contrato vigente: uno retrasado de una suscripción anterior
+    // puede adquirir el lease cuando ya es otra la buena. El usuario se relee
+    // DENTRO del lease, porque el leído fuera pudo quedarse viejo esperándolo.
+    const user =
+      (await this.firestoreService.getUserById(userPrevio.id)) ?? userPrevio;
+
+    // Sin `stripeSubscriptionId` es un alta cuyo checkout aún no ha aterrizado:
+    // ahí no hay con qué comparar y descartar perdería la sincronización.
+    if (
+      user.stripeSubscriptionId &&
+      user.stripeSubscriptionId !== subscription.id
+    ) {
+      this.logger.warn(
+        `Ignorado subscription.updated de ${subscription.id}: el usuario ` +
+          `${user.id} tiene activa ${user.stripeSubscriptionId}.`,
+      );
+      return;
+    }
+
     // El snapshot del evento NO es fuente de verdad. Stripe no garantiza el
     // orden de entrega, y el upgrade con `pending_if_incomplete` emite dos
     // eventos: uno con el precio ANTERIOR cuando el cambio queda pendiente de
@@ -1759,6 +1828,9 @@ export class PaymentsService {
 
     // FIX: Only process if the deleted subscription matches the user's current subscription
     // This prevents orphan/duplicate subscription deletions from affecting the user's active plan
+    //
+    // Esta comprobación previa solo evita trabajo: la que decide es la de dentro
+    // del lease, porque entre esta lectura y el lock puede cambiar el contrato.
     if (
       user.stripeSubscriptionId &&
       user.stripeSubscriptionId !== subscription.id
@@ -1806,8 +1878,26 @@ export class PaymentsService {
     // competir, así que el sello se toma justo antes de escribir.
     const aplicado = await this.withSubscriptionSyncLock(
       user.id,
-      (lockToken) =>
-        this.withRetry(
+      async (lockToken) => {
+        // Revalidación dentro del lease: un `deleted` retrasado de un contrato
+        // anterior podría adquirirlo cuando ya hay otro vigente y dejar al
+        // cliente en Free habiendo pagado.
+        const fresh =
+          (await this.firestoreService.getUserById(user.id)) ?? user;
+
+        if (
+          fresh.stripeSubscriptionId &&
+          fresh.stripeSubscriptionId !== subscription.id
+        ) {
+          this.logger.warn(
+            `Ignorado subscription.deleted de ${subscription.id} dentro del ` +
+              `lease: el usuario ${user.id} ya tiene activa ` +
+              `${fresh.stripeSubscriptionId}.`,
+          );
+          return false;
+        }
+
+        return this.withRetry(
           () =>
             this.firestoreService.updateUserSubscriptionState(
               user.id,
@@ -1819,7 +1909,8 @@ export class PaymentsService {
               lockToken,
             ),
           `handleSubscriptionDeleted(${user.id})`,
-        ),
+        );
+      },
       'la baja de la suscripción',
     );
 

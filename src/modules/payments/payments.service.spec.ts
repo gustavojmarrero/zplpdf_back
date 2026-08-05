@@ -538,6 +538,52 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(respuesta.data.paymentProcessed).toBe(true);
   });
 
+  it('una excepción al persistir tampoco oculta el cobro', async () => {
+    // Firestore caído después de que Stripe confirmara: el cargo existe, así que
+    // escapar como 500 genérico haría que el cliente lea "error" sobre dinero
+    // que sí se movió.
+    const { service, updateUserSubscriptionState } = buildService({
+      subscription: activeSubscription,
+    });
+    updateUserSubscriptionState.mockRejectedValue(new Error('Firestore caído'));
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    const respuesta = (error as ServiceUnavailableException).getResponse() as {
+      error: string;
+      data: { paymentProcessed: boolean };
+    };
+    expect(respuesta.error).toBe('UPGRADE_APPLIED_SYNC_PENDING');
+    expect(respuesta.data.paymentProcessed).toBe(true);
+  });
+
+  it('el camino reconciliado libera la clave si el fencing descarta la escritura', async () => {
+    // Terminó: retenerla marcaría un intento vivo y bloquearía otros destinos
+    // durante todo el lease.
+    const { service, userDoc, retrieve, updateUserSubscriptionState } =
+      buildService({
+        subscription: activeSubscription,
+        updateError: { type: 'StripeConnectionError', message: 'network' },
+      });
+    retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce({
+        status: 'active',
+        items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+      });
+    updateUserSubscriptionState.mockResolvedValue(false);
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    expect(userDoc.upgradeIdempotency).toBeNull();
+  });
+
   it('los 503 anteriores al cobro NO llevan el discriminador de pago procesado', async () => {
     // Si el sync fiscal falla no se ha cobrado nada; confundirlo con el caso de
     // arriba haría que el cliente informara de un cargo que no existe.
@@ -1227,15 +1273,17 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     const updateUserSubscriptionState = jest
       .fn()
       .mockResolvedValue(overrides.aplicada ?? true);
-    const getUserByStripeCustomerId = jest.fn().mockResolvedValue(
-      overrides.user ?? {
-        id: 'uid-1',
-        email: 'cliente@example.com',
-        plan: 'promax',
-        country: 'MX',
-        stripeSubscriptionId: 'sub_123',
-      },
-    );
+    const usuario = overrides.user ?? {
+      id: 'uid-1',
+      email: 'cliente@example.com',
+      plan: 'promax',
+      country: 'MX',
+      stripeSubscriptionId: 'sub_123',
+    };
+    const getUserByStripeCustomerId = jest.fn().mockResolvedValue(usuario);
+    // Se relee dentro del lease para comprobar que el evento sigue siendo del
+    // contrato vigente.
+    const getUserById = jest.fn().mockResolvedValue(usuario);
     const queueSubscriptionDowngradedEmail = jest
       .fn()
       .mockResolvedValue(undefined);
@@ -1244,6 +1292,7 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     service.stripe = { subscriptions: { retrieve } };
     service.firestoreService = {
       getUserByStripeCustomerId,
+      getUserById,
       updateUserSubscriptionState,
       acquireSubscriptionSyncLock,
       releaseSubscriptionSyncLock,
@@ -1262,6 +1311,7 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       queueSubscriptionDowngradedEmail,
       acquireSubscriptionSyncLock,
       releaseSubscriptionSyncLock,
+      getUserById,
     };
   }
 
@@ -1410,6 +1460,9 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       getUserByStripeCustomerId: jest
         .fn()
         .mockResolvedValue({ id: 'uid-1', plan: 'pro', country: 'MX' }),
+      getUserById: jest
+        .fn()
+        .mockResolvedValue({ id: 'uid-1', plan: 'pro', country: 'MX' }),
       updateUserSubscriptionState,
       // Lock permisivo a propósito: aquí se ejercita el sello, no el lock.
       acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok'),
@@ -1495,6 +1548,39 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     await expect(
       service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN)),
     ).resolves.toBeUndefined();
+    expect(updateUserSubscriptionState).toHaveBeenCalled();
+  });
+
+  /**
+   * El mutex ordena las ejecuciones pero no demuestra pertenencia: un evento
+   * retrasado de una suscripción anterior puede adquirir el lease cuando ya es
+   * otra la vigente, y aplicarlo dejaría al cliente en el contrato equivocado.
+   */
+  it('ignora el evento si el usuario ya tiene activa otra suscripción', async () => {
+    const { service, retrieve, updateUserSubscriptionState, getUserById } =
+      buildService({ current: subscriptionCon(PROMAX_MXN) });
+    getUserById.mockResolvedValue({
+      id: 'uid-1',
+      plan: 'promax',
+      stripeSubscriptionId: 'sub_nueva',
+    });
+
+    await service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN));
+
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
+  it('acepta el evento si el usuario aún no tiene suscripción registrada', async () => {
+    // Es el alta cuyo checkout todavía no aterrizó: descartar aquí perdería la
+    // sincronización, y no hay contrato anterior con el que chocar.
+    const { service, updateUserSubscriptionState, getUserById } = buildService({
+      current: subscriptionCon(PROMAX_MXN),
+    });
+    getUserById.mockResolvedValue({ id: 'uid-1', plan: 'free' });
+
+    await service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN));
+
     expect(updateUserSubscriptionState).toHaveBeenCalled();
   });
 
