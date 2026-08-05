@@ -556,9 +556,17 @@ export class PaymentsService {
    * distinto sin haber recibido señal de que el primero terminó (issue #73).
    *
    * Dimensionado sobre el peor caso REAL de la única llamada que queda dentro
-   * del candado, `subscriptions.update`: el SDK se instancia con sus valores por
-   * defecto, o sea 80 s de timeout y 2 reintentos de red, luego hasta 240 s más
-   * backoff. Cinco minutos lo cubren con margen.
+   * del candado, `subscriptions.update`, con el SDK en sus valores por defecto:
+   *
+   *   3 intentos × 80 s de timeout        = 240 s
+   * + 2 esperas × 60 s (`MAX_RETRY_AFTER_WAIT`, que el SDK respeta cuando
+   *   Stripe manda `Retry-After`)         = 120 s
+   *                                       -------
+   *                                         360 s
+   *
+   * Siete minutos (420 s) dejan un minuto de margen. El backoff de red normal
+   * tiene tope de 5 s, así que solo se acerca a esa cota una llamada que además
+   * choque con limitación de tasa.
    *
    * El lease casi nunca llega a agotarse: todos los desenlaces definitivos
    * liberan la clave —incluido el 3DS, que la suelta al devolver el enlace de
@@ -567,7 +575,7 @@ export class PaymentsService {
    * a propósito. Tampoco puede ser el TTL de 24 h: eso dejaría al cliente sin
    * poder cambiar de plan durante un día por un intento que quedó a medias.
    */
-  private static readonly UPGRADE_LEASE_MS = 5 * 60 * 1000;
+  private static readonly UPGRADE_LEASE_MS = 7 * 60 * 1000;
 
   /**
    * Clave de idempotencia del intento de upgrade, estable entre reintentos.

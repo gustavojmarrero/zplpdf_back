@@ -143,7 +143,7 @@ describe('FirestoreService — updateUserSubscriptionState', () => {
  */
 describe('FirestoreService — acquireUpgradeIdempotency', () => {
   const TTL_MS = 24 * 60 * 60 * 1000;
-  const LEASE_MS = 5 * 60 * 1000;
+  const LEASE_MS = 7 * 60 * 1000;
 
   function buildService(stored?: Record<string, unknown>) {
     const docData: Record<string, unknown> = stored

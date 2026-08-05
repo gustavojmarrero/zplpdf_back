@@ -277,9 +277,11 @@ describe('PaymentsService — upgradeSubscription', () => {
         subscriptionId: 'sub_123',
       }),
       // TTL de reutilización (24 h) y lease de exclusión entre destinos
-      // distintos (minutos): son dos cosas y no pueden ser el mismo número.
+      // distintos (minutos): son dos cosas y no pueden ser el mismo número. El
+      // lease cubre el peor caso de `subscriptions.update`: 3 × 80 s de timeout
+      // más 2 × 60 s de Retry-After = 360 s.
       24 * 60 * 60 * 1000,
-      5 * 60 * 1000,
+      7 * 60 * 1000,
     );
     // La clave no se decide a partir del usuario leído antes de la transacción.
     expect(getUserById).toHaveBeenCalledTimes(1);
