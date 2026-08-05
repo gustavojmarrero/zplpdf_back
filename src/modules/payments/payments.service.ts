@@ -28,7 +28,7 @@ import type {
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
 import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
-import type { PlanType } from '../../common/interfaces/user.interface.js';
+import type { PlanType, User } from '../../common/interfaces/user.interface.js';
 import { randomUUID } from 'node:crypto';
 
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
@@ -576,6 +576,16 @@ export class PaymentsService {
    * poder cambiar de plan durante un día por un intento que quedó a medias.
    */
   private static readonly UPGRADE_LEASE_MS = 7 * 60 * 1000;
+
+  /**
+   * Lease del ciclo relectura→escritura de la suscripción (issue #77).
+   *
+   * Mismo cálculo que el del upgrade: dentro hay una llamada a Stripe
+   * —`subscriptions.retrieve`— cuyo peor caso son 360 s con el SDK en sus
+   * valores por defecto, más las escrituras a Firestore. Siete minutos lo
+   * cubren, y el `finally` que lo libera hace que casi nunca llegue a caducar.
+   */
+  private static readonly SUBSCRIPTION_SYNC_LEASE_MS = 7 * 60 * 1000;
 
   /**
    * Clave de idempotencia del intento de upgrade, estable entre reintentos.
@@ -1226,6 +1236,56 @@ export class PaymentsService {
     }
   }
 
+  /**
+   * Serializa el ciclo relectura→escritura de un usuario y lo ejecuta.
+   *
+   * Sin esto, dos ciclos solapados pueden aterrizar en orden inverso al de los
+   * estados que observaron: el sello mide cuándo llegó la respuesta a Cloud Run,
+   * no cuándo Stripe observó el estado, y entre ambos instantes cabe una red
+   * lenta (issue #77). Con los ciclos serializados, la última lectura es siempre
+   * la más reciente.
+   *
+   * Si otro ciclo lo tiene tomado se lanza, y Stripe reentrega el webhook con su
+   * backoff. Esperar aquí sería peor: bloquearía el manejador hasta agotar el
+   * plazo de respuesta del webhook, y Stripe lo reintentaría igualmente.
+   */
+  private async withSubscriptionSyncLock<T>(
+    userId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const token = await this.firestoreService.acquireSubscriptionSyncLock(
+      userId,
+      PaymentsService.SUBSCRIPTION_SYNC_LEASE_MS,
+    );
+
+    if (!token) {
+      this.logger.warn(
+        `Sincronización de suscripción de ${userId} ya en curso; se rechaza el ` +
+          `webhook para que Stripe lo reentregue.`,
+      );
+      throw new ConflictException(
+        'Subscription sync already in progress for this user',
+      );
+    }
+
+    try {
+      return await operation();
+    } finally {
+      // En `finally` a propósito: un ciclo que lanza a mitad —relectura fallida,
+      // Firestore caído— no debe dejar el lease tomado hasta que caduque.
+      try {
+        await this.firestoreService.releaseSubscriptionSyncLock(userId, token);
+      } catch (error) {
+        // El lease caduca solo; no vale la pena convertir esto en un fallo del
+        // webhook y provocar una reentrega de algo que ya se aplicó.
+        this.logger.warn(
+          `No se pudo liberar el lock de sincronización de ${userId}: ` +
+            `${(error as Error).message}`,
+        );
+      }
+    }
+  }
+
   async handleSubscriptionUpdated(
     subscription: Stripe.Subscription,
   ): Promise<void> {
@@ -1238,6 +1298,17 @@ export class PaymentsService {
       return;
     }
 
+    // El lock abarca la relectura Y la escritura: separarlos volvería a permitir
+    // que dos ciclos observen estados distintos y aterricen en orden inverso.
+    await this.withSubscriptionSyncLock(user.id, () =>
+      this.syncSubscriptionState(user, subscription),
+    );
+  }
+
+  private async syncSubscriptionState(
+    user: User,
+    subscription: Stripe.Subscription,
+  ): Promise<void> {
     // El snapshot del evento NO es fuente de verdad. Stripe no garantiza el
     // orden de entrega, y el upgrade con `pending_if_incomplete` emite dos
     // eventos: uno con el precio ANTERIOR cuando el cambio queda pendiente de

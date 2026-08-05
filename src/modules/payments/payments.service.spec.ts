@@ -853,10 +853,22 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     /** `false` simula que otra escritura más fresca ya ganó. */
     aplicada?: boolean;
     user?: Record<string, unknown>;
+    /** `null` simula que otro ciclo tiene el lock tomado. */
+    lockToken?: string | null;
+    releaseError?: unknown;
   }) {
     const retrieve = overrides.retrieveError
       ? jest.fn().mockRejectedValue(overrides.retrieveError)
       : jest.fn().mockResolvedValue(overrides.current);
+
+    const acquireSubscriptionSyncLock = jest
+      .fn()
+      .mockResolvedValue(
+        overrides.lockToken === undefined ? 'tok-1' : overrides.lockToken,
+      );
+    const releaseSubscriptionSyncLock = overrides.releaseError
+      ? jest.fn().mockRejectedValue(overrides.releaseError)
+      : jest.fn().mockResolvedValue(undefined);
 
     const updateUserSubscriptionState = jest
       .fn()
@@ -879,6 +891,8 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     service.firestoreService = {
       getUserByStripeCustomerId,
       updateUserSubscriptionState,
+      acquireSubscriptionSyncLock,
+      releaseSubscriptionSyncLock,
     };
     service.emailService = { queueSubscriptionDowngradedEmail };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -892,6 +906,8 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       retrieve,
       updateUserSubscriptionState,
       queueSubscriptionDowngradedEmail,
+      acquireSubscriptionSyncLock,
+      releaseSubscriptionSyncLock,
     };
   }
 
@@ -989,11 +1005,15 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
   });
 
   /**
-   * El sello debe representar el estado OBSERVADO, no el momento en que salió la
-   * petición. Sellar al inicio invierte la garantía justo en el caso que el fix
-   * persigue: una relectura lenta que acaba viendo el plan nuevo llevaría un
-   * sello menor que otra posterior que vio el viejo, y la guarda descartaría la
-   * lectura buena dejando el plan obsoleto en Firestore.
+   * Defensa en profundidad. El lock por usuario (issue #77) impide que dos
+   * ciclos se solapen, así que esta carrera ya no debería darse en producción;
+   * el sello sigue cubriendo los ciclos que mueran con el lease tomado, y debe
+   * representar el estado OBSERVADO y no el momento en que salió la petición.
+   * Sellar al inicio invertía la garantía: una relectura lenta que acaba viendo
+   * el plan nuevo llevaría un sello menor que otra posterior que vio el viejo.
+   *
+   * Por eso este test concede el lock a los dos ciclos: verifica la capa de
+   * abajo, no la serialización.
    */
   it('gana la relectura que observó el estado más reciente aunque su petición saliera antes', async () => {
     const espera = (ms: number) =>
@@ -1036,6 +1056,9 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
         .fn()
         .mockResolvedValue({ id: 'uid-1', plan: 'pro', country: 'MX' }),
       updateUserSubscriptionState,
+      // Lock permisivo a propósito: aquí se ejercita el sello, no el lock.
+      acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok'),
+      releaseSubscriptionSyncLock: jest.fn().mockResolvedValue(undefined),
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
@@ -1061,6 +1084,63 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     // Con el sello tomado al inicio, esta escritura se habría descartado por
     // llevar un sello menor y el cliente se quedaba en PRO habiendo pagado.
     expect(doc.plan).toBe('promax');
+  });
+
+  /**
+   * El sello ordena por la llegada de la respuesta a Cloud Run, no por cuándo
+   * Stripe observó el estado, y entre ambos instantes cabe una red lenta. La
+   * salida es no solapar los ciclos (issue #77).
+   */
+  it('no relee ni escribe si otro ciclo tiene el lock del usuario', async () => {
+    const { service, retrieve, updateUserSubscriptionState } = buildService({
+      current: subscriptionCon(PROMAX_MXN),
+      lockToken: null,
+    });
+
+    // Lanza para que Stripe reentregue: esperar aquí agotaría el plazo de
+    // respuesta del webhook y Stripe lo reintentaría igualmente.
+    await expect(
+      service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN)),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
+  it('libera el lock al terminar', async () => {
+    const { service, releaseSubscriptionSyncLock } = buildService({
+      current: subscriptionCon(PROMAX_MXN),
+    });
+
+    await service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN));
+
+    expect(releaseSubscriptionSyncLock).toHaveBeenCalledWith('uid-1', 'tok-1');
+  });
+
+  it('libera el lock aunque el ciclo falle a mitad', async () => {
+    // Sin el `finally`, una relectura fallida dejaría al usuario sin sincronizar
+    // hasta que caducara el lease.
+    const { service, releaseSubscriptionSyncLock } = buildService({
+      retrieveError: new Error('Stripe caído'),
+    });
+
+    await expect(
+      service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN)),
+    ).rejects.toThrow('Stripe caído');
+    expect(releaseSubscriptionSyncLock).toHaveBeenCalledWith('uid-1', 'tok-1');
+  });
+
+  it('no convierte un fallo al liberar el lock en un fallo del webhook', async () => {
+    // El lease caduca solo; provocar una reentrega de algo ya aplicado sería
+    // peor que dejarlo expirar.
+    const { service, updateUserSubscriptionState } = buildService({
+      current: subscriptionCon(PROMAX_MXN),
+      releaseError: new Error('Firestore caído'),
+    });
+
+    await expect(
+      service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN)),
+    ).resolves.toBeUndefined();
+    expect(updateUserSubscriptionState).toHaveBeenCalled();
   });
 
   it('no toca el plan si el precio vigente no mapea a ninguno', async () => {

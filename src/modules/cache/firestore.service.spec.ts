@@ -385,3 +385,124 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
     expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
   });
 });
+
+/**
+ * El sello de `updateUserSubscriptionState` ordena por cuándo llegó la respuesta
+ * de Stripe, no por cuándo Stripe observó el estado: entre ambos instantes cabe
+ * una red lenta, así que una relectura del plan viejo podía sellar más fresca
+ * que otra del plan nuevo y revertirlo. Sin ciclos solapados el problema no se
+ * plantea (issue #77).
+ */
+describe('FirestoreService — subscriptionSyncLock', () => {
+  const LEASE_MS = 7 * 60 * 1000;
+
+  function buildService(stored?: Record<string, unknown> | null) {
+    const docData: Record<string, unknown> = stored
+      ? { subscriptionSyncLock: stored }
+      : {};
+    const update = jest
+      .fn()
+      .mockImplementation((_ref: unknown, data: Record<string, unknown>) => {
+        Object.assign(docData, data);
+      });
+
+    const ref = { id: 'uid-1' };
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestore = {
+      collection: () => ({ doc: () => ref }),
+      runTransaction: (fn: (t: unknown) => Promise<unknown>) =>
+        fn({
+          get: async () => ({ data: () => docData }),
+          update,
+        }),
+    };
+
+    return { service, update, docData };
+  }
+
+  function hace(ms: number) {
+    return new Date(Date.now() - ms).toISOString();
+  }
+
+  it('concede el lock cuando nadie lo tiene', async () => {
+    const { service, docData } = buildService();
+
+    const token = await service.acquireSubscriptionSyncLock('uid-1', LEASE_MS);
+
+    expect(typeof token).toBe('string');
+    expect((docData.subscriptionSyncLock as any).token).toBe(token);
+  });
+
+  it('lo niega mientras otro ciclo lo tenga vivo', async () => {
+    const { service, update } = buildService({
+      token: 'tok-previo',
+      takenAt: hace(5 * 1000),
+    });
+
+    const token = await service.acquireSubscriptionSyncLock('uid-1', LEASE_MS);
+
+    expect(token).toBeNull();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('lo concede si el lease del titular ya caducó', async () => {
+    // Un proceso que murió con el lock tomado no puede dejar al usuario sin
+    // sincronizar para siempre.
+    const { service } = buildService({
+      token: 'tok-muerto',
+      takenAt: hace(30 * 60 * 1000),
+    });
+
+    const token = await service.acquireSubscriptionSyncLock('uid-1', LEASE_MS);
+
+    expect(token).not.toBeNull();
+    expect(token).not.toBe('tok-muerto');
+  });
+
+  it('lo concede si la marca almacenada es ilegible', async () => {
+    const { service } = buildService({
+      token: 'tok-previo',
+      takenAt: 'no-es-fecha',
+    });
+
+    const token = await service.acquireSubscriptionSyncLock('uid-1', LEASE_MS);
+
+    expect(token).not.toBeNull();
+  });
+
+  it('evalúa el lease sobre una marca en formato Timestamp', async () => {
+    const { service } = buildService({
+      token: 'tok-previo',
+      takenAt: { toDate: () => new Date(Date.now() - 5 * 1000) },
+    });
+
+    const token = await service.acquireSubscriptionSyncLock('uid-1', LEASE_MS);
+
+    expect(token).toBeNull();
+  });
+
+  it('libera solo si el token sigue siendo el del titular', async () => {
+    const { service, docData } = buildService({
+      token: 'tok-mio',
+      takenAt: hace(1000),
+    });
+
+    await service.releaseSubscriptionSyncLock('uid-1', 'tok-mio');
+
+    expect(docData.subscriptionSyncLock).toBeNull();
+  });
+
+  it('no libera el lock que otro ciclo tomó tras darlo por caducado', async () => {
+    const { service, update, docData } = buildService({
+      token: 'tok-de-otro',
+      takenAt: hace(1000),
+    });
+
+    await service.releaseSubscriptionSyncLock('uid-1', 'tok-mio');
+
+    expect(update).not.toHaveBeenCalled();
+    expect((docData.subscriptionSyncLock as any).token).toBe('tok-de-otro');
+  });
+});
