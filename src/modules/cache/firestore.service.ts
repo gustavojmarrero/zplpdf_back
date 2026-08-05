@@ -668,6 +668,64 @@ export class FirestoreService {
     });
   }
 
+  /**
+   * Escribe estado de suscripción SOLO si la lectura que lo origina es más
+   * reciente que la última aplicada.
+   *
+   * Stripe no garantiza el orden de entrega de los webhooks: un
+   * `customer.subscription.updated` antiguo puede llegar después de uno nuevo
+   * —reintento, latencia, reordenación— y devolver al usuario a un plan que ya
+   * pagó (issue #74). Releer la suscripción de Stripe antes de escribir corrige
+   * el grueso del problema, pero deja abierta la ventana entre esa lectura y la
+   * escritura: dos procesos concurrentes pueden leer estados distintos y
+   * aterrizar en orden inverso.
+   *
+   * `readAt` es el instante en que se leyó el estado de Stripe, NO la fecha del
+   * evento: lo que ordena las escrituras es la frescura del dato leído. Se
+   * compara contra el `subscriptionSyncedAt` almacenado y la escritura se
+   * descarta si el documento ya refleja una lectura posterior.
+   *
+   * Devuelve `true` si se aplicó y `false` si se descartó por obsoleta, para que
+   * quien llame no dispare efectos secundarios (emails de degradación) por un
+   * cambio que no ocurrió.
+   */
+  async updateUserSubscriptionState(
+    userId: string,
+    data: Record<string, unknown>,
+    readAt: Date,
+  ): Promise<boolean> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const stored = snapshot.data()?.subscriptionSyncedAt;
+
+      // Defensivo con el formato: se escribe como ISO string, pero un documento
+      // anterior pudo quedar con Timestamp o Date.
+      const storedMs = stored
+        ? new Date(stored?.toDate?.() ?? stored).getTime()
+        : NaN;
+
+      // Estrictamente mayor: dos lecturas del mismo milisegundo describen el
+      // mismo estado, así que descartar la segunda no aportaría nada.
+      if (Number.isFinite(storedMs) && storedMs > readAt.getTime()) {
+        this.logger.warn(
+          `Descartada escritura de suscripción obsoleta para ${userId}: ` +
+            `leída en ${readAt.toISOString()} y el documento ya refleja ` +
+            `${new Date(storedMs).toISOString()}.`,
+        );
+        return false;
+      }
+
+      transaction.update(ref, {
+        ...data,
+        subscriptionSyncedAt: readAt.toISOString(),
+        updatedAt: new Date(),
+      });
+      return true;
+    });
+  }
+
   async getUserByStripeCustomerId(customerId: string): Promise<User | null> {
     try {
       const snapshot = await this.firestore
