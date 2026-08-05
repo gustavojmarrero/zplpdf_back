@@ -578,14 +578,22 @@ export class PaymentsService {
   private static readonly UPGRADE_LEASE_MS = 7 * 60 * 1000;
 
   /**
-   * Lease del ciclo relectura→escritura de la suscripción (issue #77).
+   * Lease del mutex de sincronización de la suscripción (issue #77).
    *
-   * Mismo cálculo que el del upgrade: dentro hay una llamada a Stripe
-   * —`subscriptions.retrieve`— cuyo peor caso son 360 s con el SDK en sus
-   * valores por defecto, más las escrituras a Firestore. Siete minutos lo
-   * cubren, y el `finally` que lo libera hace que casi nunca llegue a caducar.
+   * Lo dimensiona el ciclo más largo que protege, que es el del upgrade: dentro
+   * del lease hace DOS llamadas a Stripe —la relectura que revalida el estado
+   * vigente y el `subscriptions.update`—, a 360 s de peor caso cada una con el
+   * SDK en sus valores por defecto (3 × 80 s de timeout + 2 × 60 s de
+   * `Retry-After`). Son 720 s; trece minutos dejan un minuto de margen. El ciclo
+   * del webhook solo hace una y va sobrado.
+   *
+   * Que sea holgado importa poco en la práctica: el `finally` lo libera, así que
+   * solo llega a contar cuando el proceso muere con el lease tomado. Y quedarse
+   * corto ya no corrompe nada —el fencing token descarta la escritura del
+   * titular relevado—, pero sí obligaría al cliente a reintentar, así que más
+   * vale que sobre.
    */
-  private static readonly SUBSCRIPTION_SYNC_LEASE_MS = 7 * 60 * 1000;
+  private static readonly SUBSCRIPTION_SYNC_LEASE_MS = 13 * 60 * 1000;
 
   /**
    * Clave de idempotencia del intento de upgrade, estable entre reintentos.
@@ -759,12 +767,17 @@ export class PaymentsService {
 
     // El cambio sí se aplicó: sincronizamos Firestore para no dejar al cliente
     // pagando un plan que el producto no le reconoce.
-    await this.firestoreService.updateUserSubscriptionState(
+    const persisted = await this.firestoreService.updateUserSubscriptionState(
       userId,
       { plan: targetPlan },
       readAt,
       lockToken,
     );
+
+    if (!persisted) {
+      this.throwUnsyncedUpgradeError(targetPlan, context);
+    }
+
     this.logger.log(
       `Upgrade reconciliado tras error indeterminado: el cambio sí se aplicó — ${context}.`,
     );
@@ -773,6 +786,32 @@ export class PaymentsService {
       success: true,
       message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
     };
+  }
+
+  /**
+   * El cambio se aplicó y se cobró en Stripe, pero la escritura del plan se
+   * descartó: este ciclo se demoró más que el lease y otro lo relevó.
+   *
+   * NO se puede responder éxito —el producto seguiría sin reconocer el plan que
+   * el cliente acaba de pagar— ni repetir la mutación, que ya está hecha. Se
+   * avisa de que el cobro pasó y que el plan tardará un momento: el webhook
+   * `customer.subscription.updated` llega detrás y sincroniza bajo su propio
+   * ciclo, que es el mecanismo de reparación natural.
+   */
+  private throwUnsyncedUpgradeError(
+    targetPlan: string,
+    context: string,
+  ): never {
+    this.logger.error(
+      `CRITICAL: el upgrade a ${targetPlan} se aplicó en Stripe pero la escritura ` +
+        `del plan se descartó por relevo del lease — ${context}. Firestore queda ` +
+        `pendiente de que lo sincronice el webhook.`,
+    );
+    throw new ServiceUnavailableException(
+      `Your payment for ${targetPlan.toUpperCase()} went through, but confirming it is ` +
+        `taking longer than usual. Your plan will be available shortly — please refresh ` +
+        `in a moment before trying again.`,
+    );
   }
 
   /**
@@ -913,11 +952,68 @@ export class PaymentsService {
           );
         }
 
+        // Firestore no basta: refleja lo que los webhooks han alcanzado a
+        // escribir, no lo que Stripe tiene AHORA. Si otro upgrade dejó un
+        // `pending_update` esperando pago, el plan en Firestore sigue igual
+        // —ese camino no lo toca— y sin releer de Stripe lanzaríamos un update
+        // que reemplaza ese pending update, anula su factura y emite otra,
+        // dejando al cliente con el enlace de pago que ya tenía apuntando a una
+        // factura muerta.
+        let vigente: Stripe.Subscription;
+        try {
+          vigente = await this.stripe.subscriptions.retrieve(
+            user.stripeSubscriptionId,
+            { expand: ['latest_invoice'] },
+          );
+        } catch (error) {
+          this.throwStripeApiError(
+            error,
+            'subscriptions.retrieve',
+            upgradeContext,
+          );
+        }
+
+        if (vigente.pending_update) {
+          this.throwPendingPaymentError(vigente, upgradeContext);
+        }
+
+        if (vigente.status !== 'active') {
+          this.logger.warn(
+            `Upgrade bloqueado: la suscripción pasó a '${vigente.status}' ` +
+              `mientras se preparaba — ${upgradeContext}`,
+          );
+          throw new BadRequestException(
+            this.inactiveSubscriptionMessage(vigente.status),
+          );
+        }
+
+        // El plan efectivo lo dicta el precio que Stripe tiene puesto, no el
+        // documento: es la comprobación que de verdad impide bajar de plan.
+        const vigenteItem = vigente.items.data[0];
+        const planVigente = vigenteItem?.price?.id
+          ? this.getPlanFromPriceId(vigenteItem.price.id)
+          : null;
+
+        if (planVigente && PLAN_ORDER[targetPlan] <= PLAN_ORDER[planVigente]) {
+          this.logger.warn(
+            `Upgrade abortado: Stripe ya tiene la suscripción en ${planVigente} ` +
+              `— ${upgradeContext}.`,
+          );
+          throw new BadRequestException(
+            `Cannot upgrade from ${planVigente.toUpperCase()} to ${targetPlan.toUpperCase()}.`,
+          );
+        }
+
+        if (!vigenteItem?.id) {
+          throw new BadRequestException('Could not find subscription item');
+        }
+
         return this.applyUpgrade({
           userId,
           user,
           targetPlan,
-          subscriptionItemId,
+          // El item vigente, no el del snapshot previo al sync fiscal.
+          subscriptionItemId: vigenteItem.id,
           newPriceId,
           upgradeContext,
           lockToken,
@@ -1053,15 +1149,23 @@ export class PaymentsService {
     // camino, y sin un reloj común una lectura suya anterior a este cambio
     // podría aterrizar después y revertir el plan recién pagado (issue #74).
     // Cualquier lectura previa a esta respuesta es, por definición, más vieja.
-    await this.firestoreService.updateUserSubscriptionState(
+    const persisted = await this.firestoreService.updateUserSubscriptionState(
       userId,
       { plan: targetPlan },
       confirmedAt,
       lockToken,
     );
+
     // La clave se libera aparte y comparando: borrarla en la misma escritura
-    // sería incondicional y podría pisar la de un intento posterior.
+    // sería incondicional y podría pisar la de un intento posterior. Va antes de
+    // comprobar el resultado porque el cobro ya pasó pase lo que pase: un
+    // reintento no debe repetir la mutación, y la revalidación de arriba lo
+    // abortaría de todas formas.
     await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
+
+    if (!persisted) {
+      this.throwUnsyncedUpgradeError(targetPlan, upgradeContext);
+    }
 
     this.logger.log(
       `User ${userId} upgraded from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}`,

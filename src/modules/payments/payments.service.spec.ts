@@ -147,16 +147,35 @@ describe('PaymentsService — upgradeSubscription', () => {
         return true;
       });
 
-    // El upgrade entra en el mismo mutex que el webhook (issue #77): los dos
-    // observan Stripe y escriben el plan.
+    /**
+     * El upgrade entra en el mismo mutex que el webhook (issue #77): los dos
+     * observan Stripe y escriben el plan.
+     *
+     * Con estado real, no concediendo siempre el mismo token: un mock permisivo
+     * dejaría entrar a dos ciclos a la vez, que es justo lo que el mutex impide,
+     * y las pruebas de concurrencia estarían midiendo un mundo que no existe.
+     */
+    let lockVivo: string | null = null;
     const acquireSubscriptionSyncLock = jest
       .fn()
-      .mockResolvedValue(
-        overrides.syncLockToken === undefined
-          ? 'sync-tok'
-          : overrides.syncLockToken,
-      );
-    const releaseSubscriptionSyncLock = jest.fn().mockResolvedValue(undefined);
+      .mockImplementation(async () => {
+        if (overrides.syncLockToken === null) {
+          return null;
+        }
+        if (lockVivo) {
+          return null;
+        }
+        lockVivo = overrides.syncLockToken ?? 'sync-tok';
+        return lockVivo;
+      });
+    const releaseSubscriptionSyncLock = jest
+      .fn()
+      .mockImplementation(async (_id: string, token: string) => {
+        // Compare-and-delete, igual que la implementación real.
+        if (lockVivo === token) {
+          lockVivo = null;
+        }
+      });
 
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = { subscriptions: { retrieve, update } };
@@ -306,18 +325,32 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(getUserById).toHaveBeenCalledTimes(2);
   });
 
-  it('dos upgrades concurrentes comparten clave y no duplican la mutación', async () => {
+  /**
+   * Antes del mutex (issue #77), dos upgrades concurrentes llegaban los dos a
+   * Stripe y solo la clave compartida evitaba el doble cargo. Ahora el segundo
+   * ni siquiera entra: el mutex lo rechaza con 409 antes de mover dinero. Esa es
+   * la garantía fuerte, y la clave queda como red de seguridad para los
+   * reintentos secuenciales, que sí comparten clave.
+   */
+  it('dos upgrades concurrentes: uno pasa y el otro recibe 409 sin tocar Stripe', async () => {
     const { service, update } = buildService({
       subscription: activeSubscription,
     });
 
-    await Promise.all([
+    const resultados = await Promise.allSettled([
       service.upgradeSubscription('uid-1', 'promax'),
       service.upgradeSubscription('uid-1', 'promax'),
     ]);
 
-    // Misma clave ⇒ Stripe deduplica y solo se cobra una vez.
-    expect(claveUsada(update, 0)).toBe(claveUsada(update, 1));
+    const cumplidos = resultados.filter((r) => r.status === 'fulfilled');
+    const rechazados = resultados.filter((r) => r.status === 'rejected');
+    expect(cumplidos).toHaveLength(1);
+    expect(rechazados).toHaveLength(1);
+    expect((rechazados[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      ConflictException,
+    );
+    // Una sola mutación: el rechazo ocurre antes de llamar a Stripe.
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   /**
@@ -399,6 +432,81 @@ describe('PaymentsService — upgradeSubscription', () => {
     );
     // Lo que importa: la suscripción no baja de promax a pro.
     expect(update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Firestore refleja lo que los webhooks alcanzaron a escribir, no lo que
+   * Stripe tiene ahora. Un upgrade que dejó un `pending_update` esperando pago
+   * NO cambia el plan en Firestore, así que releer solo el documento no lo ve; y
+   * lanzar otro update reemplazaría ese pending update, anulando su factura y
+   * dejando al cliente con un enlace de pago muerto.
+   */
+  it('aborta si Stripe tiene un pending update, aunque Firestore no lo refleje', async () => {
+    const { service, update, retrieve } = buildService({
+      subscription: activeSubscription,
+    });
+    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
+      status: 'active',
+      items: { data: [{ id: 'si_123' }] },
+      pending_update: { expires_at: 123 },
+      latest_invoice: { hosted_invoice_url: 'https://pay.stripe.com/x' },
+    });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('aborta si Stripe ya tiene la suscripción en el plan de destino', async () => {
+    // La comprobación que de verdad impide bajar de plan: el plan efectivo lo
+    // dicta el precio que Stripe tiene puesto, no el documento.
+    const { service, update, retrieve } = buildService({
+      subscription: activeSubscription,
+    });
+    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
+      status: 'active',
+      items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+    });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow(BadRequestException);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('aborta si la suscripción dejó de estar activa mientras se preparaba', async () => {
+    const { service, update, retrieve } = buildService({
+      subscription: activeSubscription,
+    });
+    retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce({ status: 'past_due', items: { data: [{}] } });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow(BadRequestException);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El cobro ya pasó y no se puede deshacer, pero la escritura se descartó
+   * porque otro ciclo relevó el lease. Responder éxito dejaría al cliente con el
+   * producto sin reconocerle el plan que acaba de pagar.
+   */
+  it('no afirma éxito si el fencing descarta la escritura tras cobrar', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      subscription: activeSubscription,
+    });
+    updateUserSubscriptionState.mockResolvedValue(false);
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    // El mensaje reconoce el cobro: negarlo sería mentir sobre dinero cobrado.
+    expect(error.message).toContain('went through');
   });
 
   it('aborta si la suscripción cambió mientras se preparaba el upgrade', async () => {
@@ -628,11 +736,15 @@ describe('PaymentsService — upgradeSubscription', () => {
       subscription: activeSubscription,
       updateError: { type: 'StripeConnectionError', message: 'network error' },
     });
-    // Al releer, la suscripción ya está en el precio nuevo: Stripe sí lo aplicó.
-    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
-      status: 'active',
-      items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
-    });
+    // Tres lecturas: la inicial, la revalidación dentro del mutex y la de la
+    // reconciliación, que ya ve el precio nuevo — Stripe sí lo aplicó.
+    retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce({
+        status: 'active',
+        items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+      });
 
     const result = await service.upgradeSubscription('uid-1', 'promax');
 
@@ -645,11 +757,15 @@ describe('PaymentsService — upgradeSubscription', () => {
       subscription: activeSubscription,
       updateError: { type: 'StripeConnectionError', message: 'network error' },
     });
-    // Al releer sigue en el precio viejo: el cambio no llegó a aplicarse.
-    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
-      status: 'active',
-      items: { data: [{ id: 'si_123', price: { id: 'price_pro_mxn' } }] },
-    });
+    // Tercera lectura —la de la reconciliación— sigue en el precio viejo: el
+    // cambio no llegó a aplicarse.
+    retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce({
+        status: 'active',
+        items: { data: [{ id: 'si_123', price: { id: 'price_pro_mxn' } }] },
+      });
 
     await expect(
       service.upgradeSubscription('uid-1', 'promax'),
@@ -782,6 +898,8 @@ describe('PaymentsService — upgradeSubscription', () => {
       updateError: { type: 'StripeAPIError', message: 'api error' },
     });
     retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      // Revalidación dentro del mutex; la que falla es la de la reconciliación.
       .mockResolvedValueOnce(activeSubscription)
       .mockRejectedValueOnce(new Error('still down'));
 

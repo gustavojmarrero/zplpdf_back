@@ -87,6 +87,21 @@ export class PaymentsController {
     status: 400,
     description: 'Invalid upgrade request (no subscription, wrong plan, etc.)',
   })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Another change to this subscription is already in progress (a concurrent ' +
+      'upgrade or an incoming Stripe webhook). Nothing was charged: the request is ' +
+      'rejected before touching Stripe. The client should show the returned message ' +
+      'and let the user retry in a moment.',
+  })
+  @ApiResponse({
+    status: 503,
+    description:
+      'The change went through in Stripe but confirming it is taking longer than ' +
+      'usual. The payment WAS processed — the client must not present this as a ' +
+      'failed charge; the plan is synced shortly after by webhook.',
+  })
   async upgradeSubscription(
     @CurrentUser() user: FirebaseUser,
     @Body() dto: UpgradeSubscriptionDto,
