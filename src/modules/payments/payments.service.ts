@@ -1139,25 +1139,35 @@ export class PaymentsService {
   }
 
   /**
-   * Devuelve el estado VIGENTE de la suscripción en Stripe.
+   * Devuelve el estado VIGENTE de la suscripción en Stripe, junto al instante en
+   * que se observó.
    *
-   * Si Stripe ya no la conoce (`resource_missing`) se usa el snapshot del
-   * evento: es lo único que queda y describe una suscripción que desapareció.
-   * Cualquier otro fallo se propaga para que el webhook se reintente; escribir
-   * el snapshot sin poder confirmarlo sería justo el bug que esto corrige.
+   * El sello se toma DESPUÉS de la respuesta, nunca antes de la llamada: lo que
+   * ordena las escrituras es cuándo se observó el estado, no cuándo se pidió. Si
+   * se sellara al inicio, una petición lenta que acaba viendo el estado nuevo
+   * llevaría un sello menor que otra posterior que vio el viejo, y la guarda
+   * descartaría precisamente la lectura buena.
+   *
+   * Ningún fallo cae al snapshot del evento. `resource_missing` tampoco: Stripe
+   * lo devuelve ante un ID inválido o inexistente —entorno cruzado, clave sin
+   * acceso—, no como prueba de que la suscripción terminara; las canceladas
+   * siguen siendo recuperables. Tratarlo como lectura fresca sellaría un
+   * snapshot viejo como vigente y podría restaurar un plan de pago. Sin estado
+   * verificado no se escribe: el error se propaga y Stripe reintenta el webhook.
    */
   private async fetchCurrentSubscription(
     subscription: Stripe.Subscription,
-  ): Promise<Stripe.Subscription> {
+  ): Promise<{ current: Stripe.Subscription; readAt: Date }> {
     try {
-      return await this.stripe.subscriptions.retrieve(subscription.id);
+      const current = await this.stripe.subscriptions.retrieve(subscription.id);
+      return { current, readAt: new Date() };
     } catch (error) {
       if ((error as { code?: string }).code === 'resource_missing') {
-        this.logger.warn(
-          `Stripe ya no conoce la suscripción ${subscription.id}; ` +
-            `se aplica el snapshot del evento.`,
+        this.logger.error(
+          `CRITICAL: Stripe no reconoce la suscripción ${subscription.id} del evento ` +
+            `subscription.updated. No se escribe nada. Revisar si la clave apunta al ` +
+            `entorno correcto o si le faltan permisos de lectura.`,
         );
-        return subscription;
       }
       throw error;
     }
@@ -1181,10 +1191,10 @@ export class PaymentsService {
     // cobro, y otro con el nuevo cuando el pago se confirma. Si el primero se
     // entrega tarde —reintento, latencia, 3DS de por medio— aplicarlo
     // degradaría un plan ya pagado (issue #74). Se relee el estado vigente y se
-    // escribe ese, sellado con el instante de la lectura para que una escritura
-    // más fresca no pueda ser pisada por otra que leyó antes.
-    const readAt = new Date();
-    const current = await this.fetchCurrentSubscription(subscription);
+    // escribe ese, sellado con el instante en que se observó para que una
+    // escritura más fresca no pueda ser pisada por otra que observó antes.
+    const { current, readAt } =
+      await this.fetchCurrentSubscription(subscription);
 
     if (current.status !== subscription.status) {
       this.logger.warn(

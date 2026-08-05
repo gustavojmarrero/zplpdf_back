@@ -866,22 +866,21 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     expect(updateUserSubscriptionState).not.toHaveBeenCalled();
   });
 
-  it('usa el snapshot del evento si Stripe ya no conoce la suscripción', async () => {
+  it('no escribe nada si Stripe no reconoce la suscripción', async () => {
+    // `resource_missing` es un ID inválido o inexistente —entorno cruzado, clave
+    // sin permisos—, no la prueba de que la suscripción terminara: las
+    // canceladas siguen siendo recuperables. Aceptar el snapshot lo sellaría
+    // como vigente y, si viniera `active`, restauraría un plan de pago.
     const { service, updateUserSubscriptionState } = buildService({
       retrieveError: Object.assign(new Error('No such subscription'), {
         code: 'resource_missing',
       }),
     });
 
-    await service.handleSubscriptionUpdated(
-      subscriptionCon(PRO_MXN, 'canceled'),
-    );
-
-    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
-      'uid-1',
-      expect.objectContaining({ plan: 'free' }),
-      expect.any(Date),
-    );
+    await expect(
+      service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN, 'active')),
+    ).rejects.toThrow('No such subscription');
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
   });
 
   it('no avisa de la degradación si la escritura se descartó por obsoleta', async () => {
@@ -912,6 +911,81 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       'promax',
       'canceled',
     );
+  });
+
+  /**
+   * El sello debe representar el estado OBSERVADO, no el momento en que salió la
+   * petición. Sellar al inicio invierte la garantía justo en el caso que el fix
+   * persigue: una relectura lenta que acaba viendo el plan nuevo llevaría un
+   * sello menor que otra posterior que vio el viejo, y la guarda descartaría la
+   * lectura buena dejando el plan obsoleto en Firestore.
+   */
+  it('gana la relectura que observó el estado más reciente aunque su petición saliera antes', async () => {
+    const espera = (ms: number) =>
+      new Promise((resolve) => setTimeout(resolve, ms));
+
+    let resolverLenta: (value: unknown) => void;
+    let resolverRapida: (value: unknown) => void;
+    const retrieve = jest
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (resolverLenta = resolve)),
+      )
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (resolverRapida = resolve)),
+      );
+
+    // Guarda de versión real sobre un documento con estado, para comprobar el
+    // desenlace observable —qué plan queda— y no solo el orden de los sellos.
+    const doc: Record<string, unknown> = { plan: 'pro' };
+    const updateUserSubscriptionState = jest
+      .fn()
+      .mockImplementation(
+        async (_id: string, data: Record<string, unknown>, readAt: Date) => {
+          const stored = doc.subscriptionSyncedAt as string | undefined;
+          const storedMs = stored ? new Date(stored).getTime() : NaN;
+          if (Number.isFinite(storedMs) && storedMs > readAt.getTime()) {
+            return false;
+          }
+          Object.assign(doc, data, {
+            subscriptionSyncedAt: readAt.toISOString(),
+          });
+          return true;
+        },
+      );
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = { subscriptions: { retrieve } };
+    service.firestoreService = {
+      getUserByStripeCustomerId: jest
+        .fn()
+        .mockResolvedValue({ id: 'uid-1', plan: 'pro', country: 'MX' }),
+      updateUserSubscriptionState,
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+    service.proPriceIdMxn = PRO_MXN;
+    service.promaxPriceIdMxn = PROMAX_MXN;
+
+    // La lenta sale primero; la rápida, unos milisegundos después.
+    const lenta = service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN));
+    await espera(10);
+    const rapida = service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN));
+    // Ceder hasta que ambas hayan pasado por `retrieve`: antes hay un await
+    // —la búsqueda del usuario— y sin esto la segunda aún no lo habría llamado.
+    await espera(10);
+
+    // Se resuelven en orden inverso: la rápida observa el estado viejo...
+    resolverRapida(subscriptionCon(PRO_MXN));
+    await rapida;
+    await espera(10);
+    // ...y la lenta, que salió antes, observa el plan ya pagado.
+    resolverLenta(subscriptionCon(PROMAX_MXN));
+    await lenta;
+
+    // Con el sello tomado al inicio, esta escritura se habría descartado por
+    // llevar un sello menor y el cliente se quedaba en PRO habiendo pagado.
+    expect(doc.plan).toBe('promax');
   });
 
   it('no toca el plan si el precio vigente no mapea a ninguno', async () => {
