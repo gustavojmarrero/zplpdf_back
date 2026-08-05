@@ -733,19 +733,39 @@ export class FirestoreService {
    * compara contra el `subscriptionSyncedAt` almacenado y la escritura se
    * descarta si el documento ya refleja una lectura posterior.
    *
-   * Devuelve `true` si se aplicó y `false` si se descartó por obsoleta, para que
-   * quien llame no dispare efectos secundarios (emails de degradación) por un
-   * cambio que no ocurrió.
+   * `lockToken` es el fencing token del ciclo que escribe. Al caducar un lease
+   * su titular no se entera: puede reanudarse minutos después —una respuesta de
+   * Stripe bloqueada más tiempo que el lease— y pisar lo que el nuevo titular ya
+   * aplicó. Comprobarlo aquí dentro, en la misma transacción que la escritura,
+   * es lo único que corta ese caso; hacerlo fuera dejaría la ventana abierta
+   * entre la comprobación y la escritura.
+   *
+   * Devuelve `true` si se aplicó y `false` si se descartó, para que quien llame
+   * no dispare efectos secundarios (emails de degradación) por un cambio que no
+   * ocurrió.
    */
   async updateUserSubscriptionState(
     userId: string,
     data: Record<string, unknown>,
     readAt: Date,
+    lockToken?: string,
   ): Promise<boolean> {
     const ref = this.firestore.collection(this.usersCollection).doc(userId);
 
     return this.firestore.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(ref);
+
+      if (lockToken) {
+        const vigente = snapshot.data()?.subscriptionSyncLock?.token;
+        if (vigente !== lockToken) {
+          this.logger.warn(
+            `Descartada escritura de suscripción de ${userId}: el lease ya no es ` +
+              `suyo (token ${lockToken}, vigente ${vigente ?? 'ninguno'}).`,
+          );
+          return false;
+        }
+      }
+
       const stored = snapshot.data()?.subscriptionSyncedAt;
 
       // Defensivo con el formato: se escribe como ISO string, pero un documento

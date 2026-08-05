@@ -506,3 +506,113 @@ describe('FirestoreService — subscriptionSyncLock', () => {
     expect((docData.subscriptionSyncLock as any).token).toBe('tok-de-otro');
   });
 });
+
+/**
+ * Al caducar un lease su titular no se entera: una respuesta de Stripe bloqueada
+ * más tiempo que el lease puede reanudarse y pisar lo que el nuevo titular ya
+ * aplicó. El token viaja hasta la escritura y se comprueba en la misma
+ * transacción (issue #77).
+ */
+describe('FirestoreService — updateUserSubscriptionState con fencing token', () => {
+  function buildService(docData: Record<string, unknown>) {
+    const update = jest
+      .fn()
+      .mockImplementation((_ref: unknown, data: Record<string, unknown>) => {
+        Object.assign(docData, data);
+      });
+
+    const ref = { id: 'uid-1' };
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestore = {
+      collection: () => ({ doc: () => ref }),
+      runTransaction: (fn: (t: unknown) => Promise<unknown>) =>
+        fn({
+          get: async () => ({ data: () => docData }),
+          update,
+        }),
+    };
+
+    return { service, update, docData };
+  }
+
+  it('aplica la escritura si el lease sigue siendo del titular', async () => {
+    const { service, docData } = buildService({
+      plan: 'pro',
+      subscriptionSyncLock: {
+        token: 'tok-mio',
+        takenAt: new Date().toISOString(),
+      },
+    });
+
+    const aplicada = await service.updateUserSubscriptionState(
+      'uid-1',
+      { plan: 'promax' },
+      new Date(),
+      'tok-mio',
+    );
+
+    expect(aplicada).toBe(true);
+    expect(docData.plan).toBe('promax');
+  });
+
+  it('descarta la escritura de un titular al que ya relevaron', async () => {
+    const { service, update, docData } = buildService({
+      plan: 'promax',
+      subscriptionSyncLock: {
+        token: 'tok-del-relevo',
+        takenAt: new Date().toISOString(),
+      },
+    });
+
+    // Sello más fresco que el del relevo: sin fencing, ganaría igualmente.
+    const aplicada = await service.updateUserSubscriptionState(
+      'uid-1',
+      { plan: 'pro' },
+      new Date(Date.now() + 60 * 1000),
+      'tok-caducado',
+    );
+
+    expect(aplicada).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    expect(docData.plan).toBe('promax');
+  });
+
+  it('descarta la escritura si el lock ya no existe', async () => {
+    // Liberado por el relevo, o expirado y limpiado: en ninguno de los dos casos
+    // este ciclo sigue siendo el titular.
+    const { service, update } = buildService({ plan: 'promax' });
+
+    const aplicada = await service.updateUserSubscriptionState(
+      'uid-1',
+      { plan: 'pro' },
+      new Date(),
+      'tok-caducado',
+    );
+
+    expect(aplicada).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('sin token se comporta como antes', async () => {
+    // Las escrituras que no nacen de un ciclo con lease —ninguna hoy, pero el
+    // parámetro es opcional— no deben quedar bloqueadas por un lock ajeno.
+    const { service, docData } = buildService({
+      plan: 'pro',
+      subscriptionSyncLock: {
+        token: 'de-otro',
+        takenAt: new Date().toISOString(),
+      },
+    });
+
+    const aplicada = await service.updateUserSubscriptionState(
+      'uid-1',
+      { plan: 'promax' },
+      new Date(),
+    );
+
+    expect(aplicada).toBe(true);
+    expect(docData.plan).toBe('promax');
+  });
+});

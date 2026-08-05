@@ -704,6 +704,7 @@ export class PaymentsService {
     subscriptionId: string,
     expectedPriceId: string,
     context: string,
+    lockToken: string,
   ): Promise<{ success: boolean; message: string } | null> {
     const type = (error as { type?: string }).type;
     if (type !== 'StripeConnectionError' && type !== 'StripeAPIError') {
@@ -762,6 +763,7 @@ export class PaymentsService {
       userId,
       { plan: targetPlan },
       readAt,
+      lockToken,
     );
     this.logger.log(
       `Upgrade reconciliado tras error indeterminado: el cambio sí se aplicó — ${context}.`,
@@ -868,13 +870,86 @@ export class PaymentsService {
       );
     }
 
-    // La clave se toma DESPUÉS de la sincronización fiscal y justo antes de la
-    // única llamada que mueve dinero. Tomarla al principio metía dentro del
-    // candado las tres llamadas del perfil fiscal, y el peor caso pasaba a ser
-    // cuatro veces el de una sola —el SDK reintenta hasta 3 veces con 80 s de
-    // timeout—, imposible de cubrir con un lease razonable. El sync no cobra
-    // nada y es idempotente, así que dejarlo fuera no arriesga un doble cargo;
-    // además, así un fallo suyo ya no retiene una clave que nadie liberará.
+    // El upgrade entra en el MISMO mutex que el webhook: los dos observan el
+    // estado en Stripe y escriben el plan, así que serializar solo los webhooks
+    // dejaba abierta la carrera cruzada. Un webhook podía leer PRO, quedarse su
+    // respuesta en tránsito mientras el upgrade confirmaba PROMAX, y al llegar
+    // sellar más fresco y revertirlo.
+    //
+    // Va después de la sincronización fiscal por lo mismo que la clave: el sync
+    // suma tres llamadas a Stripe y meterlas dentro haría el peor caso cuatro
+    // veces mayor, imposible de cubrir con un lease razonable.
+    return this.withSubscriptionSyncLock(
+      userId,
+      async (lockToken) => {
+        // Revalidación DENTRO del lease. El plan se validó antes del sync
+        // fiscal, y en ese hueco otro cambio pudo completarse: sin releer, un
+        // lite→pro demorado entraría después de un lite→promax ya aplicado y
+        // BAJARÍA la suscripción, violando la garantía de upgrade estricto.
+        const fresh = await this.firestoreService.getUserById(userId);
+
+        if (!fresh) {
+          throw new BadRequestException('User not found');
+        }
+
+        if (fresh.stripeSubscriptionId !== user.stripeSubscriptionId) {
+          this.logger.warn(
+            `Upgrade abortado: la suscripción cambió mientras se preparaba — ` +
+              `${upgradeContext}.`,
+          );
+          throw new ConflictException(
+            'Your subscription changed while this request was being prepared. ' +
+              'Please review your plan and try again.',
+          );
+        }
+
+        if (PLAN_ORDER[targetPlan] <= PLAN_ORDER[fresh.plan]) {
+          this.logger.warn(
+            `Upgrade abortado: el plan pasó a ${fresh.plan} mientras se ` +
+              `preparaba — ${upgradeContext}.`,
+          );
+          throw new BadRequestException(
+            `Cannot upgrade from ${fresh.plan.toUpperCase()} to ${targetPlan.toUpperCase()}.`,
+          );
+        }
+
+        return this.applyUpgrade({
+          userId,
+          user,
+          targetPlan,
+          subscriptionItemId,
+          newPriceId,
+          upgradeContext,
+          lockToken,
+        });
+      },
+      'el cambio de plan',
+    );
+  }
+
+  /**
+   * Ejecuta la mutación en Stripe y la escritura del plan. Se llama SIEMPRE
+   * dentro del mutex de sincronización, con el plan ya revalidado.
+   */
+  private async applyUpgrade({
+    userId,
+    user,
+    targetPlan,
+    subscriptionItemId,
+    newPriceId,
+    upgradeContext,
+    lockToken,
+  }: {
+    userId: string;
+    user: User;
+    targetPlan: 'pro' | 'promax';
+    subscriptionItemId: string;
+    newPriceId: string;
+    upgradeContext: string;
+    lockToken: string;
+  }): Promise<{ success: boolean; message: string }> {
+    // La clave se toma justo antes de la única llamada que mueve dinero: así un
+    // fallo previo no retiene una clave que nadie liberará.
     const idempotencyKey = await this.getUpgradeIdempotencyKey(
       userId,
       targetPlan,
@@ -918,6 +993,7 @@ export class PaymentsService {
         user.stripeSubscriptionId,
         newPriceId,
         upgradeContext,
+        lockToken,
       );
       if (reconciled) {
         // La reconciliación es un desenlace definitivo: se sabe que el cambio
@@ -981,6 +1057,7 @@ export class PaymentsService {
       userId,
       { plan: targetPlan },
       confirmedAt,
+      lockToken,
     );
     // La clave se libera aparte y comparando: borrarla en la misma escritura
     // sería incondicional y podría pisar la de un intento posterior.
@@ -1251,7 +1328,8 @@ export class PaymentsService {
    */
   private async withSubscriptionSyncLock<T>(
     userId: string,
-    operation: () => Promise<T>,
+    operation: (lockToken: string) => Promise<T>,
+    contexto = 'webhook',
   ): Promise<T> {
     const token = await this.firestoreService.acquireSubscriptionSyncLock(
       userId,
@@ -1260,16 +1338,18 @@ export class PaymentsService {
 
     if (!token) {
       this.logger.warn(
-        `Sincronización de suscripción de ${userId} ya en curso; se rechaza el ` +
-          `webhook para que Stripe lo reentregue.`,
+        `Sincronización de suscripción de ${userId} ya en curso; se rechaza ` +
+          `${contexto}.`,
       );
       throw new ConflictException(
-        'Subscription sync already in progress for this user',
+        'Another change to this subscription is already in progress. Please try again in a moment.',
       );
     }
 
     try {
-      return await operation();
+      // El token viaja hasta la escritura: si este ciclo se demora más que el
+      // lease y otro lo releva, la transacción de escritura lo descarta.
+      return await operation(token);
     } finally {
       // En `finally` a propósito: un ciclo que lanza a mitad —relectura fallida,
       // Firestore caído— no debe dejar el lease tomado hasta que caduque.
@@ -1300,14 +1380,15 @@ export class PaymentsService {
 
     // El lock abarca la relectura Y la escritura: separarlos volvería a permitir
     // que dos ciclos observen estados distintos y aterricen en orden inverso.
-    await this.withSubscriptionSyncLock(user.id, () =>
-      this.syncSubscriptionState(user, subscription),
+    await this.withSubscriptionSyncLock(user.id, (lockToken) =>
+      this.syncSubscriptionState(user, subscription, lockToken),
     );
   }
 
   private async syncSubscriptionState(
     user: User,
     subscription: Stripe.Subscription,
+    lockToken: string,
   ): Promise<void> {
     // El snapshot del evento NO es fuente de verdad. Stripe no garantiza el
     // orden de entrega, y el upgrade con `pending_if_incomplete` emite dos
@@ -1363,6 +1444,7 @@ export class PaymentsService {
             user.id,
             activeUpdateData,
             readAt,
+            lockToken,
           ),
         `handleSubscriptionUpdated(${user.id})`,
       );
@@ -1384,6 +1466,7 @@ export class PaymentsService {
               stripeSubscriptionId: null,
             },
             readAt,
+            lockToken,
           ),
         `handleSubscriptionUpdated(${user.id})`,
       );
@@ -1430,6 +1513,7 @@ export class PaymentsService {
               stripeSubscriptionId: current.id,
             },
             readAt,
+            lockToken,
           ),
         `handleSubscriptionUpdated(${user.id})`,
       );

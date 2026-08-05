@@ -32,6 +32,8 @@ describe('PaymentsService — upgradeSubscription', () => {
      */
     updateResult?: unknown;
     syncTaxProfileToStripe?: jest.Mock;
+    /** `null` simula que otro ciclo tiene el mutex de sincronización. */
+    syncLockToken?: string | null;
   }) {
     const retrieve = overrides.retrieveError
       ? jest.fn().mockRejectedValue(overrides.retrieveError)
@@ -145,6 +147,17 @@ describe('PaymentsService — upgradeSubscription', () => {
         return true;
       });
 
+    // El upgrade entra en el mismo mutex que el webhook (issue #77): los dos
+    // observan Stripe y escriben el plan.
+    const acquireSubscriptionSyncLock = jest
+      .fn()
+      .mockResolvedValue(
+        overrides.syncLockToken === undefined
+          ? 'sync-tok'
+          : overrides.syncLockToken,
+      );
+    const releaseSubscriptionSyncLock = jest.fn().mockResolvedValue(undefined);
+
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = { subscriptions: { retrieve, update } };
     service.firestoreService = {
@@ -153,6 +166,8 @@ describe('PaymentsService — upgradeSubscription', () => {
       updateUserSubscriptionState,
       acquireUpgradeIdempotency,
       releaseUpgradeIdempotency,
+      acquireSubscriptionSyncLock,
+      releaseSubscriptionSyncLock,
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.promaxPriceIdMxn = PROMAX_MXN;
@@ -171,6 +186,8 @@ describe('PaymentsService — upgradeSubscription', () => {
       userDoc,
       acquireUpgradeIdempotency,
       releaseUpgradeIdempotency,
+      acquireSubscriptionSyncLock,
+      releaseSubscriptionSyncLock,
     };
   }
 
@@ -284,7 +301,9 @@ describe('PaymentsService — upgradeSubscription', () => {
       7 * 60 * 1000,
     );
     // La clave no se decide a partir del usuario leído antes de la transacción.
-    expect(getUserById).toHaveBeenCalledTimes(1);
+    // Dos lecturas: la inicial y la revalidación dentro del mutex, que existe
+    // porque entre ambas cabe otro cambio ya aplicado (issue #77).
+    expect(getUserById).toHaveBeenCalledTimes(2);
   });
 
   it('dos upgrades concurrentes comparten clave y no duplican la mutación', async () => {
@@ -354,6 +373,73 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(update).toHaveBeenCalledTimes(1);
     // Clave nueva: la del intento caducado no protege de nada aquí.
     expect(claveUsada(update, 0)).not.toBe('upgrade_uid-1_viejo');
+  });
+
+  /**
+   * El plan se valida antes de la sincronización fiscal, y en ese hueco otro
+   * cambio puede completarse. Sin revalidar dentro del mutex, un lite→pro
+   * demorado entraría después de un lite→promax ya aplicado y BAJARÍA la
+   * suscripción, violando la garantía de upgrade estricto (issue #77).
+   */
+  it('revalida el plan dentro del mutex y aborta si otro cambio ya subió más', async () => {
+    const { service, update, userDoc, getUserById } = buildService({
+      subscription: activeSubscription,
+    });
+    userDoc.plan = 'lite';
+    service.proPriceIdMxn = 'price_pro_mxn';
+
+    // La primera lectura ve lite; para cuando se revalida, otro upgrade ya
+    // dejó al usuario en promax.
+    getUserById
+      .mockResolvedValueOnce({ ...userDoc, plan: 'lite' })
+      .mockResolvedValueOnce({ ...userDoc, plan: 'promax' });
+
+    await expect(service.upgradeSubscription('uid-1', 'pro')).rejects.toThrow(
+      BadRequestException,
+    );
+    // Lo que importa: la suscripción no baja de promax a pro.
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('aborta si la suscripción cambió mientras se preparaba el upgrade', async () => {
+    const { service, update, userDoc, getUserById } = buildService({
+      subscription: activeSubscription,
+    });
+
+    getUserById
+      .mockResolvedValueOnce({ ...userDoc })
+      .mockResolvedValueOnce({ ...userDoc, stripeSubscriptionId: 'sub_otra' });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow(ConflictException);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('no toca Stripe si otro ciclo tiene el mutex de sincronización', async () => {
+    // Un webhook en curso puede estar observando el estado ahora mismo.
+    const { service, update } = buildService({
+      subscription: activeSubscription,
+      syncLockToken: null,
+    });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow(ConflictException);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('libera el mutex de sincronización al terminar', async () => {
+    const { service, releaseSubscriptionSyncLock } = buildService({
+      subscription: activeSubscription,
+    });
+
+    await service.upgradeSubscription('uid-1', 'promax');
+
+    expect(releaseSubscriptionSyncLock).toHaveBeenCalledWith(
+      'uid-1',
+      'sync-tok',
+    );
   });
 
   it('libera la clave comparando, sin pisar la de un intento posterior', async () => {
@@ -812,6 +898,9 @@ describe('PaymentsService — upgradeSubscription', () => {
       'uid-1',
       { plan: 'promax' },
       expect.any(Date),
+      // Fencing token: si este ciclo se demoró más que el lease y otro lo
+      // relevó, la escritura se descarta en la propia transacción.
+      'sync-tok',
     );
     // Posterior a la respuesta de Stripe: el dato no es válido antes de que
     // Stripe lo devolviera.
@@ -923,6 +1012,7 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       'uid-1',
       expect.objectContaining({ plan: 'promax' }),
       expect.any(Date),
+      'tok-1',
     );
   });
 
