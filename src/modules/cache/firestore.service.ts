@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'node:crypto';
 import {
   DEFAULT_PLAN_LIMITS,
   PLAN_ORDER,
@@ -732,19 +733,39 @@ export class FirestoreService {
    * compara contra el `subscriptionSyncedAt` almacenado y la escritura se
    * descarta si el documento ya refleja una lectura posterior.
    *
-   * Devuelve `true` si se aplicó y `false` si se descartó por obsoleta, para que
-   * quien llame no dispare efectos secundarios (emails de degradación) por un
-   * cambio que no ocurrió.
+   * `lockToken` es el fencing token del ciclo que escribe. Al caducar un lease
+   * su titular no se entera: puede reanudarse minutos después —una respuesta de
+   * Stripe bloqueada más tiempo que el lease— y pisar lo que el nuevo titular ya
+   * aplicó. Comprobarlo aquí dentro, en la misma transacción que la escritura,
+   * es lo único que corta ese caso; hacerlo fuera dejaría la ventana abierta
+   * entre la comprobación y la escritura.
+   *
+   * Devuelve `true` si se aplicó y `false` si se descartó, para que quien llame
+   * no dispare efectos secundarios (emails de degradación) por un cambio que no
+   * ocurrió.
    */
   async updateUserSubscriptionState(
     userId: string,
     data: Record<string, unknown>,
     readAt: Date,
+    lockToken?: string,
   ): Promise<boolean> {
     const ref = this.firestore.collection(this.usersCollection).doc(userId);
 
     return this.firestore.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(ref);
+
+      if (lockToken) {
+        const vigente = snapshot.data()?.subscriptionSyncLock?.token;
+        if (vigente !== lockToken) {
+          this.logger.warn(
+            `Descartada escritura de suscripción de ${userId}: el lease ya no es ` +
+              `suyo (token ${lockToken}, vigente ${vigente ?? 'ninguno'}).`,
+          );
+          return false;
+        }
+      }
+
       const stored = snapshot.data()?.subscriptionSyncedAt;
 
       // Defensivo con el formato: se escribe como ISO string, pero un documento
@@ -770,6 +791,111 @@ export class FirestoreService {
         updatedAt: new Date(),
       });
       return true;
+    });
+  }
+
+  /**
+   * Toma en exclusiva el ciclo relectura→escritura de la suscripción de un
+   * usuario. Devuelve el token del titular, o `null` si otro lo tiene vivo.
+   *
+   * El sello de `updateUserSubscriptionState` ordena por el instante en que la
+   * respuesta de Stripe llegó aquí, que NO es cuándo Stripe observó el estado:
+   * la observación ocurre en un punto desconocido dentro de `[envío,
+   * respuesta]`. Por eso una relectura que vio el plan viejo pero respondió
+   * tarde podía sellar más fresco que otra que vio el nuevo, y revertir un plan
+   * pagado (issue #77). Un reloj local no puede ordenar observaciones remotas, y
+   * el objeto `Subscription` de Stripe no expone versión monotónica, así que la
+   * salida es no solapar los ciclos: sin concurrencia, la última lectura es
+   * siempre la más reciente.
+   *
+   * El sello se conserva igualmente como defensa para los ciclos que mueran con
+   * el lease tomado.
+   */
+  async acquireSubscriptionSyncLock(
+    userId: string,
+    leaseMs: number,
+  ): Promise<string | null> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const stored = snapshot.data()?.subscriptionSyncLock;
+
+      // Defensivo con el formato, igual que el resto de marcas del documento.
+      const takenAtMs = stored?.takenAt
+        ? new Date(stored.takenAt?.toDate?.() ?? stored.takenAt).getTime()
+        : NaN;
+
+      // Un lease caducado se da por muerto: el proceso que lo tomó ya no puede
+      // seguir vivo, y no liberarlo dejaría al usuario sin sincronizar.
+      if (
+        stored?.token &&
+        Number.isFinite(takenAtMs) &&
+        Date.now() - takenAtMs < leaseMs
+      ) {
+        return null;
+      }
+
+      const token = randomUUID();
+      transaction.update(ref, {
+        subscriptionSyncLock: { token, takenAt: new Date().toISOString() },
+        updatedAt: new Date(),
+      });
+      return token;
+    });
+  }
+
+  /**
+   * Renueva el lease SOLO si el token sigue siendo el del titular. Devuelve
+   * `false` si ya lo relevaron.
+   *
+   * Permite dimensionar el lease por el tramo más largo entre renovaciones en
+   * lugar de por el ciclo completo. El camino del upgrade puede encadenar tres
+   * llamadas a Stripe —revalidación, update y, si el update acaba en error
+   * indeterminado, la relectura que reconcilia—; renovar antes de esa tercera
+   * evita tener que cubrir las tres de golpe con una ventana que bloquearía al
+   * usuario casi veinte minutos si el proceso muriera.
+   */
+  async renewSubscriptionSyncLock(
+    userId: string,
+    token: string,
+  ): Promise<boolean> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      if (snapshot.data()?.subscriptionSyncLock?.token !== token) {
+        return false;
+      }
+      transaction.update(ref, {
+        subscriptionSyncLock: { token, takenAt: new Date().toISOString() },
+        updatedAt: new Date(),
+      });
+      return true;
+    });
+  }
+
+  /**
+   * Libera el ciclo SOLO si el token sigue siendo el del titular.
+   *
+   * Un borrado incondicional podría soltar el lease que otro ciclo tomó tras
+   * darlo por caducado, y volverían a solaparse.
+   */
+  async releaseSubscriptionSyncLock(
+    userId: string,
+    token: string,
+  ): Promise<void> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    await this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      if (snapshot.data()?.subscriptionSyncLock?.token !== token) {
+        return;
+      }
+      transaction.update(ref, {
+        subscriptionSyncLock: null,
+        updatedAt: new Date(),
+      });
     });
   }
 

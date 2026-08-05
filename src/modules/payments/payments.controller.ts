@@ -87,6 +87,27 @@ export class PaymentsController {
     status: 400,
     description: 'Invalid upgrade request (no subscription, wrong plan, etc.)',
   })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Another change to this subscription is already in progress (a concurrent ' +
+      'upgrade or an incoming Stripe webhook). Nothing was charged: the request is ' +
+      'rejected before touching Stripe. The client should show the returned message ' +
+      'and let the user retry in a moment.',
+  })
+  @ApiResponse({
+    status: 503,
+    description:
+      'Temporarily unavailable. The status alone does NOT tell whether money moved — ' +
+      'the client must branch on the `error` code:\n\n' +
+      '- `UPGRADE_APPLIED_SYNC_PENDING` (with `data.paymentProcessed: true`): the change ' +
+      'went through and WAS CHARGED in Stripe; only confirming it is taking longer than ' +
+      'usual, and a webhook syncs the plan shortly after. Never present this as a failed ' +
+      'charge or invite the user to pay again.\n' +
+      '- Any other code (e.g. `SERVICE_UNAVAILABLE`): nothing was charged, or it could not ' +
+      'be determined. These are the tax-profile sync failure and the indeterminate ' +
+      'reconciliation. Do not claim a payment was made.',
+  })
   async upgradeSubscription(
     @CurrentUser() user: FirebaseUser,
     @Body() dto: UpgradeSubscriptionDto,

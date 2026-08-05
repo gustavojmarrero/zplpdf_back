@@ -34,6 +34,13 @@ export const ErrorCodes = {
 
   // Errores de servidor (500/503/504)
   SERVER_ERROR: 'SERVER_ERROR',
+  /**
+   * El cambio de plan SÍ se cobró en Stripe, pero la escritura del plan no se
+   * confirmó en el mismo ciclo. Va aparte de SERVICE_UNAVAILABLE porque el
+   * status 503 lo comparten casos donde NO hubo cargo, y presentar cualquiera
+   * de ellos como cobrado sería falso.
+   */
+  UPGRADE_APPLIED_SYNC_PENDING: 'UPGRADE_APPLIED_SYNC_PENDING',
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
   PROCESSING_TIMEOUT: 'PROCESSING_TIMEOUT',
 
@@ -85,6 +92,7 @@ export const ErrorHttpStatus: Record<ErrorCode, number> = {
 
   // 503 Service Unavailable
   [ErrorCodes.SERVICE_UNAVAILABLE]: 503,
+  [ErrorCodes.UPGRADE_APPLIED_SYNC_PENDING]: 503,
 
   // 504 Gateway Timeout
   [ErrorCodes.PROCESSING_TIMEOUT]: 504,
@@ -119,6 +127,8 @@ export const ErrorMessagesEs: Record<ErrorCode, string> = {
   [ErrorCodes.JOB_NOT_COMPLETE]: 'La conversión no está completa',
   [ErrorCodes.SERVER_ERROR]: 'Error interno del servidor',
   [ErrorCodes.SERVICE_UNAVAILABLE]: 'Servicio temporalmente no disponible',
+  [ErrorCodes.UPGRADE_APPLIED_SYNC_PENDING]:
+    'Tu pago se procesó; el plan estará disponible en unos momentos',
   [ErrorCodes.PROCESSING_TIMEOUT]: 'La conversión tomó demasiado tiempo',
   [ErrorCodes.UNAUTHORIZED]: 'Autenticación requerida',
   [ErrorCodes.INVALID_TOKEN]: 'Token de acceso inválido o expirado',
@@ -148,6 +158,8 @@ export const ErrorMessagesEn: Record<ErrorCode, string> = {
   [ErrorCodes.JOB_NOT_COMPLETE]: 'Conversion is not complete',
   [ErrorCodes.SERVER_ERROR]: 'Internal server error',
   [ErrorCodes.SERVICE_UNAVAILABLE]: 'Service temporarily unavailable',
+  [ErrorCodes.UPGRADE_APPLIED_SYNC_PENDING]:
+    'Your payment went through; your plan will be available shortly',
   [ErrorCodes.PROCESSING_TIMEOUT]: 'Conversion took too long',
   [ErrorCodes.UNAUTHORIZED]: 'Authentication required',
   [ErrorCodes.INVALID_TOKEN]: 'Invalid or expired access token',
