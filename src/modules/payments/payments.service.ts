@@ -2,6 +2,7 @@ import {
   Injectable,
   Logger,
   BadRequestException,
+  ConflictException,
   ServiceUnavailableException,
   Inject,
   forwardRef,
@@ -551,6 +552,32 @@ export class PaymentsService {
   private static readonly IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 
   /**
+   * Lease del upgrade en curso: durante cuánto se rechaza otro hacia un destino
+   * distinto sin haber recibido señal de que el primero terminó (issue #73).
+   *
+   * Dimensionado sobre el peor caso REAL de la única llamada que queda dentro
+   * del candado, `subscriptions.update`, con el SDK en sus valores por defecto:
+   *
+   *   3 intentos × 80 s de timeout        = 240 s
+   * + 2 esperas × 60 s (`MAX_RETRY_AFTER_WAIT`, que el SDK respeta cuando
+   *   Stripe manda `Retry-After`)         = 120 s
+   *                                       -------
+   *                                         360 s
+   *
+   * Siete minutos (420 s) dejan un minuto de margen. El backoff de red normal
+   * tiene tope de 5 s, así que solo se acerca a esa cota una llamada que además
+   * choque con limitación de tasa.
+   *
+   * El lease casi nunca llega a agotarse: todos los desenlaces definitivos
+   * liberan la clave —incluido el 3DS, que la suelta al devolver el enlace de
+   * pago—, así que solo cuenta cuando la petición sigue viva de verdad, murió
+   * sin liberar, o terminó en el error indeterminado, donde la clave se conserva
+   * a propósito. Tampoco puede ser el TTL de 24 h: eso dejaría al cliente sin
+   * poder cambiar de plan durante un día por un intento que quedó a medias.
+   */
+  private static readonly UPGRADE_LEASE_MS = 7 * 60 * 1000;
+
+  /**
    * Clave de idempotencia del intento de upgrade, estable entre reintentos.
    *
    * No se deriva del reloj: una cubeta temporal (`Date.now() / 60000`) parte dos
@@ -567,7 +594,7 @@ export class PaymentsService {
   ): Promise<string> {
     // La adquisición es transaccional: dos upgrades simultáneos no pueden
     // acabar con claves distintas y, por tanto, con dos mutaciones en Stripe.
-    return this.firestoreService.acquireUpgradeIdempotency(
+    const result = await this.firestoreService.acquireUpgradeIdempotency(
       userId,
       {
         key: `upgrade_${userId}_${randomUUID()}`,
@@ -575,7 +602,26 @@ export class PaymentsService {
         subscriptionId,
       },
       PaymentsService.IDEMPOTENCY_TTL_MS,
+      PaymentsService.UPGRADE_LEASE_MS,
     );
+
+    // Dos destinos distintos no pueden compartir clave, así que serializarlos es
+    // lo único que impide que Stripe procese ambos. Se rechaza el segundo en vez
+    // de encolarlo: el primero puede acabar en pago pendiente o rechazo, y
+    // entonces el cliente ya no querrá el mismo cambio.
+    if (result.status === 'conflict') {
+      this.logger.warn(
+        `Upgrade a ${targetPlan} rechazado para ${userId}: hay otro a ` +
+          `${result.targetPlan} todavía en curso sobre ${subscriptionId}.`,
+      );
+      throw new ConflictException(
+        `A plan change to ${result.targetPlan.toUpperCase()} is already in progress. ` +
+          `Please wait for it to finish and check your subscription before requesting ` +
+          `a different plan.`,
+      );
+    }
+
+    return result.key;
   }
 
   /**
@@ -793,12 +839,6 @@ export class PaymentsService {
       );
     }
 
-    const idempotencyKey = await this.getUpgradeIdempotencyKey(
-      userId,
-      targetPlan,
-      user.stripeSubscriptionId,
-    );
-
     // `always_invoice` emite y cobra la factura de la proración dentro del
     // propio update, y Stripe congela en ella los datos fiscales del customer al
     // finalizarla. Igual que en el checkout, hay que propagarlos antes y en modo
@@ -817,6 +857,19 @@ export class PaymentsService {
         'No se pudieron sincronizar tus datos de facturación. Inténtalo de nuevo en unos momentos.',
       );
     }
+
+    // La clave se toma DESPUÉS de la sincronización fiscal y justo antes de la
+    // única llamada que mueve dinero. Tomarla al principio metía dentro del
+    // candado las tres llamadas del perfil fiscal, y el peor caso pasaba a ser
+    // cuatro veces el de una sola —el SDK reintenta hasta 3 veces con 80 s de
+    // timeout—, imposible de cubrir con un lease razonable. El sync no cobra
+    // nada y es idempotente, así que dejarlo fuera no arriesga un doble cargo;
+    // además, así un fallo suyo ya no retiene una clave que nadie liberará.
+    const idempotencyKey = await this.getUpgradeIdempotencyKey(
+      userId,
+      targetPlan,
+      user.stripeSubscriptionId,
+    );
 
     // Update subscription with proration
     let updatedSubscription: Stripe.Subscription;
