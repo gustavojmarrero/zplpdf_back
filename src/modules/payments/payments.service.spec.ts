@@ -1604,11 +1604,35 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
 describe('PaymentsService — alta y baja bajo el mutex', () => {
   const PRO_MXN = 'price_pro_mxn';
 
-  function buildService(overrides: { lockToken?: string | null } = {}) {
-    const retrieve = jest.fn().mockResolvedValue({
+  const PROMAX_MXN = 'price_promax_mxn';
+
+  function buildService(
+    overrides: {
+      lockToken?: string | null;
+      /** Suscripción que trae el checkout. */
+      delCheckout?: unknown;
+      /** Usuario tal como se lee DENTRO del lease. */
+      usuario?: Record<string, unknown>;
+      /** Suscripción que Stripe devuelve para el contrato ya registrado. */
+      vigenteEnStripe?: unknown;
+    } = {},
+  ) {
+    const delCheckout = overrides.delCheckout ?? {
       id: 'sub_123',
       status: 'active',
+      created: 2000,
       items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+    };
+    const retrieve = jest.fn().mockImplementation(async (id: string) => {
+      if (id === 'sub_123') {
+        return delCheckout;
+      }
+      // Stripe lanza ante un ID que no puede leer; devolver undefined no
+      // modelaría nada que ocurra de verdad.
+      if (!overrides.vigenteEnStripe) {
+        throw new Error('No such subscription');
+      }
+      return overrides.vigenteEnStripe;
     });
     const updateUserSubscriptionState = jest.fn().mockResolvedValue(true);
     const updateUser = jest.fn().mockResolvedValue(undefined);
@@ -1622,7 +1646,9 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = { subscriptions: { retrieve } };
     service.firestoreService = {
-      getUserById: jest.fn().mockResolvedValue({ id: 'uid-1', plan: 'free' }),
+      getUserById: jest
+        .fn()
+        .mockResolvedValue(overrides.usuario ?? { id: 'uid-1', plan: 'free' }),
       getUserByStripeCustomerId: jest
         .fn()
         .mockResolvedValue({ id: 'uid-1', plan: 'pro', email: 'a@b.c' }),
@@ -1704,6 +1730,90 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
     expect(releaseSubscriptionSyncLock).toHaveBeenCalledWith('uid-1', 'tok-1');
   });
 
+  /**
+   * `checkout.session.completed` acredita un alta que ocurrió, no que sea el
+   * contrato vigente: Stripe lo reentrega y no garantiza el orden, así que puede
+   * llegar días tarde describiendo una suscripción ya muerta o una duplicada
+   * inferior a la que el cliente tiene viva.
+   */
+  it('no fija el plan si la suscripción del checkout ya está cancelada', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      delCheckout: {
+        id: 'sub_123',
+        status: 'canceled',
+        created: 2000,
+        items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+      },
+    });
+
+    await service.handleCheckoutCompleted(session);
+
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
+  it('no degrada un contrato vivo superior al del checkout reentregado', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      usuario: {
+        id: 'uid-1',
+        plan: 'promax',
+        stripeSubscriptionId: 'sub_promax',
+      },
+      vigenteEnStripe: {
+        id: 'sub_promax',
+        status: 'active',
+        created: 3000,
+        items: { data: [{ id: 'si_2', price: { id: PROMAX_MXN } }] },
+      },
+    });
+
+    await service.handleCheckoutCompleted(session);
+
+    // El checkout trae PRO; quitarle PROMAX al cliente sería degradarlo por un
+    // evento viejo.
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
+  it('adopta el checkout si el contrato anterior está terminado', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      usuario: {
+        id: 'uid-1',
+        plan: 'pro',
+        stripeSubscriptionId: 'sub_viejo',
+      },
+      vigenteEnStripe: {
+        id: 'sub_viejo',
+        status: 'canceled',
+        created: 1000,
+        items: { data: [{ id: 'si_0', price: { id: PRO_MXN } }] },
+      },
+    });
+
+    await service.handleCheckoutCompleted(session);
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({ plan: 'pro' }),
+      expect.any(Date),
+      'tok-1',
+    );
+  });
+
+  it('no adopta si no puede leer el contrato vigente para compararlo', async () => {
+    // Sin poder comparar no se toca algo que puede estar vivo.
+    const { service, updateUserSubscriptionState } = buildService({
+      usuario: {
+        id: 'uid-1',
+        plan: 'promax',
+        stripeSubscriptionId: 'sub_promax',
+      },
+      vigenteEnStripe: undefined,
+    });
+
+    await service.handleCheckoutCompleted(session);
+
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
   it('la baja escribe el plan sellado, no con updateUser a secas', async () => {
     const { service, updateUserSubscriptionState, updateUser } = buildService();
 
@@ -1723,6 +1833,31 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
     expect(
       updateUser.mock.calls.filter(([, data]) => data && 'plan' in data),
     ).toHaveLength(0);
+  });
+
+  it('la baja notifica el plan leído dentro del lease, no el del snapshot', async () => {
+    // Si un `updated` pendiente escribió PROMAX entre la lectura inicial y el
+    // lease, la baja se aplica bien pero notificarla como PRO sería falso.
+    const { service } = buildService({
+      usuario: {
+        id: 'uid-1',
+        plan: 'promax',
+        stripeSubscriptionId: 'sub_123',
+      },
+    });
+    const email = service.emailService.queueSubscriptionDowngradedEmail;
+
+    await service.handleSubscriptionDeleted({
+      id: 'sub_123',
+      customer: 'cus_1',
+      items: { data: [{ price: { id: PRO_MXN } }] },
+    });
+
+    expect(email).toHaveBeenCalledWith(
+      expect.anything(),
+      'promax',
+      expect.anything(),
+    );
   });
 
   it('la baja no escribe si otro ciclo tiene el mutex', async () => {
