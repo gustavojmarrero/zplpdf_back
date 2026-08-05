@@ -3,6 +3,7 @@ jest.mock('stripe', () => jest.fn());
 
 import {
   BadRequestException,
+  ConflictException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { PaymentsService } from './payments.service.js';
@@ -61,9 +62,11 @@ describe('PaymentsService — upgradeSubscription', () => {
     }));
 
     /**
-     * Reproduce la semántica transaccional real: reutiliza la clave vigente y,
-     * si no la hay, persiste la candidata. El TTL se evalúa sobre el valor
-     * almacenado tal cual, para que un `createdAt` mal serializado se note.
+     * Reproduce la semántica transaccional real: reutiliza la clave vigente del
+     * mismo destino, rechaza un destino distinto mientras el anterior pueda
+     * seguir en vuelo, y en el resto de casos persiste la candidata. Las dos
+     * ventanas se evalúan sobre el valor almacenado tal cual, para que un
+     * `createdAt` mal serializado se note.
      */
     const acquireUpgradeIdempotency = jest.fn().mockImplementation(
       async (
@@ -74,6 +77,7 @@ describe('PaymentsService — upgradeSubscription', () => {
           subscriptionId: string;
         },
         ttlMs: number,
+        inFlightMs: number,
       ) => {
         const stored = userDoc.upgradeIdempotency as
           | Record<string, any>
@@ -82,21 +86,25 @@ describe('PaymentsService — upgradeSubscription', () => {
         const createdAtMs = stored?.createdAt
           ? new Date(stored.createdAt?.toDate?.() ?? stored.createdAt).getTime()
           : NaN;
-        const vigente =
+        const edadMs = Date.now() - createdAtMs;
+        const mismoContrato =
           !!stored?.key &&
-          stored.targetPlan === candidate.targetPlan &&
-          stored.subscriptionId === candidate.subscriptionId &&
           Number.isFinite(createdAtMs) &&
-          Date.now() - createdAtMs < ttlMs;
+          stored.subscriptionId === candidate.subscriptionId;
 
-        if (vigente) {
-          return stored.key;
+        if (mismoContrato && stored.targetPlan === candidate.targetPlan) {
+          if (edadMs < ttlMs) {
+            return { status: 'ok', key: stored.key };
+          }
+        } else if (mismoContrato && edadMs < inFlightMs) {
+          return { status: 'conflict', targetPlan: stored.targetPlan };
         }
+
         userDoc.upgradeIdempotency = {
           ...candidate,
           createdAt: new Date().toISOString(),
         };
-        return candidate.key;
+        return { status: 'ok', key: candidate.key };
       },
     );
 
@@ -261,7 +269,10 @@ describe('PaymentsService — upgradeSubscription', () => {
         targetPlan: 'promax',
         subscriptionId: 'sub_123',
       }),
-      expect.any(Number),
+      // TTL de reutilización (24 h) y ventana de exclusión entre destinos
+      // distintos (segundos): son dos cosas y no pueden ser el mismo número.
+      24 * 60 * 60 * 1000,
+      90 * 1000,
     );
     // La clave no se decide a partir del usuario leído antes de la transacción.
     expect(getUserById).toHaveBeenCalledTimes(1);
@@ -279,6 +290,59 @@ describe('PaymentsService — upgradeSubscription', () => {
 
     // Misma clave ⇒ Stripe deduplica y solo se cobra una vez.
     expect(claveUsada(update, 0)).toBe(claveUsada(update, 1));
+  });
+
+  /**
+   * Dos destinos distintos no pueden compartir clave de idempotencia, así que
+   * Stripe procesaría ambas mutaciones: la suscripción acabaría en la que
+   * llegara última —con una proración que el usuario no pidió— y Firestore en la
+   * que terminara última, que no tiene por qué ser la misma (issue #73).
+   */
+  it('rechaza un segundo upgrade a otro destino mientras el primero sigue en curso', async () => {
+    const { service, update, userDoc } = buildService({
+      subscription: activeSubscription,
+    });
+    // Desde lite ambos destinos son upgrades válidos: el caso de las dos
+    // pestañas con botones distintos.
+    userDoc.plan = 'lite';
+    service.proPriceIdMxn = 'price_pro_mxn';
+
+    const resultados = await Promise.allSettled([
+      service.upgradeSubscription('uid-1', 'pro'),
+      service.upgradeSubscription('uid-1', 'promax'),
+    ]);
+
+    const rechazados = resultados.filter((r) => r.status === 'rejected');
+    expect(rechazados).toHaveLength(1);
+    expect((rechazados[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      ConflictException,
+    );
+    // Lo que importa no es el 409, sino que solo una mutación llegue a Stripe.
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('permite cambiar de destino cuando el intento anterior ya no puede estar en vuelo', async () => {
+    const { service, update, userDoc } = buildService({
+      subscription: activeSubscription,
+    });
+    userDoc.plan = 'lite';
+    service.proPriceIdMxn = 'price_pro_mxn';
+    // Intento anterior a otro plan, de hace dos minutos: pasada la ventana en
+    // vuelo. Sigue dentro del TTL de 24 h, y ahí está la trampa — usar el TTL
+    // para excluir dejaría al cliente sin poder cambiar de plan durante un día.
+    userDoc.upgradeIdempotency = {
+      key: 'upgrade_uid-1_viejo',
+      targetPlan: 'pro',
+      subscriptionId: 'sub_123',
+      createdAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+    };
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).resolves.toMatchObject({ success: true });
+    expect(update).toHaveBeenCalledTimes(1);
+    // Clave nueva: la del intento caducado no protege de nada aquí.
+    expect(claveUsada(update, 0)).not.toBe('upgrade_uid-1_viejo');
   });
 
   it('libera la clave comparando, sin pisar la de un intento posterior', async () => {

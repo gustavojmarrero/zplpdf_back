@@ -605,14 +605,30 @@ export class FirestoreService {
    * mutaciones a Stripe — justo el doble cargo que la idempotencia debe evitar.
    * La transacción garantiza que solo una gane y que la otra reutilice su clave.
    *
-   * Devuelve la clave vigente si la hay (mismo plan, misma suscripción y dentro
-   * del TTL); si no, persiste `candidate` y la devuelve.
+   * Hay dos ventanas distintas, y confundirlas rompe uno u otro caso:
+   *
+   * - `ttlMs` (24 h) gobierna la REUTILIZACIÓN de la clave para el MISMO
+   *   destino. Es lo que hace que el reintento de un upgrade que falló llegue a
+   *   Stripe con la misma clave y no cobre dos veces.
+   * - `inFlightMs` (segundos) gobierna la EXCLUSIÓN entre destinos DISTINTOS
+   *   sobre la misma suscripción. Dos cambios distintos no pueden compartir
+   *   clave, así que la única forma de que no salgan los dos hacia Stripe es
+   *   rechazar el segundo mientras el primero pueda seguir en vuelo.
+   *
+   * La exclusión NO usa el TTL a propósito (issue #73): un intento que quedó a
+   * medias —el caso del error indeterminado, donde la clave se conserva
+   * deliberadamente— bloquearía durante 24 h un cambio de plan legítimo. Pasada
+   * la ventana en vuelo, un destino distinto sobrescribe la clave con
+   * normalidad.
    */
   async acquireUpgradeIdempotency(
     userId: string,
     candidate: { key: string; targetPlan: string; subscriptionId: string },
     ttlMs: number,
-  ): Promise<string> {
+    inFlightMs: number,
+  ): Promise<
+    { status: 'ok'; key: string } | { status: 'conflict'; targetPlan: string }
+  > {
     const ref = this.firestore.collection(this.usersCollection).doc(userId);
 
     return this.firestore.runTransaction(async (transaction) => {
@@ -624,16 +640,27 @@ export class FirestoreService {
       const createdAtMs = stored?.createdAt
         ? new Date(stored.createdAt?.toDate?.() ?? stored.createdAt).getTime()
         : NaN;
+      const edadMs = Date.now() - createdAtMs;
 
-      const vigente =
+      // Un intento sobre OTRA suscripción no dice nada del contrato actual.
+      const mismoContrato =
         !!stored?.key &&
-        stored.targetPlan === candidate.targetPlan &&
-        stored.subscriptionId === candidate.subscriptionId &&
         Number.isFinite(createdAtMs) &&
-        Date.now() - createdAtMs < ttlMs;
+        stored.subscriptionId === candidate.subscriptionId;
 
-      if (vigente) {
-        return stored.key as string;
+      if (mismoContrato && stored.targetPlan === candidate.targetPlan) {
+        if (edadMs < ttlMs) {
+          return { status: 'ok' as const, key: stored.key as string };
+        }
+      } else if (mismoContrato && edadMs < inFlightMs) {
+        // Otro destino sobre la misma suscripción, aún posiblemente en vuelo.
+        // Sobrescribir la clave dejaría salir las dos mutaciones hacia Stripe y
+        // la suscripción acabaría en la que llegara última, con una proración
+        // que el usuario no pidió y Firestore apuntando a otro plan.
+        return {
+          status: 'conflict' as const,
+          targetPlan: stored.targetPlan as string,
+        };
       }
 
       transaction.update(ref, {
@@ -643,7 +670,7 @@ export class FirestoreService {
         },
         updatedAt: new Date(),
       });
-      return candidate.key;
+      return { status: 'ok' as const, key: candidate.key };
     });
   }
 

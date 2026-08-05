@@ -2,6 +2,7 @@ import {
   Injectable,
   Logger,
   BadRequestException,
+  ConflictException,
   ServiceUnavailableException,
   Inject,
   forwardRef,
@@ -551,6 +552,17 @@ export class PaymentsService {
   private static readonly IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 
   /**
+   * Cuánto se considera que un upgrade puede seguir en vuelo, y por tanto
+   * durante cuánto se rechaza otro hacia un destino distinto (issue #73).
+   *
+   * Dimensionado sobre el timeout por defecto del SDK de Stripe (80 s) con algo
+   * de margen. No se usa el TTL de 24 h: el 3DS no lo necesita —ese camino
+   * libera la clave al devolver el enlace de pago— y un intento que quedó a
+   * medias no debe secuestrar el plan del usuario durante un día entero.
+   */
+  private static readonly UPGRADE_IN_FLIGHT_MS = 90 * 1000;
+
+  /**
    * Clave de idempotencia del intento de upgrade, estable entre reintentos.
    *
    * No se deriva del reloj: una cubeta temporal (`Date.now() / 60000`) parte dos
@@ -567,7 +579,7 @@ export class PaymentsService {
   ): Promise<string> {
     // La adquisición es transaccional: dos upgrades simultáneos no pueden
     // acabar con claves distintas y, por tanto, con dos mutaciones en Stripe.
-    return this.firestoreService.acquireUpgradeIdempotency(
+    const result = await this.firestoreService.acquireUpgradeIdempotency(
       userId,
       {
         key: `upgrade_${userId}_${randomUUID()}`,
@@ -575,7 +587,26 @@ export class PaymentsService {
         subscriptionId,
       },
       PaymentsService.IDEMPOTENCY_TTL_MS,
+      PaymentsService.UPGRADE_IN_FLIGHT_MS,
     );
+
+    // Dos destinos distintos no pueden compartir clave, así que serializarlos es
+    // lo único que impide que Stripe procese ambos. Se rechaza el segundo en vez
+    // de encolarlo: el primero puede acabar en pago pendiente o rechazo, y
+    // entonces el cliente ya no querrá el mismo cambio.
+    if (result.status === 'conflict') {
+      this.logger.warn(
+        `Upgrade a ${targetPlan} rechazado para ${userId}: hay otro a ` +
+          `${result.targetPlan} todavía en curso sobre ${subscriptionId}.`,
+      );
+      throw new ConflictException(
+        `A plan change to ${result.targetPlan.toUpperCase()} is already in progress. ` +
+          `Please wait for it to finish and check your subscription before requesting ` +
+          `a different plan.`,
+      );
+    }
+
+    return result.key;
   }
 
   /**

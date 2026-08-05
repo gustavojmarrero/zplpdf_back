@@ -135,3 +135,204 @@ describe('FirestoreService — updateUserSubscriptionState', () => {
     expect(aplicada).toBe(true);
   });
 });
+
+/**
+ * La clave protege del doble cargo del MISMO upgrade, pero dos upgrades a
+ * destinos DISTINTOS no pueden compartirla: si el segundo sobrescribe al
+ * primero, Stripe procesa ambas mutaciones (issue #73).
+ */
+describe('FirestoreService — acquireUpgradeIdempotency', () => {
+  const TTL_MS = 24 * 60 * 60 * 1000;
+  const IN_FLIGHT_MS = 90 * 1000;
+
+  function buildService(stored?: Record<string, unknown>) {
+    const docData: Record<string, unknown> = stored
+      ? { upgradeIdempotency: stored }
+      : {};
+    const update = jest
+      .fn()
+      .mockImplementation((_ref: unknown, data: Record<string, unknown>) => {
+        Object.assign(docData, data);
+      });
+
+    const ref = { id: 'uid-1' };
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestore = {
+      collection: () => ({ doc: () => ref }),
+      runTransaction: (fn: (t: unknown) => Promise<unknown>) =>
+        fn({
+          get: async () => ({ data: () => docData }),
+          update,
+        }),
+    };
+
+    return { service, update, docData };
+  }
+
+  function candidato(targetPlan: string, subscriptionId = 'sub_123') {
+    return { key: `upgrade_nuevo_${targetPlan}`, targetPlan, subscriptionId };
+  }
+
+  function hace(ms: number) {
+    return new Date(Date.now() - ms).toISOString();
+  }
+
+  it('reutiliza la clave del mismo destino dentro del TTL', async () => {
+    // El caso original: el reintento del mismo upgrade no debe cobrar dos veces.
+    const { service, update } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'promax',
+      subscriptionId: 'sub_123',
+      createdAt: hace(60 * 60 * 1000),
+    });
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'ok', key: 'upgrade_previo' });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rechaza otro destino sobre la misma suscripción mientras pueda estar en vuelo', async () => {
+    const { service, update, docData } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'pro',
+      subscriptionId: 'sub_123',
+      createdAt: hace(5 * 1000),
+    });
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'conflict', targetPlan: 'pro' });
+    // Sobrescribir aquí dejaría salir las dos mutaciones hacia Stripe.
+    expect(update).not.toHaveBeenCalled();
+    expect((docData.upgradeIdempotency as any).key).toBe('upgrade_previo');
+  });
+
+  it('permite otro destino pasada la ventana en vuelo, aunque siga dentro del TTL', async () => {
+    // Excluir por el TTL de 24 h dejaría al cliente sin poder cambiar de plan
+    // durante un día entero por un intento que quedó a medias.
+    const { service, update } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'pro',
+      subscriptionId: 'sub_123',
+      createdAt: hace(10 * 60 * 1000),
+    });
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
+    expect(update).toHaveBeenCalled();
+  });
+
+  it('no bloquea por un intento sobre otra suscripción', async () => {
+    // Otro contrato no dice nada del actual: normalmente una suscripción
+    // anterior ya cancelada.
+    const { service } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'pro',
+      subscriptionId: 'sub_viejo',
+      createdAt: hace(1000),
+    });
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
+  });
+
+  it('persiste una clave nueva cuando la del mismo destino ya caducó', async () => {
+    const { service, docData } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'promax',
+      subscriptionId: 'sub_123',
+      createdAt: hace(TTL_MS + 1000),
+    });
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
+    expect((docData.upgradeIdempotency as any).key).toBe(
+      'upgrade_nuevo_promax',
+    );
+    // Se persiste como ISO string: un Date se leería mal al volver de Firestore.
+    expect(typeof (docData.upgradeIdempotency as any).createdAt).toBe('string');
+  });
+
+  it('persiste la clave cuando no hay ningún intento previo', async () => {
+    const { service, update } = buildService();
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
+    expect(update).toHaveBeenCalled();
+  });
+
+  it('evalúa la exclusión sobre un createdAt en formato Timestamp', async () => {
+    // Leerlo mal degradaría la guarda en silencio y volvería el bug.
+    const { service } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'pro',
+      subscriptionId: 'sub_123',
+      createdAt: { toDate: () => new Date(Date.now() - 5 * 1000) },
+    });
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'conflict', targetPlan: 'pro' });
+  });
+
+  it('no bloquea si el createdAt almacenado es ilegible', async () => {
+    // Un valor corrupto no debe dejar al usuario sin poder cambiar de plan.
+    const { service } = buildService({
+      key: 'upgrade_previo',
+      targetPlan: 'pro',
+      subscriptionId: 'sub_123',
+      createdAt: 'no-es-fecha',
+    });
+
+    const result = await service.acquireUpgradeIdempotency(
+      'uid-1',
+      candidato('promax'),
+      TTL_MS,
+      IN_FLIGHT_MS,
+    );
+
+    expect(result).toEqual({ status: 'ok', key: 'upgrade_nuevo_promax' });
+  });
+});
