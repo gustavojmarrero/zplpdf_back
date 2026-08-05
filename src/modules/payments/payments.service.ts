@@ -718,6 +718,7 @@ export class PaymentsService {
     expectedPriceId: string,
     context: string,
     lockToken: string,
+    idempotencyKey: string,
   ): Promise<{ success: boolean; message: string } | null> {
     const type = (error as { type?: string }).type;
     if (type !== 'StripeConnectionError' && type !== 'StripeAPIError') {
@@ -734,10 +735,25 @@ export class PaymentsService {
     // aquí evita dimensionarlo por las tres de golpe —una ventana que dejaría al
     // usuario bloqueado casi veinte minutos si el proceso muriera— y evita que
     // el fencing acabe descartando una escritura que sí es legítima.
-    const renovado = await this.firestoreService.renewSubscriptionSyncLock(
-      userId,
-      lockToken,
-    );
+    let renovado = false;
+    try {
+      renovado = await this.firestoreService.renewSubscriptionSyncLock(
+        userId,
+        lockToken,
+      );
+    } catch (renewError) {
+      // Escapar aquí daría un 500 genérico, y venimos de un update que PUEDE
+      // haber cobrado: el contrato de este camino es pedir que se revise la
+      // facturación antes de reintentar, no un error opaco.
+      this.logger.error(
+        `CRITICAL: no se pudo renovar el lease para reconciliar — ${context}. ` +
+          `Detalle: ${(renewError as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not confirm whether your plan change went through. Please check your billing ' +
+          'settings before trying again, or contact support@zplpdf.com.',
+      );
+    }
 
     if (!renovado) {
       // Ya nos relevaron: la escritura se descartaría igualmente, y quien tenga
@@ -782,6 +798,11 @@ export class PaymentsService {
     // reemplaza el pending update existente y anula su factura, dejando al
     // cliente sin el enlace con el que ya podía pagar o autenticar.
     if (current.pending_update) {
+      // Definitivo, igual que en el camino principal: hay una factura esperando.
+      // Conservar la clave haría que un intento posterior —tras expirar el
+      // pending, dentro de las 24 h de TTL— recibiera de Stripe la respuesta
+      // cacheada del primero, que ofrece una factura ya anulada.
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
       this.throwPendingPaymentError(current, context);
     }
 
@@ -1143,6 +1164,7 @@ export class PaymentsService {
         newPriceId,
         upgradeContext,
         lockToken,
+        idempotencyKey,
       );
       if (reconciled) {
         // La reconciliación es un desenlace definitivo: se sabe que el cambio
@@ -1272,34 +1294,87 @@ export class PaymentsService {
       | 'mxn';
     const amount = session.amount_total || 0;
 
-    // Get plan and period from subscription
-    let plan: PaidPlanType | null = null;
-    let subscriptionPeriodStart: Date | undefined;
-    let subscriptionPeriodEnd: Date | undefined;
-    try {
-      const subscription =
-        await this.stripe.subscriptions.retrieve(subscriptionId);
-      const priceId = subscription.items.data[0]?.price?.id;
-      if (priceId) {
-        plan = this.getPlanFromPriceId(priceId);
-      }
-      const period = this.resolveBillingPeriod(subscription);
-      subscriptionPeriodStart = period.start;
-      subscriptionPeriodEnd = period.end;
-    } catch (error) {
-      this.logger.warn(`Failed to get subscription details: ${error.message}`);
-    }
+    // El alta cierra el mismo ciclo observar→escribir que el upgrade y el
+    // webhook de `updated`: relee la suscripción en Stripe y escribe el plan.
+    // Fuera del mutex, un checkout retrasado podía leer PRO, dejar que el
+    // upgrade escribiera PROMAX y luego restaurar PRO (issue #77).
+    const plan = await this.withSubscriptionSyncLock(
+      userId,
+      async (lockToken) => {
+        let resuelto: PaidPlanType | null = null;
+        let periodStart: Date | undefined;
+        let periodEnd: Date | undefined;
+        // Si la relectura falla no se escribe nada, así que este valor solo se
+        // usa cuando hay estado observado detrás.
+        let readAt = new Date();
 
-    // Si no se pudo resolver el plan desde el price ID, NO asignar uno por defecto:
-    // hacerlo regalaría un plan (potencialmente superior) por mala configuración.
-    // Abortamos y registramos error crítico; Stripe reintentará el webhook.
-    if (!plan) {
-      this.logger.error(
-        `CRITICAL: No se pudo determinar el plan para checkout de user ${userId} ` +
-          `(session ${session.id}, sub ${subscriptionId}). Plan NO asignado. Revisar STRIPE_*_PRICE_ID.`,
-      );
-      throw new Error(`Cannot resolve plan for checkout session ${session.id}`);
-    }
+        try {
+          const subscription =
+            await this.stripe.subscriptions.retrieve(subscriptionId);
+          readAt = new Date();
+          const priceId = subscription.items.data[0]?.price?.id;
+          if (priceId) {
+            resuelto = this.getPlanFromPriceId(priceId);
+          }
+          const period = this.resolveBillingPeriod(subscription);
+          periodStart = period.start;
+          periodEnd = period.end;
+        } catch (error) {
+          this.logger.warn(
+            `Failed to get subscription details: ${error.message}`,
+          );
+        }
+
+        // Si no se pudo resolver el plan desde el price ID, NO asignar uno por
+        // defecto: hacerlo regalaría un plan (potencialmente superior) por mala
+        // configuración. Abortamos y registramos error crítico; Stripe
+        // reintentará el webhook.
+        if (!resuelto) {
+          this.logger.error(
+            `CRITICAL: No se pudo determinar el plan para checkout de user ${userId} ` +
+              `(session ${session.id}, sub ${subscriptionId}). Plan NO asignado. Revisar STRIPE_*_PRICE_ID.`,
+          );
+          throw new Error(
+            `Cannot resolve plan for checkout session ${session.id}`,
+          );
+        }
+
+        // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
+        const subscriptionData: Record<string, unknown> = {
+          plan: resuelto,
+          stripeSubscriptionId: subscriptionId,
+        };
+        if (periodStart) {
+          subscriptionData.subscriptionPeriodStart = periodStart;
+        }
+        if (periodEnd) {
+          subscriptionData.subscriptionPeriodEnd = periodEnd;
+        }
+
+        const applied = await this.withRetry(
+          () =>
+            this.firestoreService.updateUserSubscriptionState(
+              userId,
+              subscriptionData,
+              readAt,
+              lockToken,
+            ),
+          `handleCheckoutCompleted(${userId})`,
+        );
+
+        if (!applied) {
+          // El documento ya refleja algo más fresco. No es un fallo: el alta se
+          // dio por buena en Stripe y el estado vigente es el que hay.
+          this.logger.warn(
+            `Alta de ${userId} no escrita: el documento ya refleja una lectura ` +
+              `posterior o el lease cambió de manos.`,
+          );
+        }
+
+        return resuelto;
+      },
+      'el alta de la suscripción',
+    );
 
     // Calculate MXN amount for transactions
     let amountMxn = amount / 100;
@@ -1319,34 +1394,24 @@ export class PaymentsService {
       }
     }
 
-    // Update user plan with retry
-    // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
-    const updateData: Record<string, unknown> = {
-      plan,
-      stripeSubscriptionId: subscriptionId,
-    };
-    if (subscriptionPeriodStart) {
-      updateData.subscriptionPeriodStart = subscriptionPeriodStart;
-    }
-    if (subscriptionPeriodEnd) {
-      updateData.subscriptionPeriodEnd = subscriptionPeriodEnd;
-    }
-
-    // Update country/city from billing address if available and not already set by Stripe
+    // La geo va aparte del estado de suscripción y fuera del mutex: no compite
+    // por el plan, así que no debe descartarse junto con él si llega un sello
+    // más fresco.
     if (billingCountry && (!user?.country || user.countrySource === 'ip')) {
-      updateData.country = billingCountry;
-      updateData.city = billingCity;
-      updateData.countrySource = 'stripe';
-      updateData.countryDetectedAt = new Date();
+      await this.withRetry(
+        () =>
+          this.firestoreService.updateUser(userId, {
+            country: billingCountry,
+            city: billingCity,
+            countrySource: 'stripe',
+            countryDetectedAt: new Date(),
+          } as Partial<User>),
+        `handleCheckoutCompleted(geo ${userId})`,
+      );
       this.logger.log(
         `Updated user ${userId} geo to ${billingCountry}/${billingCity || 'unknown'} from Stripe billing`,
       );
     }
-
-    await this.withRetry(
-      () => this.firestoreService.updateUser(userId, updateData),
-      `handleCheckoutCompleted(${userId})`,
-    );
 
     this.logger.log(`User ${userId} upgraded to ${plan} plan`);
 
@@ -1734,15 +1799,37 @@ export class PaymentsService {
         ? user.plan
         : 'pro';
 
-    // Downgrade to free plan with retry
-    await this.withRetry(
-      () =>
-        this.firestoreService.updateUser(user.id, {
-          plan: 'free',
-          stripeSubscriptionId: null,
-        }),
-      `handleSubscriptionDeleted(${user.id})`,
+    // La baja también escribe el plan, así que entra en el mutex y por la
+    // escritura sellada: con `updateUser` a secas podía pisar un upgrade recién
+    // confirmado sin que nada lo comparase (issue #77). No relee Stripe —el
+    // evento ya es terminal—, y dentro del mutex no hay otro ciclo con el que
+    // competir, así que el sello se toma justo antes de escribir.
+    const aplicado = await this.withSubscriptionSyncLock(
+      user.id,
+      (lockToken) =>
+        this.withRetry(
+          () =>
+            this.firestoreService.updateUserSubscriptionState(
+              user.id,
+              {
+                plan: 'free',
+                stripeSubscriptionId: null,
+              },
+              new Date(),
+              lockToken,
+            ),
+          `handleSubscriptionDeleted(${user.id})`,
+        ),
+      'la baja de la suscripción',
     );
+
+    if (!aplicado) {
+      this.logger.warn(
+        `Baja de ${user.id} no escrita: el documento ya refleja una lectura ` +
+          `posterior o el lease cambió de manos.`,
+      );
+      return;
+    }
 
     this.logger.log(
       `User ${user.id} downgraded to Free plan (was ${canceledPlan})`,

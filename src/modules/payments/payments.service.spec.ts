@@ -583,6 +583,53 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it('un fallo al renovar el lease no escapa como error genérico', async () => {
+    // Venimos de un update que PUEDE haber cobrado: un 500 opaco rompería el
+    // contrato de "revisa tu facturación antes de reintentar".
+    const { service, updateUser, renewSubscriptionSyncLock } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeConnectionError', message: 'network error' },
+    });
+    renewSubscriptionSyncLock.mockRejectedValue(new Error('Firestore caído'));
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(error.message).toContain('could not confirm');
+    // Y sin el discriminador: no se sabe si hubo cargo, así que no se afirma.
+    expect(JSON.stringify(error.getResponse())).not.toContain(
+      'paymentProcessed',
+    );
+    expect(escriturasDePlan(updateUser)).toHaveLength(0);
+  });
+
+  it('libera la clave cuando la reconciliación encuentra un pending update', async () => {
+    // Es un desenlace definitivo: hay una factura esperando. Conservar la clave
+    // haría que un intento posterior recibiera de Stripe la respuesta cacheada,
+    // que ofrece una factura ya anulada cuando el pending expira.
+    const { service, userDoc, retrieve } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeConnectionError', message: 'timeout' },
+    });
+    retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce({
+        status: 'active',
+        pending_update: { expires_at: 1234567890 },
+        items: { data: [{ id: 'si_123', price: { id: PRO_MXN } }] },
+        latest_invoice: { hosted_invoice_url: 'https://pay.stripe.com/x' },
+      });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).rejects.toThrow();
+
+    expect(userDoc.upgradeIdempotency).toBeNull();
+  });
+
   it('no reconcilia si el lease ya no es nuestro', async () => {
     // Reconciliar exigiría una tercera llamada a Stripe; si nos relevaron, la
     // escritura se descartaría igual y quien tenga el ciclo leerá el estado real.
@@ -1458,6 +1505,152 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
 
     await service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN));
 
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * El alta y la baja también escriben el plan, así que comparten el mutex con el
+ * upgrade y con `subscription.updated`. El alta además relee Stripe: fuera del
+ * mutex, un checkout retrasado podía leer PRO, dejar que el upgrade escribiera
+ * PROMAX y luego restaurar PRO (issue #77).
+ */
+describe('PaymentsService — alta y baja bajo el mutex', () => {
+  const PRO_MXN = 'price_pro_mxn';
+
+  function buildService(overrides: { lockToken?: string | null } = {}) {
+    const retrieve = jest.fn().mockResolvedValue({
+      id: 'sub_123',
+      status: 'active',
+      items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+    });
+    const updateUserSubscriptionState = jest.fn().mockResolvedValue(true);
+    const updateUser = jest.fn().mockResolvedValue(undefined);
+    const acquireSubscriptionSyncLock = jest
+      .fn()
+      .mockResolvedValue(
+        overrides.lockToken === undefined ? 'tok-1' : overrides.lockToken,
+      );
+    const releaseSubscriptionSyncLock = jest.fn().mockResolvedValue(undefined);
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = { subscriptions: { retrieve } };
+    service.firestoreService = {
+      getUserById: jest.fn().mockResolvedValue({ id: 'uid-1', plan: 'free' }),
+      getUserByStripeCustomerId: jest
+        .fn()
+        .mockResolvedValue({ id: 'uid-1', plan: 'pro', email: 'a@b.c' }),
+      updateUser,
+      updateUserSubscriptionState,
+      acquireSubscriptionSyncLock,
+      releaseSubscriptionSyncLock,
+      saveSubscriptionEvent: jest.fn().mockResolvedValue(undefined),
+      saveTransaction: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+    service.proPriceIdMxn = PRO_MXN;
+    service.proPriceId = PRO_MXN;
+    service.emailService = {
+      queueSubscriptionDowngradedEmail: jest.fn().mockResolvedValue(undefined),
+    };
+    service.exchangeRateService = {
+      convertUsdToMxn: jest
+        .fn()
+        .mockResolvedValue({ amountMxn: 100, rate: 20 }),
+    };
+    service.ga4Service = {
+      trackPurchase: jest.fn().mockResolvedValue(undefined),
+    };
+    service.billingService = {
+      syncTaxProfileToStripe: jest.fn().mockResolvedValue(undefined),
+    };
+
+    return {
+      service,
+      retrieve,
+      updateUserSubscriptionState,
+      updateUser,
+      acquireSubscriptionSyncLock,
+      releaseSubscriptionSyncLock,
+    };
+  }
+
+  const session = {
+    id: 'cs_1',
+    metadata: { firebaseUid: 'uid-1' },
+    subscription: 'sub_123',
+    currency: 'mxn',
+    amount_total: 10000,
+    customer_details: {},
+  };
+
+  it('el alta escribe el plan sellado y con el token del ciclo', async () => {
+    const { service, updateUserSubscriptionState } = buildService();
+
+    await service.handleCheckoutCompleted(session);
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({ plan: 'pro' }),
+      expect.any(Date),
+      'tok-1',
+    );
+  });
+
+  it('el alta no relee Stripe ni escribe si otro ciclo tiene el mutex', async () => {
+    const { service, retrieve, updateUserSubscriptionState } = buildService({
+      lockToken: null,
+    });
+
+    await expect(
+      service.handleCheckoutCompleted(session),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(retrieve).not.toHaveBeenCalled();
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
+  it('el alta libera el mutex al terminar', async () => {
+    const { service, releaseSubscriptionSyncLock } = buildService();
+
+    await service.handleCheckoutCompleted(session);
+
+    expect(releaseSubscriptionSyncLock).toHaveBeenCalledWith('uid-1', 'tok-1');
+  });
+
+  it('la baja escribe el plan sellado, no con updateUser a secas', async () => {
+    const { service, updateUserSubscriptionState, updateUser } = buildService();
+
+    await service.handleSubscriptionDeleted({
+      id: 'sub_123',
+      customer: 'cus_1',
+      items: { data: [{ price: { id: PRO_MXN } }] },
+    });
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({ plan: 'free' }),
+      expect.any(Date),
+      'tok-1',
+    );
+    // Sin sello ni token, podía pisar un upgrade recién confirmado.
+    expect(
+      updateUser.mock.calls.filter(([, data]) => data && 'plan' in data),
+    ).toHaveLength(0);
+  });
+
+  it('la baja no escribe si otro ciclo tiene el mutex', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      lockToken: null,
+    });
+
+    await expect(
+      service.handleSubscriptionDeleted({
+        id: 'sub_123',
+        customer: 'cus_1',
+        items: { data: [{ price: { id: PRO_MXN } }] },
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
     expect(updateUserSubscriptionState).not.toHaveBeenCalled();
   });
 });
