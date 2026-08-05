@@ -1663,6 +1663,10 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
     service.MAX_RETRIES = 3;
     service.proPriceIdMxn = PRO_MXN;
     service.proPriceId = PRO_MXN;
+    // Sin el precio de PROMAX, comparar contratos falla por configuración y el
+    // handler pide reentrega en vez de decidir.
+    service.promaxPriceIdMxn = PROMAX_MXN;
+    service.promaxPriceId = PROMAX_MXN;
     service.emailService = {
       queueSubscriptionDowngradedEmail: jest.fn().mockResolvedValue(undefined),
     };
@@ -1685,6 +1689,7 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
       updateUser,
       acquireSubscriptionSyncLock,
       releaseSubscriptionSyncLock,
+      firestoreService: service.firestoreService,
     };
   }
 
@@ -1798,19 +1803,85 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
     );
   });
 
-  it('no adopta si no puede leer el contrato vigente para compararlo', async () => {
-    // Sin poder comparar no se toca algo que puede estar vivo.
+  /**
+   * "No puedo decidir" no es "decido que no". Tragarse el fallo daría 200,
+   * Stripe daría el evento por entregado y un cliente cuyo contrato sí debía
+   * adoptarse se quedaría sin el plan que pagó, sin reintento posible.
+   */
+  it('pide reentrega si no puede leer el contrato vigente, sin contabilizar nada', async () => {
+    const { service, updateUserSubscriptionState, firestoreService } =
+      buildService({
+        usuario: {
+          id: 'uid-1',
+          plan: 'promax',
+          stripeSubscriptionId: 'sub_promax',
+        },
+        vigenteEnStripe: undefined,
+      });
+
+    await expect(service.handleCheckoutCompleted(session)).rejects.toThrow();
+
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+    // La contabilidad va detrás de la decisión: si se hubiera registrado aquí,
+    // la reentrega la duplicaría.
+    expect(firestoreService.saveTransaction).not.toHaveBeenCalled();
+  });
+
+  it('la reentrega tras el fallo adopta y contabiliza una sola vez', async () => {
+    let primeraLectura = true;
+    const { service, updateUserSubscriptionState, firestoreService, retrieve } =
+      buildService({
+        usuario: {
+          id: 'uid-1',
+          plan: 'pro',
+          stripeSubscriptionId: 'sub_viejo',
+        },
+        vigenteEnStripe: {
+          id: 'sub_viejo',
+          status: 'canceled',
+          created: 1000,
+          items: { data: [{ id: 'si_0', price: { id: PRO_MXN } }] },
+        },
+      });
+
+    const original = retrieve.getMockImplementation();
+    retrieve.mockImplementation(async (id: string) => {
+      if (id === 'sub_viejo' && primeraLectura) {
+        primeraLectura = false;
+        throw new Error('timeout');
+      }
+      return original(id);
+    });
+
+    // Primera entrega: falla y no deja rastro.
+    await expect(service.handleCheckoutCompleted(session)).rejects.toThrow();
+    expect(firestoreService.saveTransaction).not.toHaveBeenCalled();
+
+    // Reentrega de Stripe: ahora sí compara, adopta y contabiliza.
+    await service.handleCheckoutCompleted(session);
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledTimes(1);
+    expect(firestoreService.saveTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('pide reentrega si no puede resolver el plan del contrato vigente', async () => {
+    // Un price ID sin mapear: si se configura dentro de la ventana de
+    // reintentos, el alta se aplica sola.
     const { service, updateUserSubscriptionState } = buildService({
       usuario: {
         id: 'uid-1',
-        plan: 'promax',
-        stripeSubscriptionId: 'sub_promax',
+        plan: 'pro',
+        stripeSubscriptionId: 'sub_otro',
       },
-      vigenteEnStripe: undefined,
+      vigenteEnStripe: {
+        id: 'sub_otro',
+        status: 'active',
+        created: 1000,
+        items: { data: [{ id: 'si_0', price: { id: 'price_desconocido' } }] },
+      },
     });
 
-    await service.handleCheckoutCompleted(session);
-
+    await expect(service.handleCheckoutCompleted(session)).rejects.toThrow();
     expect(updateUserSubscriptionState).not.toHaveBeenCalled();
   });
 

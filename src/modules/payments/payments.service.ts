@@ -1342,13 +1342,19 @@ export class PaymentsService {
         vigente.stripeSubscriptionId,
       );
     } catch (error) {
-      // Sin poder comparar no se toca un contrato que puede estar vivo.
+      // "No puedo decidir" NO es "decido que no": devolver `false` aquí daría
+      // 200, Stripe daría el evento por entregado y un cliente cuyo contrato SÍ
+      // debía adoptarse se quedaría sin el plan que pagó, para siempre. Se
+      // propaga para que Stripe reentregue; la contabilidad va después de este
+      // punto, así que tampoco se registra dos veces.
       this.logger.error(
-        `CRITICAL: no se pudo leer la suscripción vigente ` +
-          `${vigente.stripeSubscriptionId} de ${userId} para decidir el alta de ` +
-          `${delCheckout.id}. No se adopta. Detalle: ${(error as Error).message}`,
+        `No se pudo leer la suscripción vigente ${vigente.stripeSubscriptionId} ` +
+          `de ${userId} para decidir el alta de ${delCheckout.id}. Se pide ` +
+          `reentrega. Detalle: ${(error as Error).message}`,
       );
-      return false;
+      throw new ServiceUnavailableException(
+        'Could not compare subscriptions to resolve the checkout',
+      );
     }
 
     if (!PaymentsService.ESTADOS_VIVOS.includes(actual.status)) {
@@ -1367,15 +1373,28 @@ export class PaymentsService {
       ? this.getPlanFromPriceId(actual.items.data[0].price.id)
       : null;
 
-    const adopta = !planActual
-      ? false
-      : PLAN_ORDER[planDelCheckout] > PLAN_ORDER[planActual] ||
-        (PLAN_ORDER[planDelCheckout] === PLAN_ORDER[planActual] &&
-          (delCheckout.created ?? 0) > (actual.created ?? 0));
+    if (!planActual) {
+      // Mismo caso: no se sabe con qué se está comparando. Se pide reentrega en
+      // vez de decidir a ciegas — si el price ID que falta se configura dentro
+      // de la ventana de reintentos, el alta se aplica sola.
+      this.logger.error(
+        `CRITICAL: no se pudo resolver el plan de la suscripción vigente ` +
+          `${actual.id} de ${userId}. Se pide reentrega del checkout ` +
+          `${delCheckout.id}. Revisar STRIPE_*_PRICE_ID.`,
+      );
+      throw new ServiceUnavailableException(
+        'Could not resolve the current plan to compare subscriptions',
+      );
+    }
+
+    const adopta =
+      PLAN_ORDER[planDelCheckout] > PLAN_ORDER[planActual] ||
+      (PLAN_ORDER[planDelCheckout] === PLAN_ORDER[planActual] &&
+        (delCheckout.created ?? 0) > (actual.created ?? 0));
 
     this.logger.error(
       `CRITICAL: ${userId} tiene DOS suscripciones vivas — ${actual.id} ` +
-        `(${planActual ?? 'plan desconocido'}, ${actual.status}) y ${delCheckout.id} ` +
+        `(${planActual}, ${actual.status}) y ${delCheckout.id} ` +
         `(${planDelCheckout}, ${delCheckout.status}). Se ${adopta ? 'adopta' : 'mantiene'} ` +
         `el contrato ${adopta ? 'del checkout' : 'anterior'}. Revisar y cancelar la duplicada.`,
     );
