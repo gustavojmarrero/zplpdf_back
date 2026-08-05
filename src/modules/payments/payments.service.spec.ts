@@ -16,6 +16,8 @@ import { PaymentsService } from './payments.service.js';
  */
 describe('PaymentsService — upgradeSubscription', () => {
   const PROMAX_MXN = 'price_promax_mxn';
+  const PRO_MXN = 'price_pro_mxn';
+  const LITE_MXN = 'price_lite_mxn';
 
   /**
    * El constructor de PaymentsService abre conexiones (Stripe, Firestore) que
@@ -176,6 +178,12 @@ describe('PaymentsService — upgradeSubscription', () => {
           lockVivo = null;
         }
       });
+    // Renueva solo si el token sigue siendo el del titular.
+    const renewSubscriptionSyncLock = jest
+      .fn()
+      .mockImplementation(
+        async (_id: string, token: string) => lockVivo === token,
+      );
 
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = { subscriptions: { retrieve, update } };
@@ -187,9 +195,13 @@ describe('PaymentsService — upgradeSubscription', () => {
       releaseUpgradeIdempotency,
       acquireSubscriptionSyncLock,
       releaseSubscriptionSyncLock,
+      renewSubscriptionSyncLock,
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.promaxPriceIdMxn = PROMAX_MXN;
+    // Sin estos, el precio vigente no se resuelve y el upgrade falla cerrado.
+    service.proPriceIdMxn = PRO_MXN;
+    service.litePriceIdMxn = LITE_MXN;
     // El upgrade emite y cobra la factura de la proración dentro del update, así
     // que propaga el perfil fiscal antes y en modo estricto.
     service.billingService = { syncTaxProfileToStripe: syncTaxProfileToStripe };
@@ -207,6 +219,7 @@ describe('PaymentsService — upgradeSubscription', () => {
       releaseUpgradeIdempotency,
       acquireSubscriptionSyncLock,
       releaseSubscriptionSyncLock,
+      renewSubscriptionSyncLock,
     };
   }
 
@@ -222,9 +235,17 @@ describe('PaymentsService — upgradeSubscription', () => {
     return update.mock.calls[llamada]?.[2]?.idempotencyKey;
   }
 
+  // Con precio: el upgrade falla cerrado si no puede resolver de qué plan parte,
+  // así que una suscripción sin `price` ya no es un fixture realista.
   const activeSubscription = {
     status: 'active',
-    items: { data: [{ id: 'si_123' }] },
+    items: { data: [{ id: 'si_123', price: { id: PRO_MXN } }] },
+  };
+
+  /** Para los casos que arrancan en Lite, donde ambos destinos son válidos. */
+  const liteSubscription = {
+    status: 'active',
+    items: { data: [{ id: 'si_123', price: { id: LITE_MXN } }] },
   };
 
   it('sube el plan y aplica el precio de la moneda del usuario', async () => {
@@ -361,12 +382,11 @@ describe('PaymentsService — upgradeSubscription', () => {
    */
   it('rechaza un segundo upgrade a otro destino mientras el primero sigue en curso', async () => {
     const { service, update, userDoc } = buildService({
-      subscription: activeSubscription,
+      subscription: liteSubscription,
     });
     // Desde lite ambos destinos son upgrades válidos: el caso de las dos
     // pestañas con botones distintos.
     userDoc.plan = 'lite';
-    service.proPriceIdMxn = 'price_pro_mxn';
 
     const resultados = await Promise.allSettled([
       service.upgradeSubscription('uid-1', 'pro'),
@@ -384,10 +404,9 @@ describe('PaymentsService — upgradeSubscription', () => {
 
   it('permite cambiar de destino cuando el intento anterior ya no puede estar vivo', async () => {
     const { service, update, userDoc } = buildService({
-      subscription: activeSubscription,
+      subscription: liteSubscription,
     });
     userDoc.plan = 'lite';
-    service.proPriceIdMxn = 'price_pro_mxn';
     // Intento anterior a otro plan, de hace media hora: el lease expiró hace
     // mucho. Sigue dentro del TTL de 24 h, y ahí está la trampa — usar el TTL
     // para excluir dejaría al cliente sin poder cambiar de plan durante un día.
@@ -416,10 +435,9 @@ describe('PaymentsService — upgradeSubscription', () => {
    */
   it('revalida el plan dentro del mutex y aborta si otro cambio ya subió más', async () => {
     const { service, update, userDoc, getUserById } = buildService({
-      subscription: activeSubscription,
+      subscription: liteSubscription,
     });
     userDoc.plan = 'lite';
-    service.proPriceIdMxn = 'price_pro_mxn';
 
     // La primera lectura ve lite; para cuando se revalida, otro upgrade ya
     // dejó al usuario en promax.
@@ -507,6 +525,80 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(error).toBeInstanceOf(ServiceUnavailableException);
     // El mensaje reconoce el cobro: negarlo sería mentir sobre dinero cobrado.
     expect(error.message).toContain('went through');
+
+    // Y el discriminador, que es lo que el cliente debe mirar: este endpoint
+    // devuelve 503 también SIN cobro —sync fiscal fallido, reconciliación
+    // indeterminada—, así que deducirlo del status sería afirmar un cargo
+    // inexistente en dos de los tres casos.
+    const respuesta = (error as ServiceUnavailableException).getResponse() as {
+      error: string;
+      data: { paymentProcessed: boolean };
+    };
+    expect(respuesta.error).toBe('UPGRADE_APPLIED_SYNC_PENDING');
+    expect(respuesta.data.paymentProcessed).toBe(true);
+  });
+
+  it('los 503 anteriores al cobro NO llevan el discriminador de pago procesado', async () => {
+    // Si el sync fiscal falla no se ha cobrado nada; confundirlo con el caso de
+    // arriba haría que el cliente informara de un cargo que no existe.
+    const { service } = buildService({
+      subscription: activeSubscription,
+      syncTaxProfileToStripe: jest.fn().mockRejectedValue(new Error('caído')),
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    const respuesta = (error as ServiceUnavailableException).getResponse();
+    expect(JSON.stringify(respuesta)).not.toContain('paymentProcessed');
+    expect(JSON.stringify(respuesta)).not.toContain(
+      'UPGRADE_APPLIED_SYNC_PENDING',
+    );
+  });
+
+  /**
+   * Mismo caso de configuración que el webhook trata como CRITICAL sin tocar el
+   * plan: si no se sabe de qué plan se parte, no se puede afirmar que esto sea
+   * una subida, y facturar a ciegas es peor que rechazar.
+   */
+  it('falla cerrado si el precio vigente en Stripe no mapea a ningún plan', async () => {
+    const { service, update, retrieve } = buildService({
+      subscription: activeSubscription,
+    });
+    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
+      status: 'active',
+      items: {
+        data: [{ id: 'si_123', price: { id: 'price_que_nadie_conoce' } }],
+      },
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(error.message).toContain('Nothing was charged');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('no reconcilia si el lease ya no es nuestro', async () => {
+    // Reconciliar exigiría una tercera llamada a Stripe; si nos relevaron, la
+    // escritura se descartaría igual y quien tenga el ciclo leerá el estado real.
+    const { service, updateUser, renewSubscriptionSyncLock } = buildService({
+      subscription: activeSubscription,
+      updateError: { type: 'StripeConnectionError', message: 'network error' },
+    });
+    renewSubscriptionSyncLock.mockResolvedValue(false);
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(error.message).toContain('could not confirm');
+    expect(escriturasDePlan(updateUser)).toHaveLength(0);
   });
 
   it('aborta si la suscripción cambió mientras se preparaba el upgrade', async () => {
@@ -780,19 +872,25 @@ describe('PaymentsService — upgradeSubscription', () => {
    * cliente sin el enlace con el que ya podía pagar.
    */
   it('si el timeout dejó un pending update, devuelve su enlace en vez de un error genérico', async () => {
-    const { service, updateUser, retrieve } = buildService({
+    const { service, updateUser, retrieve, update } = buildService({
       subscription: activeSubscription,
       updateError: { type: 'StripeConnectionError', message: 'timeout' },
     });
-    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
-      status: 'active',
-      pending_update: { expires_at: 1234567890 },
-      items: { data: [{ id: 'si_123', price: { id: 'price_pro_mxn' } }] },
-      latest_invoice: {
-        id: 'in_pendiente',
-        hosted_invoice_url: 'https://invoice.stripe.com/i/pendiente',
-      },
-    });
+    // El pending va en la TERCERA lectura, la de la reconciliación. Si se deja
+    // en la segunda lo consume la revalidación del mutex, el update nunca se
+    // llama y este test pasaría sin llegar a reconciliar nada.
+    retrieve
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce(activeSubscription)
+      .mockResolvedValueOnce({
+        status: 'active',
+        pending_update: { expires_at: 1234567890 },
+        items: { data: [{ id: 'si_123', price: { id: 'price_pro_mxn' } }] },
+        latest_invoice: {
+          id: 'in_pendiente',
+          hosted_invoice_url: 'https://invoice.stripe.com/i/pendiente',
+        },
+      });
 
     const error = await service
       .upgradeSubscription('uid-1', 'promax')
@@ -800,6 +898,8 @@ describe('PaymentsService — upgradeSubscription', () => {
 
     expect(error.message).toContain('has not been changed');
     expect(error.message).toContain('https://invoice.stripe.com/i/pendiente');
+    // Sin esto, el test volvería a pasar por el camino equivocado sin avisar.
+    expect(update).toHaveBeenCalled();
     expect(escriturasDePlan(updateUser)).toHaveLength(0);
     // Sin expandir la factura no habría enlace que devolver.
     expect(retrieve).toHaveBeenLastCalledWith(

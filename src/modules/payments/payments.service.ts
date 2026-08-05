@@ -27,6 +27,7 @@ import type {
   StripeTransaction,
   SubscriptionEvent,
 } from '../../common/interfaces/finance.interface.js';
+import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
 import type { PlanType, User } from '../../common/interfaces/user.interface.js';
 import { randomUUID } from 'node:crypto';
@@ -580,12 +581,16 @@ export class PaymentsService {
   /**
    * Lease del mutex de sincronización de la suscripción (issue #77).
    *
-   * Lo dimensiona el ciclo más largo que protege, que es el del upgrade: dentro
-   * del lease hace DOS llamadas a Stripe —la relectura que revalida el estado
-   * vigente y el `subscriptions.update`—, a 360 s de peor caso cada una con el
-   * SDK en sus valores por defecto (3 × 80 s de timeout + 2 × 60 s de
-   * `Retry-After`). Son 720 s; trece minutos dejan un minuto de margen. El ciclo
-   * del webhook solo hace una y va sobrado.
+   * Lo dimensiona el tramo más largo ENTRE RENOVACIONES, no el ciclo completo.
+   * El más largo es el del upgrade: la relectura que revalida el estado vigente
+   * y el `subscriptions.update`, a 360 s de peor caso cada una con el SDK en sus
+   * valores por defecto (3 × 80 s de timeout + 2 × 60 s de `Retry-After`). Son
+   * 720 s; trece minutos dejan un minuto de margen.
+   *
+   * La reconciliación añade una tercera llamada, pero renueva el lease antes de
+   * hacerla: cubrir las tres de golpe exigiría casi veinte minutos, y esa sería
+   * la ventana durante la que un proceso muerto bloquearía al usuario. El ciclo
+   * del webhook hace una sola llamada y va sobrado.
    *
    * Que sea holgado importa poco en la práctica: el `finally` lo libera, así que
    * solo llega a contar cuando el proceso muere con el lease tomado. Y quedarse
@@ -724,6 +729,29 @@ export class PaymentsService {
         `para saber si el cambio llegó a aplicarse.`,
     );
 
+    // Este camino añade una tercera llamada a Stripe dentro del mismo ciclo, y
+    // las dos anteriores ya pueden haber consumido casi todo el lease. Renovarlo
+    // aquí evita dimensionarlo por las tres de golpe —una ventana que dejaría al
+    // usuario bloqueado casi veinte minutos si el proceso muriera— y evita que
+    // el fencing acabe descartando una escritura que sí es legítima.
+    const renovado = await this.firestoreService.renewSubscriptionSyncLock(
+      userId,
+      lockToken,
+    );
+
+    if (!renovado) {
+      // Ya nos relevaron: la escritura se descartaría igualmente, y quien tenga
+      // el ciclo ahora leerá el estado real. Se avisa sin afirmar nada.
+      this.logger.error(
+        `CRITICAL: no se pudo reconciliar el upgrade porque el lease ya no es ` +
+          `nuestro — ${context}. Revisar la suscripción en Stripe a mano.`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not confirm whether your plan change went through. Please check your billing ' +
+          'settings before trying again, or contact support@zplpdf.com.',
+      );
+    }
+
     let current: Stripe.Subscription;
     try {
       current = await this.stripe.subscriptions.retrieve(subscriptionId, {
@@ -807,11 +835,19 @@ export class PaymentsService {
         `del plan se descartó por relevo del lease — ${context}. Firestore queda ` +
         `pendiente de que lo sincronice el webhook.`,
     );
-    throw new ServiceUnavailableException(
-      `Your payment for ${targetPlan.toUpperCase()} went through, but confirming it is ` +
+    // Con código propio y `paymentProcessed`, porque el status HTTP no
+    // distingue: este endpoint devuelve 503 también ANTES de cobrar —si falla la
+    // sincronización fiscal— y cuando la reconciliación no logra averiguar si
+    // hubo cargo. Un cliente que dedujera "cobrado" del 503 a secas afirmaría un
+    // cobro inexistente en dos de los tres casos.
+    throw new ServiceUnavailableException({
+      error: ErrorCodes.UPGRADE_APPLIED_SYNC_PENDING,
+      message:
+        `Your payment for ${targetPlan.toUpperCase()} went through, but confirming it is ` +
         `taking longer than usual. Your plan will be available shortly — please refresh ` +
         `in a moment before trying again.`,
-    );
+      data: { paymentProcessed: true, targetPlan },
+    });
   }
 
   /**
@@ -990,11 +1026,32 @@ export class PaymentsService {
         // El plan efectivo lo dicta el precio que Stripe tiene puesto, no el
         // documento: es la comprobación que de verdad impide bajar de plan.
         const vigenteItem = vigente.items.data[0];
-        const planVigente = vigenteItem?.price?.id
+
+        if (!vigenteItem?.id) {
+          throw new BadRequestException('Could not find subscription item');
+        }
+
+        const planVigente = vigenteItem.price?.id
           ? this.getPlanFromPriceId(vigenteItem.price.id)
           : null;
 
-        if (planVigente && PLAN_ORDER[targetPlan] <= PLAN_ORDER[planVigente]) {
+        // Falla cerrado: sin saber de qué plan se parte no se puede afirmar que
+        // esto sea una subida, y facturar a ciegas es peor que rechazar. Es el
+        // mismo caso de configuración que el webhook trata como CRITICAL sin
+        // tocar el plan; `getPlanFromPriceId` ya lo registró.
+        if (!planVigente) {
+          this.logger.error(
+            `CRITICAL: upgrade abortado por no poder resolver el plan del precio ` +
+              `vigente '${vigenteItem.price?.id ?? 'sin precio'}' — ${upgradeContext}. ` +
+              `Revisar STRIPE_*_PRICE_ID.`,
+          );
+          throw new ServiceUnavailableException(
+            'We could not verify your current plan. Nothing was charged. ' +
+              'Please try again later or contact support@zplpdf.com.',
+          );
+        }
+
+        if (PLAN_ORDER[targetPlan] <= PLAN_ORDER[planVigente]) {
           this.logger.warn(
             `Upgrade abortado: Stripe ya tiene la suscripción en ${planVigente} ` +
               `— ${upgradeContext}.`,
@@ -1002,10 +1059,6 @@ export class PaymentsService {
           throw new BadRequestException(
             `Cannot upgrade from ${planVigente.toUpperCase()} to ${targetPlan.toUpperCase()}.`,
           );
-        }
-
-        if (!vigenteItem?.id) {
-          throw new BadRequestException('Could not find subscription item');
         }
 
         return this.applyUpgrade({

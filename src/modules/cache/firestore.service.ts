@@ -846,6 +846,36 @@ export class FirestoreService {
   }
 
   /**
+   * Renueva el lease SOLO si el token sigue siendo el del titular. Devuelve
+   * `false` si ya lo relevaron.
+   *
+   * Permite dimensionar el lease por el tramo más largo entre renovaciones en
+   * lugar de por el ciclo completo. El camino del upgrade puede encadenar tres
+   * llamadas a Stripe —revalidación, update y, si el update acaba en error
+   * indeterminado, la relectura que reconcilia—; renovar antes de esa tercera
+   * evita tener que cubrir las tres de golpe con una ventana que bloquearía al
+   * usuario casi veinte minutos si el proceso muriera.
+   */
+  async renewSubscriptionSyncLock(
+    userId: string,
+    token: string,
+  ): Promise<boolean> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      if (snapshot.data()?.subscriptionSyncLock?.token !== token) {
+        return false;
+      }
+      transaction.update(ref, {
+        subscriptionSyncLock: { token, takenAt: new Date().toISOString() },
+        updatedAt: new Date(),
+      });
+      return true;
+    });
+  }
+
+  /**
    * Libera el ciclo SOLO si el token sigue siendo el del titular.
    *
    * Un borrado incondicional podría soltar el lease que otro ciclo tomó tras

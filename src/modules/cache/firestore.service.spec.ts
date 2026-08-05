@@ -616,3 +616,84 @@ describe('FirestoreService — updateUserSubscriptionState con fencing token', (
     expect(docData.plan).toBe('promax');
   });
 });
+
+/**
+ * El ciclo del upgrade puede encadenar tres llamadas a Stripe cuando el update
+ * acaba en error indeterminado. Renovar antes de la tercera evita dimensionar el
+ * lease por las tres de golpe, que dejaría al usuario bloqueado casi veinte
+ * minutos si el proceso muriera (issue #77).
+ */
+describe('FirestoreService — renewSubscriptionSyncLock', () => {
+  function buildService(stored?: Record<string, unknown>) {
+    const docData: Record<string, unknown> = stored
+      ? { subscriptionSyncLock: stored }
+      : {};
+    const update = jest
+      .fn()
+      .mockImplementation((_ref: unknown, data: Record<string, unknown>) => {
+        Object.assign(docData, data);
+      });
+
+    const ref = { id: 'uid-1' };
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestore = {
+      collection: () => ({ doc: () => ref }),
+      runTransaction: (fn: (t: unknown) => Promise<unknown>) =>
+        fn({
+          get: async () => ({ data: () => docData }),
+          update,
+        }),
+    };
+
+    return { service, update, docData };
+  }
+
+  it('renueva la marca si el token sigue siendo el del titular', async () => {
+    const viejo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { service, docData } = buildService({
+      token: 'tok-mio',
+      takenAt: viejo,
+    });
+
+    const renovado = await service.renewSubscriptionSyncLock(
+      'uid-1',
+      'tok-mio',
+    );
+
+    expect(renovado).toBe(true);
+    expect((docData.subscriptionSyncLock as any).token).toBe('tok-mio');
+    expect(
+      new Date((docData.subscriptionSyncLock as any).takenAt).getTime(),
+    ).toBeGreaterThan(new Date(viejo).getTime());
+  });
+
+  it('no renueva —ni pisa— el lease de quien ya nos relevó', async () => {
+    const { service, update, docData } = buildService({
+      token: 'tok-del-relevo',
+      takenAt: new Date().toISOString(),
+    });
+
+    const renovado = await service.renewSubscriptionSyncLock(
+      'uid-1',
+      'tok-mio',
+    );
+
+    expect(renovado).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    expect((docData.subscriptionSyncLock as any).token).toBe('tok-del-relevo');
+  });
+
+  it('no renueva si el lock ya no existe', async () => {
+    const { service, update } = buildService();
+
+    const renovado = await service.renewSubscriptionSyncLock(
+      'uid-1',
+      'tok-mio',
+    );
+
+    expect(renovado).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+  });
+});
