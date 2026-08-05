@@ -117,11 +117,25 @@ describe('PaymentsService — upgradeSubscription', () => {
       overrides.syncTaxProfileToStripe ??
       jest.fn().mockResolvedValue(undefined);
 
+    /**
+     * El plan se escribe por la variante con guarda de versión (issue #74).
+     * Delega en `updateUser` para que las aserciones sobre escrituras de plan
+     * sigan viendo todas las escrituras por un único punto; `true` = aplicada,
+     * que es el caso cuando no hay una lectura posterior compitiendo.
+     */
+    const updateUserSubscriptionState = jest
+      .fn()
+      .mockImplementation(async (id: string, data: object) => {
+        await updateUser(id, data);
+        return true;
+      });
+
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = { subscriptions: { retrieve, update } };
     service.firestoreService = {
       getUserById,
       updateUser,
+      updateUserSubscriptionState,
       acquireUpgradeIdempotency,
       releaseUpgradeIdempotency,
     };
@@ -137,6 +151,7 @@ describe('PaymentsService — upgradeSubscription', () => {
       retrieve,
       update,
       updateUser,
+      updateUserSubscriptionState,
       getUserById,
       userDoc,
       acquireUpgradeIdempotency,
@@ -703,5 +718,209 @@ describe('PaymentsService — upgradeSubscription', () => {
       // Sin cobro no hay factura con datos fiscales congelados que corregir.
       expect(update).not.toHaveBeenCalled();
     });
+  });
+
+  /**
+   * El webhook escribe por el mismo camino. Sin un reloj común, una lectura de
+   * Stripe anterior a este cambio podría aterrizar después y revertir el plan
+   * recién pagado (issue #74).
+   */
+  it('sella la escritura del plan con el instante de la confirmación', async () => {
+    const { service, update, updateUserSubscriptionState } = buildService({
+      subscription: activeSubscription,
+    });
+
+    const antes = Date.now();
+    await service.upgradeSubscription('uid-1', 'promax');
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      { plan: 'promax' },
+      expect.any(Date),
+    );
+    // Posterior a la respuesta de Stripe: el dato no es válido antes de que
+    // Stripe lo devolviera.
+    const readAt: Date = updateUserSubscriptionState.mock.calls[0][2];
+    expect(readAt.getTime()).toBeGreaterThanOrEqual(antes);
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(
+      updateUserSubscriptionState.mock.invocationCallOrder[0],
+    );
+  });
+});
+
+/**
+ * Stripe no garantiza el orden de entrega de los webhooks. El flujo de upgrade
+ * con `pending_if_incomplete` emite dos `customer.subscription.updated` —uno con
+ * el precio anterior al quedar pendiente el cobro, otro con el nuevo al
+ * confirmarse—, así que un evento tardío puede degradar un plan ya pagado
+ * (issue #74).
+ */
+describe('PaymentsService — handleSubscriptionUpdated', () => {
+  const PRO_MXN = 'price_pro_mxn';
+  const PROMAX_MXN = 'price_promax_mxn';
+
+  function subscriptionCon(
+    priceId: string,
+    status = 'active',
+  ): Record<string, unknown> {
+    return {
+      id: 'sub_123',
+      status,
+      customer: 'cus_123',
+      items: { data: [{ id: 'si_1', price: { id: priceId } }] },
+    };
+  }
+
+  function buildService(overrides: {
+    /** Estado vigente que devuelve Stripe al releer. */
+    current?: unknown;
+    retrieveError?: unknown;
+    /** `false` simula que otra escritura más fresca ya ganó. */
+    aplicada?: boolean;
+    user?: Record<string, unknown>;
+  }) {
+    const retrieve = overrides.retrieveError
+      ? jest.fn().mockRejectedValue(overrides.retrieveError)
+      : jest.fn().mockResolvedValue(overrides.current);
+
+    const updateUserSubscriptionState = jest
+      .fn()
+      .mockResolvedValue(overrides.aplicada ?? true);
+    const getUserByStripeCustomerId = jest.fn().mockResolvedValue(
+      overrides.user ?? {
+        id: 'uid-1',
+        email: 'cliente@example.com',
+        plan: 'promax',
+        country: 'MX',
+        stripeSubscriptionId: 'sub_123',
+      },
+    );
+    const queueSubscriptionDowngradedEmail = jest
+      .fn()
+      .mockResolvedValue(undefined);
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = { subscriptions: { retrieve } };
+    service.firestoreService = {
+      getUserByStripeCustomerId,
+      updateUserSubscriptionState,
+    };
+    service.emailService = { queueSubscriptionDowngradedEmail };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    // Class field: `Object.create` no lo materializa y `withRetry` lo necesita.
+    service.MAX_RETRIES = 3;
+    service.proPriceIdMxn = PRO_MXN;
+    service.promaxPriceIdMxn = PROMAX_MXN;
+
+    return {
+      service,
+      retrieve,
+      updateUserSubscriptionState,
+      queueSubscriptionDowngradedEmail,
+    };
+  }
+
+  it('aplica el estado vigente en Stripe, no el del evento tardío', async () => {
+    // El evento trae el precio anterior (PRO); Stripe ya tiene PROMAX pagado.
+    const { service, updateUserSubscriptionState } = buildService({
+      current: subscriptionCon(PROMAX_MXN),
+    });
+
+    await service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN));
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({ plan: 'promax' }),
+      expect.any(Date),
+    );
+  });
+
+  it('relee de Stripe antes de escribir', async () => {
+    const { service, retrieve, updateUserSubscriptionState } = buildService({
+      current: subscriptionCon(PROMAX_MXN),
+    });
+
+    await service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN));
+
+    expect(retrieve).toHaveBeenCalledWith('sub_123');
+    expect(retrieve.mock.invocationCallOrder[0]).toBeLessThan(
+      updateUserSubscriptionState.mock.invocationCallOrder[0],
+    );
+    // El sello es anterior a la lectura: cualquier escritura sellada después
+    // describe un estado más fresco y debe ganar.
+    const readAt: Date = updateUserSubscriptionState.mock.calls[0][2];
+    expect(readAt).toBeInstanceOf(Date);
+  });
+
+  it('propaga el fallo de la relectura para que Stripe reintente el webhook', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      retrieveError: Object.assign(new Error('Stripe caído'), {
+        type: 'StripeConnectionError',
+      }),
+    });
+
+    await expect(
+      service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN)),
+    ).rejects.toThrow('Stripe caído');
+    // Escribir el snapshot sin confirmarlo sería justo el bug que esto corrige.
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
+  it('usa el snapshot del evento si Stripe ya no conoce la suscripción', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      retrieveError: Object.assign(new Error('No such subscription'), {
+        code: 'resource_missing',
+      }),
+    });
+
+    await service.handleSubscriptionUpdated(
+      subscriptionCon(PRO_MXN, 'canceled'),
+    );
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({ plan: 'free' }),
+      expect.any(Date),
+    );
+  });
+
+  it('no avisa de la degradación si la escritura se descartó por obsoleta', async () => {
+    const { service, queueSubscriptionDowngradedEmail } = buildService({
+      current: subscriptionCon(PRO_MXN, 'canceled'),
+      aplicada: false,
+    });
+
+    await service.handleSubscriptionUpdated(
+      subscriptionCon(PRO_MXN, 'canceled'),
+    );
+
+    // Alarmaría a un cliente que sigue de pago.
+    expect(queueSubscriptionDowngradedEmail).not.toHaveBeenCalled();
+  });
+
+  it('avisa de la degradación cuando la escritura sí se aplica', async () => {
+    const { service, queueSubscriptionDowngradedEmail } = buildService({
+      current: subscriptionCon(PRO_MXN, 'canceled'),
+    });
+
+    await service.handleSubscriptionUpdated(
+      subscriptionCon(PRO_MXN, 'canceled'),
+    );
+
+    expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'uid-1' }),
+      'promax',
+      'canceled',
+    );
+  });
+
+  it('no toca el plan si el precio vigente no mapea a ninguno', async () => {
+    const { service, updateUserSubscriptionState } = buildService({
+      current: subscriptionCon('price_desconocido'),
+    });
+
+    await service.handleSubscriptionUpdated(subscriptionCon(PROMAX_MXN));
+
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
   });
 });

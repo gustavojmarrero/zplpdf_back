@@ -678,6 +678,11 @@ export class PaymentsService {
       );
     }
 
+    // Instante de la lectura que respalda lo que se va a escribir, por el mismo
+    // motivo que en el resto del flujo: ordena esta escritura frente a las del
+    // webhook (issue #74).
+    const readAt = new Date();
+
     // Tercer resultado, ni aplicado ni fallido: la petición que se perdió sí
     // llegó a crear un pending update. Tratarlo como "no aplicado" devolvería un
     // error genérico y, peor, invitaría a reintentar — y un update nuevo
@@ -697,7 +702,11 @@ export class PaymentsService {
 
     // El cambio sí se aplicó: sincronizamos Firestore para no dejar al cliente
     // pagando un plan que el producto no le reconoce.
-    await this.firestoreService.updateUser(userId, { plan: targetPlan });
+    await this.firestoreService.updateUserSubscriptionState(
+      userId,
+      { plan: targetPlan },
+      readAt,
+    );
     this.logger.log(
       `Upgrade reconciliado tras error indeterminado: el cambio sí se aplicó — ${context}.`,
     );
@@ -867,6 +876,11 @@ export class PaymentsService {
       );
     }
 
+    // Instante en que Stripe confirmó el estado que se va a escribir. Se toma
+    // tras la respuesta, no antes de la llamada: el dato solo es válido desde
+    // que Stripe lo devolvió.
+    const confirmedAt = new Date();
+
     // pending_update presente = el cobro no se completó (tarjeta rechazada o
     // 3DS sin confirmar) y el cambio NO se ha aplicado. El plan no se toca; se
     // le da al cliente el enlace de Stripe donde puede pagar o autenticar, y al
@@ -893,10 +907,18 @@ export class PaymentsService {
       );
     }
 
-    // Update user plan in Firestore
-    await this.firestoreService.updateUser(userId, {
-      plan: targetPlan,
-    });
+    // Update user plan in Firestore.
+    //
+    // Sellado con el instante de la confirmación de Stripe, no con `updateUser`
+    // a secas: el webhook `customer.subscription.updated` escribe por el mismo
+    // camino, y sin un reloj común una lectura suya anterior a este cambio
+    // podría aterrizar después y revertir el plan recién pagado (issue #74).
+    // Cualquier lectura previa a esta respuesta es, por definición, más vieja.
+    await this.firestoreService.updateUserSubscriptionState(
+      userId,
+      { plan: targetPlan },
+      confirmedAt,
+    );
     // La clave se libera aparte y comparando: borrarla en la misma escritura
     // sería incondicional y podría pisar la de un intento posterior.
     await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
@@ -1116,6 +1138,31 @@ export class PaymentsService {
     return `sub_event_${dateStr}_${random}`;
   }
 
+  /**
+   * Devuelve el estado VIGENTE de la suscripción en Stripe.
+   *
+   * Si Stripe ya no la conoce (`resource_missing`) se usa el snapshot del
+   * evento: es lo único que queda y describe una suscripción que desapareció.
+   * Cualquier otro fallo se propaga para que el webhook se reintente; escribir
+   * el snapshot sin poder confirmarlo sería justo el bug que esto corrige.
+   */
+  private async fetchCurrentSubscription(
+    subscription: Stripe.Subscription,
+  ): Promise<Stripe.Subscription> {
+    try {
+      return await this.stripe.subscriptions.retrieve(subscription.id);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'resource_missing') {
+        this.logger.warn(
+          `Stripe ya no conoce la suscripción ${subscription.id}; ` +
+            `se aplica el snapshot del evento.`,
+        );
+        return subscription;
+      }
+      throw error;
+    }
+  }
+
   async handleSubscriptionUpdated(
     subscription: Stripe.Subscription,
   ): Promise<void> {
@@ -1128,28 +1175,47 @@ export class PaymentsService {
       return;
     }
 
+    // El snapshot del evento NO es fuente de verdad. Stripe no garantiza el
+    // orden de entrega, y el upgrade con `pending_if_incomplete` emite dos
+    // eventos: uno con el precio ANTERIOR cuando el cambio queda pendiente de
+    // cobro, y otro con el nuevo cuando el pago se confirma. Si el primero se
+    // entrega tarde —reintento, latencia, 3DS de por medio— aplicarlo
+    // degradaría un plan ya pagado (issue #74). Se relee el estado vigente y se
+    // escribe ese, sellado con el instante de la lectura para que una escritura
+    // más fresca no pueda ser pisada por otra que leyó antes.
+    const readAt = new Date();
+    const current = await this.fetchCurrentSubscription(subscription);
+
+    if (current.status !== subscription.status) {
+      this.logger.warn(
+        `El snapshot de subscription.updated para ${subscription.id} llegó como ` +
+          `'${subscription.status}' pero Stripe la tiene en '${current.status}'. ` +
+          `Se aplica el estado vigente.`,
+      );
+    }
+
     // Get plan from subscription price
-    const priceId = subscription.items.data[0]?.price?.id;
+    const priceId = current.items.data[0]?.price?.id;
     const plan = priceId ? this.getPlanFromPriceId(priceId) : null;
 
     // Si la suscripción está activa pero no podemos resolver el plan, no tocamos
     // el plan del usuario (evita asignar uno incorrecto por mala configuración).
-    if (subscription.status === 'active' && !plan) {
+    if (current.status === 'active' && !plan) {
       this.logger.error(
         `CRITICAL: No se pudo determinar el plan para subscription.updated de user ${user.id} ` +
-          `(sub ${subscription.id}). Plan NO actualizado. Revisar STRIPE_*_PRICE_ID.`,
+          `(sub ${current.id}). Plan NO actualizado. Revisar STRIPE_*_PRICE_ID.`,
       );
       return;
     }
 
     // Check subscription status with retry
-    const period = this.resolveBillingPeriod(subscription);
+    const period = this.resolveBillingPeriod(current);
 
-    if (subscription.status === 'active') {
+    if (current.status === 'active') {
       // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
       const activeUpdateData: Record<string, unknown> = {
         plan,
-        stripeSubscriptionId: subscription.id,
+        stripeSubscriptionId: current.id,
       };
       if (period.start) {
         activeUpdateData.subscriptionPeriodStart = period.start;
@@ -1157,27 +1223,48 @@ export class PaymentsService {
       if (period.end) {
         activeUpdateData.subscriptionPeriodEnd = period.end;
       }
-      await this.withRetry(
-        () => this.firestoreService.updateUser(user.id, activeUpdateData),
+      const applied = await this.withRetry(
+        () =>
+          this.firestoreService.updateUserSubscriptionState(
+            user.id,
+            activeUpdateData,
+            readAt,
+          ),
         `handleSubscriptionUpdated(${user.id})`,
       );
       this.logger.log(
-        `Subscription updated for user ${user.id}: active (${plan})`,
+        applied
+          ? `Subscription updated for user ${user.id}: active (${plan})`
+          : `Subscription updated descartado para user ${user.id}: el documento ya refleja una lectura posterior`,
       );
-    } else if (['canceled', 'unpaid'].includes(subscription.status)) {
+    } else if (['canceled', 'unpaid'].includes(current.status)) {
       // Subscription terminated - downgrade to free and clear subscription ID
       const previousPlan = user.plan || 'pro';
 
-      await this.withRetry(
+      const applied = await this.withRetry(
         () =>
-          this.firestoreService.updateUser(user.id, {
-            plan: 'free',
-            stripeSubscriptionId: null,
-          }),
+          this.firestoreService.updateUserSubscriptionState(
+            user.id,
+            {
+              plan: 'free',
+              stripeSubscriptionId: null,
+            },
+            readAt,
+          ),
         `handleSubscriptionUpdated(${user.id})`,
       );
+
+      // El email va atado a la escritura: avisar de una degradación que se
+      // descartó por obsoleta alarmaría a un cliente que sigue de pago.
+      if (!applied) {
+        this.logger.log(
+          `Downgrade descartado para user ${user.id}: el documento ya refleja una lectura posterior`,
+        );
+        return;
+      }
+
       this.logger.log(
-        `Subscription updated for user ${user.id}: ${subscription.status}`,
+        `Subscription updated for user ${user.id}: ${current.status}`,
       );
 
       // Send downgrade notification email
@@ -1190,22 +1277,26 @@ export class PaymentsService {
             language: this.detectLanguageFromCountry(user.country),
           },
           previousPlan,
-          subscription.status,
+          current.status,
         )
         .catch((err) =>
           this.logger.error(
             `Failed to queue subscription downgraded email: ${err.message}`,
           ),
         );
-    } else if (subscription.status === 'past_due') {
+    } else if (current.status === 'past_due') {
       // Payment pending - keep subscriptionId to allow status queries
       // Don't downgrade immediately, give user time to pay
       // The handlePaymentFailed method already sends notification emails
       await this.withRetry(
         () =>
-          this.firestoreService.updateUser(user.id, {
-            stripeSubscriptionId: subscription.id,
-          }),
+          this.firestoreService.updateUserSubscriptionState(
+            user.id,
+            {
+              stripeSubscriptionId: current.id,
+            },
+            readAt,
+          ),
         `handleSubscriptionUpdated(${user.id})`,
       );
       this.logger.log(
