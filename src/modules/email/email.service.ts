@@ -868,14 +868,7 @@ export class EmailService {
     }
 
     let scheduled = 0;
-    // Sigue en 0 a propósito, a diferencia de los schedule* de onboarding.
-    // getUsersWithHighUsage descarta por `hasUserReceivedEmailInPeriod` ANTES
-    // de evaluar el criterio de uso alto, así que ese conteo incluiría a todos
-    // los usuarios free que ya recibieron el email tengan o no uso alto ahora:
-    // un número inflado y engañoso. Contarlo bien exige reordenar los filtros,
-    // lo que haría correr la consulta de conversiones (cara) para todo free.
-    // Ver issue #60.
-    const skipped = 0;
+    let skipped = 0;
 
     try {
       // Check if template is enabled
@@ -887,13 +880,18 @@ export class EmailService {
       }
 
       // Get users with high usage patterns (>3 PDFs/day for 2 consecutive days)
-      const highUsageUsers = await this.firestoreService.getUsersWithHighUsage({
+      const highUsage = await this.firestoreService.getUsersWithHighUsage({
         minPdfsPerDay: 3,
         consecutiveDays: 2,
         limit: 100,
       });
 
-      for (const user of highUsageUsers) {
+      // Cuenta a quien cumple el patrón de uso alto pero ya recibió el email en
+      // su período. Sin esto, "nadie tiene uso alto" y "todos ya están avisados"
+      // se reportan igual.
+      skipped = highUsage.skipped.alreadyReceived;
+
+      for (const user of highUsage.users) {
         const variant = this.selectAbVariant(user.userId);
 
         await this.firestoreService.createEmailQueue({

@@ -493,3 +493,98 @@ describe('EmailService.schedulePowerUserEmails', () => {
     });
   });
 });
+
+/**
+ * Último de los cinco `schedule*Emails` en poblar `skipped` (issue #60). El
+ * filtrado vive en `getUsersWithHighUsage`, así que aquí solo se comprueba que
+ * el conteo llegue intacto al resultado del cron; el reordenamiento de filtros
+ * que lo hace posible se cubre en firestore.service.spec.ts.
+ */
+describe('EmailService.scheduleHighUsageEmails', () => {
+  let service: EmailService;
+  let firestore: {
+    isTemplateEnabled: jest.Mock;
+    getUsersWithHighUsage: jest.Mock;
+    createEmailQueue: jest.Mock;
+  };
+
+  function highUsageUser(id: string) {
+    return {
+      userId: id,
+      userEmail: `${id}@ejemplo.com`,
+      displayName: `User ${id}`,
+      language: 'es',
+      avgPdfsPerDay: 3,
+      pdfsUsed: 6,
+      limit: 10,
+      projectedDaysToLimit: 2,
+      periodEnd: new Date(2026, 8, 1),
+    };
+  }
+
+  beforeEach(async () => {
+    firestore = {
+      isTemplateEnabled: jest.fn().mockResolvedValue(true),
+      getUsersWithHighUsage: jest.fn(),
+      createEmailQueue: jest.fn().mockResolvedValue('queue-id'),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RESEND_API_KEY' ? 'test-key' : undefined,
+          },
+        },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+
+    service = module.get<EmailService>(EmailService);
+  });
+
+  it('reporta los candidatos de uso alto que ya habían recibido el email', async () => {
+    // 7 con uso alto, 4 ya avisados este período.
+    firestore.getUsersWithHighUsage.mockResolvedValue({
+      users: ['a', 'b', 'c'].map(highUsageUser),
+      skipped: { alreadyReceived: 4 },
+    });
+
+    const result = await service.scheduleHighUsageEmails();
+
+    expect(result.scheduled).toBe(3);
+    expect(result.skipped).toBe(4);
+    expect(firestore.createEmailQueue).toHaveBeenCalledTimes(3);
+  });
+
+  it('distingue "nadie con uso alto" de "todos ya avisados"', async () => {
+    // Los dos casos programan 0 emails; antes se reportaban idénticos.
+    firestore.getUsersWithHighUsage.mockResolvedValue({
+      users: [],
+      skipped: { alreadyReceived: 0 },
+    });
+    const sinCandidatos = await service.scheduleHighUsageEmails();
+
+    firestore.getUsersWithHighUsage.mockResolvedValue({
+      users: [],
+      skipped: { alreadyReceived: 9 },
+    });
+    const yaAvisados = await service.scheduleHighUsageEmails();
+
+    expect(sinCandidatos).toMatchObject({ scheduled: 0, skipped: 0 });
+    expect(yaAvisados).toMatchObject({ scheduled: 0, skipped: 9 });
+  });
+
+  it('no consulta candidatos si el template está deshabilitado', async () => {
+    firestore.isTemplateEnabled.mockResolvedValue(false);
+
+    const result = await service.scheduleHighUsageEmails();
+
+    expect(result).toMatchObject({ scheduled: 0, skipped: 0 });
+    expect(firestore.getUsersWithHighUsage).not.toHaveBeenCalled();
+  });
+});

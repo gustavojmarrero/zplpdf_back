@@ -237,11 +237,30 @@ export interface HighUsageUser {
   userId: string;
   userEmail: string;
   displayName?: string;
-  language: EmailLanguage;
+  /** Deducido del país del usuario, por eso no está acotado a EmailLanguage. */
+  language: string;
   avgPdfsPerDay: number;
   pdfsUsed: number;
   limit: number;
   projectedDaysToLimit: number;
+  periodEnd: Date;
+}
+
+/**
+ * Candidatos de uso alto descartados, desglosados por motivo.
+ *
+ * Solo entra aquí quien **sí** cumple el patrón de uso alto: los free que no lo
+ * cumplen no son descartes, son no-candidatos. Contarlos metería a casi toda la
+ * base free en `skipped` y lo volvería incomparable con el resto de flujos.
+ */
+export interface HighUsageSkipReasons {
+  /** Ya recibió el email de uso alto en su período de facturación actual. */
+  alreadyReceived: number;
+}
+
+export interface HighUsageUsersResult {
+  users: HighUsageUser[];
+  skipped: HighUsageSkipReasons;
 }
 
 // ============== PRO Retention Interfaces ==============
