@@ -1044,11 +1044,13 @@ export class PaymentsService {
         // dejando al cliente con el enlace de pago que ya tenía apuntando a una
         // factura muerta.
         let vigente: Stripe.Subscription;
+        let vigenteReadAt: Date;
         try {
           vigente = await this.stripe.subscriptions.retrieve(
             user.stripeSubscriptionId,
             { expand: ['latest_invoice'] },
           );
+          vigenteReadAt = new Date();
         } catch (error) {
           this.throwStripeApiError(
             error,
@@ -1097,6 +1099,67 @@ export class PaymentsService {
             'We could not verify your current plan. Nothing was charged. ' +
               'Please try again later or contact support@zplpdf.com.',
           );
+        }
+
+        // Recuperación idempotente: un intento anterior pudo aplicar y cobrar el
+        // target en Stripe, perder su respuesta y fallar también al reconciliar.
+        // Firestore seguiría con el plan inferior, así que rechazar aquí como
+        // target→target dejaría al cliente pagando sin entitlement y cada
+        // reintento repetiría el mismo rechazo.
+        if (
+          planVigente === targetPlan &&
+          PLAN_ORDER[fresh.plan] < PLAN_ORDER[targetPlan]
+        ) {
+          let persisted = false;
+          let falloAlEscribir = false;
+          try {
+            persisted = await this.firestoreService.updateUserSubscriptionState(
+              userId,
+              { plan: targetPlan },
+              vigenteReadAt,
+              lockToken,
+            );
+          } catch (persistError) {
+            falloAlEscribir = true;
+            this.logger.error(
+              `No se pudo sincronizar el upgrade ya aplicado — ${upgradeContext}. ` +
+                `Detalle: ${(persistError as Error).message}`,
+            );
+          }
+
+          // Solo corresponde al intento recuperado si coinciden contrato y
+          // destino. El compare-and-delete de Firestore protege además una clave
+          // posterior que pudiera haber reemplazado a esta lectura.
+          const recoveredIdempotency = fresh.upgradeIdempotency;
+          if (
+            recoveredIdempotency?.targetPlan === targetPlan &&
+            recoveredIdempotency.subscriptionId === user.stripeSubscriptionId
+          ) {
+            await this.clearUpgradeIdempotencyKey(
+              userId,
+              recoveredIdempotency.key,
+            );
+          }
+
+          if (!persisted) {
+            this.throwUnsyncedUpgradeError(
+              targetPlan,
+              upgradeContext,
+              falloAlEscribir
+                ? 'fallo al escribir en Firestore'
+                : 'relevo del lease',
+            );
+          }
+
+          this.logger.log(
+            `Upgrade a ${targetPlan} ya aplicado en Stripe sincronizado de forma ` +
+              `idempotente — ${upgradeContext}.`,
+          );
+
+          return {
+            success: true,
+            message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
+          };
         }
 
         if (PLAN_ORDER[targetPlan] <= PLAN_ORDER[planVigente]) {
@@ -1199,12 +1262,21 @@ export class PaymentsService {
         await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
         return reconciled;
       }
-      // Solo los errores indeterminados conservan la clave: son los únicos que
-      // el cliente debe reintentar con la misma para no arriesgar otro cargo.
+      // Una lectura inmediata que todavía muestre el plan anterior NO convierte
+      // un error indeterminado en un fallo definitivo: la mutación puede seguir
+      // ejecutándose en Stripe o ser reconciliada después. La clave se conserva
+      // y la respuesta no afirma que el plan haya quedado igual.
       const type = (error as { type?: string }).type;
-      if (type !== 'StripeConnectionError' && type !== 'StripeAPIError') {
-        await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
+      if (type === 'StripeConnectionError' || type === 'StripeAPIError') {
+        throw new ServiceUnavailableException(
+          'We could not confirm whether your plan change went through. Please check your billing ' +
+            'settings before trying again, or contact support@zplpdf.com.',
+        );
       }
+
+      // Los desenlaces no indeterminados sí liberan la clave: un intento nuevo
+      // no debe recibir de Stripe el error cacheado del anterior.
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
       this.throwStripeApiError(
         error,
         'subscriptions.update',
