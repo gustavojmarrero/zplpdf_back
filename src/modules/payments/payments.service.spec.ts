@@ -895,6 +895,33 @@ describe('PaymentsService — upgradeSubscription', () => {
    * precio, deja la suscripción en past_due y responde 200. El plan acababa
    * marcado en Firestore sin haberse pagado.
    */
+  /**
+   * Stripe mantiene `trialing` al cambiar el precio durante una prueba: no la
+   * termina. Exigir `active` en la confirmación aplicaba el precio nuevo y luego
+   * devolvía error sin escribir el plan —contrato y entitlements desincronizados,
+   * y el cliente leyendo que no se cambió nada mientras se le facturaría el plan
+   * superior al acabar la prueba—.
+   *
+   * La salida no es prohibir `trialing` en el upgrade: el checkout lo tiene por
+   * estado vivo y remite aquí, así que rechazarlo reabriría el callejón de #65
+   * con otro estado. Hoy es teórico —no hay `trial_period_days` configurado—,
+   * pero la incoherencia se activaría sola el día que se ofrezcan pruebas.
+   */
+  it('confirma el upgrade que Stripe deja en trialing', async () => {
+    const { service, updateUser } = buildService({
+      subscription: {
+        status: 'trialing',
+        items: { data: [{ id: 'si_123', price: { id: PRO_MXN } }] },
+      },
+      updateResult: { status: 'trialing', id: 'sub_123' },
+    });
+
+    await expect(
+      service.upgradeSubscription('uid-1', 'promax'),
+    ).resolves.toEqual(expect.objectContaining({ success: true }));
+    expect(escriturasDePlan(updateUser)).toHaveLength(1);
+  });
+
   it('no marca el plan si la suscripción no queda activa tras el cambio', async () => {
     const { service, updateUser } = buildService({
       subscription: activeSubscription,
@@ -1331,6 +1358,7 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       id: 'sub_123',
       status,
       customer: 'cus_123',
+      latest_invoice: 'in_123',
       items: { data: [{ id: 'si_1', price: { id: priceId } }] },
     };
   }
@@ -1377,8 +1405,19 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       .fn()
       .mockResolvedValue(undefined);
 
+    // La degradación por impago liquida el contrato en Stripe antes de escribir,
+    // así que estos webhooks también pasan por facturas y cancelación.
+    const cancel = jest.fn().mockResolvedValue({ status: 'canceled' });
+    const voidInvoice = jest.fn().mockResolvedValue({ status: 'void' });
+    const invoiceRetrieve = jest
+      .fn()
+      .mockResolvedValue({ id: 'in_123', status: 'open' });
+
     const service: any = Object.create(PaymentsService.prototype);
-    service.stripe = { subscriptions: { retrieve } };
+    service.stripe = {
+      subscriptions: { retrieve, cancel },
+      invoices: { retrieve: invoiceRetrieve, voidInvoice },
+    };
     service.firestoreService = {
       getUserByStripeCustomerId,
       getUserById,
@@ -1401,6 +1440,9 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       acquireSubscriptionSyncLock,
       releaseSubscriptionSyncLock,
       getUserById,
+      cancel,
+      voidInvoice,
+      invoiceRetrieve,
     };
   }
 
@@ -1520,6 +1562,57 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       expect.any(Date),
       'tok-1',
     );
+  });
+
+  /**
+   * Limpiar el ID sin cancelar en Stripe dejaba el contrato vivo y sin dueño. Si
+   * este evento se adelantaba a `invoice.payment_failed`, el usuario contrataba de
+   * nuevo —la defensa por customer solo lista `active`, así que no veía la
+   * impagada— y el `payment_failed` posterior descartaba el evento por apuntar a
+   * otro contrato. El viejo sobrevivía y Stripe aún podía cobrarlo.
+   */
+  it('cancela el contrato en Stripe antes de soltar el ID en past_due', async () => {
+    const { service, cancel, voidInvoice, updateUserSubscriptionState } =
+      buildService({ current: subscriptionCon(PRO_MXN, 'past_due') });
+
+    await service.handleSubscriptionUpdated(
+      subscriptionCon(PRO_MXN, 'past_due'),
+    );
+
+    expect(voidInvoice).toHaveBeenCalledWith('in_123');
+    expect(cancel).toHaveBeenCalledWith('sub_123');
+    // Nunca al revés: soltar el ID sin haber cerrado el contrato es lo que
+    // permitía la segunda suscripción cobrable.
+    expect(cancel.mock.invocationCallOrder[0]).toBeLessThan(
+      updateUserSubscriptionState.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('no degrada si la factura se cobró entre el evento y el proceso', async () => {
+    const { service, cancel, updateUserSubscriptionState, invoiceRetrieve } =
+      buildService({ current: subscriptionCon(PRO_MXN, 'past_due') });
+    invoiceRetrieve.mockResolvedValue({ id: 'in_123', status: 'paid' });
+
+    await service.handleSubscriptionUpdated(
+      subscriptionCon(PRO_MXN, 'past_due'),
+    );
+
+    expect(cancel).not.toHaveBeenCalled();
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+
+  it('no toca Stripe cuando el contrato ya está canceled', async () => {
+    const { service, voidInvoice, updateUserSubscriptionState } = buildService({
+      current: subscriptionCon(PRO_MXN, 'canceled'),
+    });
+
+    await service.handleSubscriptionUpdated(
+      subscriptionCon(PRO_MXN, 'canceled'),
+    );
+
+    // `canceled` es terminal: no hay nada que liquidar, solo degradar.
+    expect(voidInvoice).not.toHaveBeenCalled();
+    expect(updateUserSubscriptionState).toHaveBeenCalled();
   });
 
   /**
@@ -1999,7 +2092,12 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
   });
 
   it('la baja escribe el plan sellado, no con updateUser a secas', async () => {
-    const { service, updateUserSubscriptionState, updateUser } = buildService();
+    // El usuario tiene que llegar con plan de pago y su contrato: desde #65, un
+    // documento ya en Free y sin suscripción se trata como eco de una baja
+    // aplicada —lo produce la propia cancelación por impago— y no se reescribe.
+    const { service, updateUserSubscriptionState, updateUser } = buildService({
+      usuario: { id: 'uid-1', plan: 'pro', stripeSubscriptionId: 'sub_123' },
+    });
 
     await service.handleSubscriptionDeleted({
       id: 'sub_123',
@@ -2426,5 +2524,200 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(cancel).not.toHaveBeenCalled();
     expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Regresiones del review del PR #84. Los tres primeros comparten raíz: las rutas
+ * de liquidación se escribieron dando por hecho que cada ciclo completa y que el
+ * orden de los webhooks da igual. Ninguna de las dos cosas se sostiene.
+ */
+describe('PaymentsService — liquidación reanudable y sin falsos positivos', () => {
+  function buildService(estadoFactura: string) {
+    const voidInvoice = jest.fn().mockResolvedValue({ status: 'void' });
+    const cancel = jest.fn().mockResolvedValue({ status: 'canceled' });
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = {
+      invoices: {
+        retrieve: jest
+          .fn()
+          .mockResolvedValue({ id: 'in_1', status: estadoFactura }),
+        voidInvoice,
+      },
+      subscriptions: {
+        retrieve: jest
+          .fn()
+          .mockResolvedValue({ id: 'sub_1', status: 'past_due' }),
+        cancel,
+      },
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    return { service, voidInvoice, cancel };
+  }
+
+  it('remata la cancelación cuando un ciclo anterior ya anuló la factura', async () => {
+    const { service, voidInvoice, cancel } = buildService('void');
+
+    const liquidada = await service.liquidarSuscripcionImpagada(
+      'in_1',
+      'sub_1',
+      'test',
+    );
+
+    // La reentrega de Stripe encuentra la factura anulada por el ciclo que murió
+    // antes de cancelar. Abortar aquí dejaba el contrato vivo y sin cobro para
+    // siempre: no hay nada más que lo reintente.
+    expect(voidInvoice).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith('sub_1');
+    expect(liquidada).toBe(true);
+  });
+
+  it('trata uncollectible como deuda perdida, no como cobro', async () => {
+    const { service, cancel } = buildService('uncollectible');
+
+    await expect(
+      service.liquidarSuscripcionImpagada('in_1', 'sub_1', 'test'),
+    ).resolves.toBe(true);
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it('aborta solo cuando la factura está efectivamente pagada', async () => {
+    const { service, voidInvoice, cancel } = buildService('paid');
+
+    const liquidada = await service.liquidarSuscripcionImpagada(
+      'in_1',
+      'sub_1',
+      'test',
+    );
+
+    expect(voidInvoice).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(liquidada).toBe(false);
+  });
+});
+
+describe('PaymentsService — el checkout no cancela un contrato recuperado', () => {
+  const PRO_MXN = 'price_pro_mxn';
+
+  it('bloquea el alta si el cliente pagó mientras se liquidaba', async () => {
+    const userDoc = {
+      id: 'uid-1',
+      email: 'cliente@example.com',
+      plan: 'pro',
+      country: 'MX',
+      stripeCustomerId: 'cus_123',
+      stripeSubscriptionId: 'sub_vieja',
+    };
+    const cancel = jest.fn().mockResolvedValue({ status: 'canceled' });
+    const sessionsCreate = jest.fn();
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = {
+      subscriptions: {
+        // Primera lectura: past_due. La de dentro del bloqueo ya la ve viva.
+        retrieve: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'sub_vieja',
+            status: 'past_due',
+            latest_invoice: 'in_vieja',
+            items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+          })
+          .mockResolvedValue({
+            id: 'sub_vieja',
+            status: 'active',
+            items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+          }),
+        cancel,
+        list: jest.fn().mockResolvedValue({ data: [] }),
+      },
+      // El cliente pagó desde el portal entre la lectura y la liquidación.
+      invoices: {
+        retrieve: jest
+          .fn()
+          .mockResolvedValue({ id: 'in_vieja', status: 'paid' }),
+        voidInvoice: jest.fn(),
+      },
+      customers: { retrieve: jest.fn().mockResolvedValue({ id: 'cus_123' }) },
+      checkout: { sessions: { create: sessionsCreate } },
+    };
+    service.firestoreService = {
+      getUserById: jest.fn().mockResolvedValue(userDoc),
+      updateUser: jest.fn().mockResolvedValue(undefined),
+      updateUserSubscriptionState: jest.fn().mockResolvedValue(true),
+      acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok-1'),
+      releaseSubscriptionSyncLock: jest.fn().mockResolvedValue(undefined),
+    };
+    service.billingService = {
+      syncTaxProfileToStripe: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+    service.proPriceIdMxn = PRO_MXN;
+
+    await expect(
+      service.createCheckoutSession(
+        'uid-1',
+        'cliente@example.com',
+        'https://ok',
+        'https://ko',
+        'MX',
+        'promax',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Ni se cancela la renovación que acaba de saldar, ni se le abre un segundo
+    // cobro el mismo día: se le remite al upgrade, como a cualquier contrato vivo.
+    expect(cancel).not.toHaveBeenCalled();
+    expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe('PaymentsService — el deleted que sigue a la cancelación por impago', () => {
+  const PRO_MXN = 'price_pro_mxn';
+
+  it('no vuelve a avisar ni a contar la baja si ya se degradó', async () => {
+    // Estado tras la degradación por impago: en Free y sin contrato. El `deleted`
+    // que llega es eco de la cancelación que lanzó el propio backend.
+    const usuario = {
+      id: 'uid-1',
+      email: 'cliente@example.com',
+      plan: 'free',
+      country: 'MX',
+      stripeSubscriptionId: null,
+    };
+    const queueSubscriptionDowngradedEmail = jest
+      .fn()
+      .mockResolvedValue(undefined);
+    const saveSubscriptionEvent = jest.fn().mockResolvedValue(undefined);
+    const updateUserSubscriptionState = jest.fn().mockResolvedValue(true);
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = { subscriptions: { retrieve: jest.fn() } };
+    service.firestoreService = {
+      getUserByStripeCustomerId: jest.fn().mockResolvedValue(usuario),
+      getUserById: jest.fn().mockResolvedValue(usuario),
+      updateUserSubscriptionState,
+      saveSubscriptionEvent,
+      acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok-1'),
+      releaseSubscriptionSyncLock: jest.fn().mockResolvedValue(undefined),
+    };
+    service.emailService = { queueSubscriptionDowngradedEmail };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+
+    await service.handleSubscriptionDeleted({
+      id: 'sub_123',
+      customer: 'cus_1',
+      items: { data: [{ price: { id: PRO_MXN } }] },
+    });
+
+    // Sin este corte el cliente recibía un segundo correo —nombrando PRO aunque
+    // fuera LITE, por el valor por defecto— y el churn se contaba dos veces.
+    expect(queueSubscriptionDowngradedEmail).not.toHaveBeenCalled();
+    expect(saveSubscriptionEvent).not.toHaveBeenCalled();
+    expect(updateUserSubscriptionState).not.toHaveBeenCalled();
   });
 });
