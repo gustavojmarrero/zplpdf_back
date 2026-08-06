@@ -707,18 +707,14 @@ describe('FirestoreService — renewSubscriptionSyncLock', () => {
 describe('FirestoreService — getUsersWithHighUsage', () => {
   /** Dos días con 3 conversiones cada uno: cumple el patrón de uso alto. */
   const USO_ALTO = [
-    ...Array.from({ length: 3 }, () => ({
-      createdAt: new Date('2026-08-04T10:00:00.000Z'),
-    })),
-    ...Array.from({ length: 3 }, () => ({
-      createdAt: new Date('2026-08-05T10:00:00.000Z'),
-    })),
+    ...Array.from({ length: 3 }, () => '2026-08-04T10:00:00.000Z'),
+    ...Array.from({ length: 3 }, () => '2026-08-05T10:00:00.000Z'),
   ];
 
   /** Un solo día: no llega a los 2 días consecutivos exigidos. */
-  const USO_BAJO = [{ createdAt: new Date('2026-08-05T10:00:00.000Z') }];
+  const USO_BAJO = ['2026-08-05T10:00:00.000Z'];
 
-  function usuario(id: string, conversiones = USO_ALTO) {
+  function usuario(id: string, conversiones = USO_ALTO, plan = 'free') {
     return {
       id,
       conversiones,
@@ -726,7 +722,7 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
         email: `${id}@ejemplo.com`,
         displayName: `User ${id}`,
         country: 'MX',
-        plan: 'free',
+        plan,
         // Con el límite free en 10 PDFs, 6 usados y 3/día de media, la
         // proyección son 2 días: entra dentro de la ventana de 14.
         pdfCount: 6,
@@ -737,15 +733,21 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
   }
 
   /**
-   * Mockea Firestore por colección. Registra a quién se consultó en cada una
-   * para poder afirmar el ORDEN de los filtros, no solo su resultado.
+   * Mockea Firestore según el patrón de acceso NUEVO: una consulta a
+   * `conversion_history` por rango de fecha, una lectura en lote de los
+   * usuarios que salgan de ahí, y `email_queue` solo para los candidatos.
+   *
+   * Registra cada acceso para poder afirmar la FORMA del acceso, no solo su
+   * resultado: el issue #82 va justo de eso.
    */
   function buildService(
     usuarios: ReturnType<typeof usuario>[],
     yaAvisados: string[] = [],
   ) {
-    const consultados = {
-      conversiones: [] as string[],
+    const accesos = {
+      conversiones: 0,
+      escaneosDeUsuarios: 0,
+      lotesDeUsuarios: [] as string[][],
       emails: [] as string[],
     };
     const service: any = Object.create(FirestoreService.prototype);
@@ -754,38 +756,57 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
     service.emailQueueCollection = 'email_queue';
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
+    const docDeUsuario = (id: string) => {
+      const u = usuarios.find((x) => x.id === id);
+      return { id, exists: !!u, data: () => u?.data };
+    };
+
     service.firestore = {
+      getAll: async (...refs: Array<{ id: string }>) => {
+        accesos.lotesDeUsuarios.push(refs.map((r) => r.id));
+        return refs.map((r) => docDeUsuario(r.id));
+      },
       collection: (nombre: string) => {
         const filtros: Array<{ campo: string; valor: unknown }> = [];
         const q: any = {
+          doc: (id: string) => ({ id }),
           where: (campo: string, _op: string, valor: unknown) => {
             filtros.push({ campo, valor });
             return q;
           },
+          select: () => q,
           orderBy: () => q,
           limit: () => q,
           get: async () => {
+            if (nombre === 'conversion_history') {
+              accesos.conversiones++;
+              const docs = usuarios.flatMap((u) =>
+                u.conversiones.map((iso) => ({
+                  data: () => ({
+                    userId: u.id,
+                    status: 'completed',
+                    createdAt: new Date(iso),
+                  }),
+                })),
+              );
+              return { docs, empty: docs.length === 0 };
+            }
+
             if (nombre === 'users') {
+              // El escaneo del censo completo es justo lo que #82 elimina.
+              accesos.escaneosDeUsuarios++;
               const docs = usuarios.map((u) => ({
                 id: u.id,
+                exists: true,
                 data: () => u.data,
               }));
               return { docs, empty: docs.length === 0 };
             }
 
+            // email_queue: solo importa si hay o no algún documento.
             const userId = filtros.find((f) => f.campo === 'userId')
               ?.valor as string;
-
-            if (nombre === 'conversion_history') {
-              consultados.conversiones.push(userId);
-              const docs = (
-                usuarios.find((u) => u.id === userId)?.conversiones ?? []
-              ).map((c) => ({ data: () => c }));
-              return { docs, empty: docs.length === 0 };
-            }
-
-            // email_queue: solo importa si hay o no algún documento.
-            consultados.emails.push(userId);
+            accesos.emails.push(userId);
             const avisado = yaAvisados.includes(userId);
             return { docs: avisado ? [{}] : [], empty: !avisado };
           },
@@ -794,7 +815,7 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
       },
     };
 
-    return { service, consultados };
+    return { service, accesos };
   }
 
   const params = { minPdfsPerDay: 3, consecutiveDays: 2 };
@@ -810,7 +831,10 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
 
     expect(resultado.users).toHaveLength(2);
     expect(resultado.skipped.alreadyReceived).toBe(3);
-    expect(resultado.users.map((u: any) => u.userId)).toEqual(['d', 'e']);
+    expect(resultado.users.map((u: any) => u.userId).sort()).toEqual([
+      'd',
+      'e',
+    ]);
   });
 
   it('no cuenta como descartado a quien simplemente no tiene uso alto', async () => {
@@ -848,9 +872,7 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
   });
 
   it('comprueba el envío previo solo para quien cumple el patrón de uso', async () => {
-    // El orden importa: con el filtro delante, esta consulta corría una vez por
-    // usuario free y el conteo mezclaba avisados con y sin uso alto.
-    const { service, consultados } = buildService([
+    const { service, accesos } = buildService([
       usuario('activo'),
       usuario('flojo', USO_BAJO),
       usuario('inactivo', []),
@@ -858,9 +880,7 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
 
     await service.getUsersWithHighUsage(params);
 
-    expect(consultados.emails).toEqual(['activo']);
-    // Las conversiones sí se consultan para todos: es el filtro discriminante.
-    expect(consultados.conversiones).toEqual(['activo', 'flojo', 'inactivo']);
+    expect(accesos.emails).toEqual(['activo']);
   });
 
   it('respeta el tope sin contar como descartados a los que no llegó a examinar', async () => {
@@ -875,5 +895,118 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
 
     expect(resultado.users).toHaveLength(3);
     expect(resultado.skipped.alreadyReceived).toBe(0);
+    // Y lo dice: 3 de 10 devueltos no puede pasar por "no había más".
+    expect(service.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('tope de 3'),
+    );
+  });
+
+  /**
+   * El corazón del issue #82. La versión anterior recorría el censo entero de
+   * usuarios free lanzando una consulta por cabeza, en serie — 1.920 consultas
+   * en producción para 147 conversiones en la ventana. Y ni siquiera podía
+   * terminar: aquella consulta combinaba dos igualdades con un rango sin el
+   * índice compuesto que eso exige.
+   */
+  describe('forma del acceso a Firestore (issue #82)', () => {
+    it('no escanea el censo de usuarios ni lanza una consulta de conversiones por cabeza', async () => {
+      const { service, accesos } = buildService(
+        Array.from({ length: 50 }, (_, i) => usuario(`u${i}`)),
+      );
+
+      await service.getUsersWithHighUsage(params);
+
+      // Una sola consulta de conversiones para los 50, no 50.
+      expect(accesos.conversiones).toBe(1);
+      expect(accesos.escaneosDeUsuarios).toBe(0);
+    });
+
+    it('lee los usuarios candidatos en lote, no uno a uno', async () => {
+      const { service, accesos } = buildService(
+        Array.from({ length: 12 }, (_, i) => usuario(`u${i}`)),
+      );
+
+      await service.getUsersWithHighUsage(params);
+
+      expect(accesos.lotesDeUsuarios).toHaveLength(1);
+      expect(accesos.lotesDeUsuarios[0]).toHaveLength(12);
+    });
+
+    it('no lee ningún usuario si la ventana no deja candidatos', async () => {
+      // Sin candidatos no hay nada que resolver: ni lote, ni email_queue.
+      const { service, accesos } = buildService([
+        usuario('flojo', USO_BAJO),
+        usuario('inactivo', []),
+      ]);
+
+      const resultado = await service.getUsersWithHighUsage(params);
+
+      expect(resultado.users).toHaveLength(0);
+      expect(accesos.lotesDeUsuarios).toHaveLength(0);
+      expect(accesos.emails).toHaveLength(0);
+    });
+
+    it('descarta a quien ya no es free: partir de conversiones no filtra el plan', async () => {
+      // La consulta anterior filtraba `plan == free` en Firestore. Ahora se parte
+      // de conversiones, que no saben de planes, así que el filtro tiene que
+      // aplicarse tras leer el documento — o el email de la cuota gratuita
+      // acabaría en la bandeja de un usuario de pago.
+      const { service } = buildService([
+        usuario('gratis'),
+        usuario('pagado', USO_ALTO, 'pro'),
+        usuario('maximo', USO_ALTO, 'promax'),
+      ]);
+
+      const resultado = await service.getUsersWithHighUsage(params);
+
+      expect(resultado.users.map((u: any) => u.userId)).toEqual(['gratis']);
+    });
+
+    it('con más candidatos que cupo, atiende primero a los de uso más intenso', async () => {
+      // El tope ya no se lo lleva quien apareciera antes en el censo —azar—,
+      // sino quien está más cerca de agotar la cuota.
+      const intenso = usuario('intenso', [
+        ...Array.from({ length: 9 }, () => '2026-08-04T10:00:00.000Z'),
+        ...Array.from({ length: 9 }, () => '2026-08-05T10:00:00.000Z'),
+      ]);
+      const { service } = buildService([
+        usuario('justo'),
+        intenso,
+        usuario('otro'),
+      ]);
+
+      const resultado = await service.getUsersWithHighUsage({
+        ...params,
+        limit: 1,
+      });
+
+      expect(resultado.users.map((u: any) => u.userId)).toEqual(['intenso']);
+    });
+
+    it('ignora las conversiones fallidas al medir el uso', async () => {
+      // `status` se filtra en memoria para no volver a exigir índice compuesto;
+      // el resultado tiene que ser el mismo que filtrándolo en la consulta.
+      const { service } = buildService([usuario('activo')]);
+      const original = service.firestore.collection;
+      service.firestore.collection = (nombre: string) => {
+        const q = original(nombre);
+        if (nombre !== 'conversion_history') return q;
+        const get = q.get;
+        q.get = async () => {
+          const res = await get();
+          return {
+            ...res,
+            docs: res.docs.map((d: any) => ({
+              data: () => ({ ...d.data(), status: 'failed' }),
+            })),
+          };
+        };
+        return q;
+      };
+
+      const resultado = await service.getUsersWithHighUsage(params);
+
+      expect(resultado.users).toHaveLength(0);
+    });
   });
 });

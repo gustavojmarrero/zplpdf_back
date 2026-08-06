@@ -5633,9 +5633,26 @@ export class FirestoreService {
     return 'en';
   }
 
+  /** Documentos por lote en `getAll`, para no armar una petición desmedida. */
+  private static readonly USER_FETCH_CHUNK = 300;
+
   /**
    * Get FREE users with high usage patterns (>X PDFs/day for Y consecutive days)
    * Used to proactively send conversion emails before they hit limits
+   *
+   * Parte de las CONVERSIONES recientes, no del censo de usuarios free (issue
+   * #82). La versión anterior recorría todos los free —1.920 al escribir esto—
+   * lanzando una consulta por cabeza, en serie, para descubrir que casi ninguno
+   * había convertido nada; el trabajo se dimensionaba por quién se registró
+   * algún día en vez de por quién usa el producto. Ahora una sola consulta trae
+   * la ventana entera —147 documentos en esos mismos dos días— y solo se leen
+   * los usuarios que salen de ella.
+   *
+   * Ese recorrido además no podía terminar: la consulta por usuario combinaba
+   * `userId` + `status` + rango de `createdAt` sin el índice compuesto que eso
+   * exige, así que la primera iteración moría con FAILED_PRECONDITION. El
+   * filtro por fecha de aquí va sobre un único campo y le basta el índice
+   * automático, de modo que no hay índice nuevo que desplegar.
    */
   async getUsersWithHighUsage(params: {
     minPdfsPerDay: number;
@@ -5648,47 +5665,41 @@ export class FirestoreService {
     // la lista final y no puede saber cuántos candidatos se filtraron.
     const skipped = { alreadyReceived: 0 };
 
-    // Get all FREE users
-    const usersSnapshot = await this.firestore
-      .collection(this.usersCollection)
-      .where('plan', '==', 'free')
+    const daysAgo = new Date();
+    daysAgo.setDate(daysAgo.getDate() - consecutiveDays);
+
+    // `status` se filtra en memoria a propósito: sumarlo a la consulta la
+    // convertiría en dos igualdades más un rango y volvería a pedir un índice
+    // compuesto. Las fallidas son una fracción pequeña de la ventana, así que
+    // sale más barato traerlas y descartarlas aquí.
+    const conversionsSnapshot = await this.firestore
+      .collection(this.historyCollection)
+      .where('createdAt', '>=', daysAgo)
+      .select('userId', 'status', 'createdAt')
       .get();
 
-    for (const userDoc of usersSnapshot.docs) {
-      if (highUsageUsers.length >= limit) break;
+    // Conversiones por usuario y día, en una sola pasada.
+    const dailyCountsByUser = new Map<string, Record<string, number>>();
+    for (const doc of conversionsSnapshot.docs) {
+      const data = doc.data();
+      if (data.status !== 'completed') continue;
 
-      const userData = userDoc.data();
-      const userId = userDoc.id;
+      const userId = data.userId;
+      const createdAt = data.createdAt?.toDate?.() || data.createdAt;
+      if (!userId || !createdAt) continue;
 
-      // Get conversions for the last N days
-      const daysAgo = new Date();
-      daysAgo.setDate(daysAgo.getDate() - consecutiveDays);
+      const dateStr = createdAt.toISOString().split('T')[0];
+      const dailyCounts = dailyCountsByUser.get(userId) ?? {};
+      dailyCounts[dateStr] = (dailyCounts[dateStr] || 0) + 1;
+      dailyCountsByUser.set(userId, dailyCounts);
+    }
 
-      const conversionsSnapshot = await this.firestore
-        .collection(this.historyCollection)
-        .where('userId', '==', userId)
-        .where('status', '==', 'completed')
-        .where('createdAt', '>=', daysAgo)
-        .get();
-
-      if (conversionsSnapshot.empty) continue;
-
-      // Group conversions by day
-      const dailyCounts: Record<string, number> = {};
-      conversionsSnapshot.docs.forEach((doc) => {
-        const data = doc.data();
-        const createdAt = data.createdAt?.toDate?.() || data.createdAt;
-        if (!createdAt) return;
-
-        const dateStr = createdAt.toISOString().split('T')[0];
-        dailyCounts[dateStr] = (dailyCounts[dateStr] || 0) + 1;
-      });
-
-      // Check if all days have >= minPdfsPerDay
+    // Patrón de uso alto: se resuelve entero en memoria, sin tocar Firestore.
+    const candidates: Array<{ userId: string; avgPdfsPerDay: number }> = [];
+    for (const [userId, dailyCounts] of dailyCountsByUser) {
       const days = Object.keys(dailyCounts).sort();
       if (days.length < consecutiveDays) continue;
 
-      // Check consecutive days with high usage
       let consecutiveHighUsageDays = 0;
       for (
         let i = days.length - 1;
@@ -5704,14 +5715,56 @@ export class FirestoreService {
 
       if (consecutiveHighUsageDays < consecutiveDays) continue;
 
-      // Calculate average PDFs per day
       const totalPdfs = Object.values(dailyCounts).reduce(
         (sum, count) => sum + count,
         0,
       );
-      const avgPdfsPerDay = totalPdfs / days.length;
+      candidates.push({ userId, avgPdfsPerDay: totalPdfs / days.length });
+    }
 
-      // Get current usage and calculate projection
+    if (candidates.length === 0) {
+      return { users: highUsageUsers, skipped };
+    }
+
+    // De mayor a menor uso: si hay más candidatos que cupo, el tope se lo queda
+    // quien está más cerca de agotar su cuota, no quien apareció antes en la
+    // consulta. Antes el orden lo decidía el censo de usuarios, o sea el azar.
+    candidates.sort((a, b) => b.avgPdfsPerDay - a.avgPdfsPerDay);
+
+    // El plan ya no lo filtra la consulta —ahora se parte de conversiones, que
+    // no lo conocen—, así que hay que leer los documentos. En lote, no uno a uno.
+    const userDocs = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+    for (
+      let i = 0;
+      i < candidates.length;
+      i += FirestoreService.USER_FETCH_CHUNK
+    ) {
+      const refs = candidates
+        .slice(i, i + FirestoreService.USER_FETCH_CHUNK)
+        .map((candidate) =>
+          this.firestore.collection(this.usersCollection).doc(candidate.userId),
+        );
+      const docs = await this.firestore.getAll(...refs);
+      docs.forEach((doc) => userDocs.set(doc.id, doc));
+    }
+
+    for (const { userId, avgPdfsPerDay } of candidates) {
+      if (highUsageUsers.length >= limit) {
+        // Truncar en silencio haría parecer que se examinó la ventana entera.
+        this.logger.warn(
+          `getUsersWithHighUsage: alcanzado el tope de ${limit} candidatos devueltos. ` +
+            `Quedan usuarios sin examinar de los ${candidates.length} que cumplen el patrón de uso.`,
+        );
+        break;
+      }
+
+      const userDoc = userDocs.get(userId);
+      if (!userDoc?.exists) continue;
+
+      const userData = userDoc.data();
+      // El email habla de la cuota del plan gratuito, así que solo va a free.
+      if ((userData.plan || 'free') !== 'free') continue;
+
       const pdfLimit = DEFAULT_PLAN_LIMITS.free.maxPdfsPerMonth;
       const pdfsUsed = userData.pdfCount || 0;
       const remaining = pdfLimit - pdfsUsed;
@@ -5721,12 +5774,10 @@ export class FirestoreService {
       // Only include if projected to hit limit soon (within 14 days)
       if (projectedDaysToLimit > 14) continue;
 
-      // Deliberadamente el ÚLTIMO filtro. Si se comprueba antes de evaluar el
-      // uso, el descarte alcanza a todo free que ya recibió el email tenga o no
-      // uso alto ahora, y el conteo resultante no dice nada. Aquí solo cuenta a
-      // quien de verdad merecía el email hoy. De paso sale más barato: esta
-      // consulta pasa de correr una vez por usuario free a correr solo para los
-      // pocos que cumplen el patrón de uso.
+      // Deliberadamente el ÚLTIMO filtro (issue #60). Comprobado antes de evaluar
+      // el uso, el descarte alcanzaría a todo free ya avisado tenga o no uso alto
+      // ahora, y el conteo no diría nada. Aquí solo cuenta a quien de verdad
+      // merecía el email hoy.
       const periodStart =
         userData.periodStart?.toDate?.() || userData.periodStart;
       if (periodStart) {
