@@ -322,11 +322,16 @@ export class FinanceService {
         ? (churnedUsers / totalSubscribersAtStart) * 100
         : 0;
 
-    // Obtener eventos de cancelación para MRR churneado
+    // Obtener eventos de cancelación para MRR churneado.
+    //
+    // Los dos tipos, como en el cálculo de churn de más arriba: desde la política
+    // de cobro de #65 la baja por impago se registra como `churned` para poder
+    // distinguirla de la voluntaria, y consultar solo `canceled` dejaría fuera
+    // del MRR churneado justamente las bajas que el cliente no eligió.
     const cancelEvents = await this.firestoreService.getSubscriptionEvents({
       startDate,
       endDate,
-      eventType: 'canceled',
+      eventType: ['canceled', 'churned'],
     });
 
     let churnedMrr = 0;

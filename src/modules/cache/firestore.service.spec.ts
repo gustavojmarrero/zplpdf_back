@@ -1010,3 +1010,110 @@ describe('FirestoreService — getUsersWithHighUsage', () => {
     });
   });
 });
+
+/**
+ * El evento de baja se escribe DENTRO de la transacción que degrada al usuario.
+ *
+ * Escribirlo después dejaba dos desenlaces malos: si esa segunda escritura
+ * fallaba, la reentrega del webhook encontraba al usuario ya en Free, lo tomaba
+ * por trabajo hecho y la baja no se contabilizaba nunca; y registrándolo antes,
+ * un fencing que descartase la degradación habría contado un churn que no
+ * ocurrió. Dentro de la transacción constan ambas cosas o ninguna.
+ */
+describe('FirestoreService — la baja y su evento van en la misma transacción', () => {
+  function buildService(docData: Record<string, unknown>) {
+    const update = jest
+      .fn()
+      .mockImplementation((_ref: unknown, data: Record<string, unknown>) => {
+        Object.assign(docData, data);
+      });
+    const set = jest.fn();
+    const docs: Record<string, unknown> = {};
+
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.subscriptionEventsCollection = 'subscription_events';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestore = {
+      collection: (name: string) => ({
+        doc: (id?: string) => {
+          const ref = { collection: name, id };
+          docs[`${name}/${id ?? 'uid-1'}`] = ref;
+          return ref;
+        },
+      }),
+      runTransaction: (fn: (t: unknown) => Promise<boolean>) =>
+        fn({
+          get: async () => ({ data: () => docData }),
+          update,
+          set,
+        }),
+    };
+
+    return { service, update, set };
+  }
+
+  const evento = {
+    id: 'sub_event_20260806_ABCDE',
+    userId: 'uid-1',
+    userEmail: 'cliente@example.com',
+    eventType: 'churned' as const,
+    plan: 'lite' as const,
+    currency: 'mxn' as const,
+    mrr: 0,
+    mrrMxn: 0,
+    stripeSubscriptionId: 'sub_123',
+    createdAt: new Date('2026-08-06T10:00:00.000Z'),
+  };
+
+  it('escribe el evento junto al cambio de plan', async () => {
+    const { service, update, set } = buildService({ plan: 'lite' });
+
+    const aplicada = await service.updateUserSubscriptionState(
+      'uid-1',
+      { plan: 'free', stripeSubscriptionId: null },
+      new Date('2026-08-06T10:00:00.000Z'),
+      undefined,
+      evento,
+    );
+
+    expect(aplicada).toBe(true);
+    expect(update).toHaveBeenCalled();
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({ collection: 'subscription_events' }),
+      expect.objectContaining({ eventType: 'churned', plan: 'lite' }),
+    );
+  });
+
+  it('no escribe el evento si el fencing descarta la degradación', async () => {
+    const { service, update, set } = buildService({
+      plan: 'promax',
+      subscriptionSyncedAt: '2026-08-06T10:00:05.000Z',
+    });
+
+    const aplicada = await service.updateUserSubscriptionState(
+      'uid-1',
+      { plan: 'free', stripeSubscriptionId: null },
+      new Date('2026-08-06T10:00:00.000Z'),
+      undefined,
+      evento,
+    );
+
+    // Contarlo aquí habría registrado la baja de un cliente que sigue pagando.
+    expect(aplicada).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('no toca la colección de eventos cuando no hay baja que registrar', async () => {
+    const { service, set } = buildService({ plan: 'pro' });
+
+    await service.updateUserSubscriptionState(
+      'uid-1',
+      { plan: 'promax' },
+      new Date('2026-08-06T10:00:00.000Z'),
+    );
+
+    expect(set).not.toHaveBeenCalled();
+  });
+});

@@ -35,6 +35,10 @@ import { randomUUID } from 'node:crypto';
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
 /** Planes de pago vendibles por checkout/upgrade (excluye enterprise, que es manual). */
 type SellablePlan = 'lite' | 'pro' | 'promax';
+type FuenteMrrBaja =
+  | { subscription: Stripe.Subscription }
+  | { invoice: Stripe.Invoice };
+type MrrPerdido = Pick<SubscriptionEvent, 'currency' | 'mrr' | 'mrrMxn'>;
 
 @Injectable()
 export class PaymentsService {
@@ -208,6 +212,50 @@ export class PaymentsService {
     return isMexico ? this.proPriceIdMxn : this.proPriceId;
   }
 
+  /**
+   * Rechaza el alta cuando ya hay un contrato vivo, con el motivo que toque.
+   *
+   * Siempre lanza. Está extraído porque lo necesitan dos caminos: el contrato que
+   * ya estaba vivo al empezar, y el que se recuperó a mitad de la liquidación
+   * —el cliente pagó desde el portal justo entonces—. Ese segundo camino es el
+   * que faltaba: sin él se cancelaba una suscripción recién pagada y se le abría
+   * un segundo cobro al cliente el mismo día.
+   */
+  private bloquearAltaSobreContratoVivo(
+    viva: Stripe.Subscription,
+    plan: SellablePlan,
+  ): never {
+    const currentPriceId = viva.items.data[0]?.price?.id;
+    const currentPlan = currentPriceId
+      ? this.getPlanFromPriceId(currentPriceId)
+      : null;
+
+    // If trying to buy the same plan, reject
+    if (currentPlan === plan) {
+      throw new BadRequestException(
+        `You already have an active ${plan.toUpperCase()} subscription. Manage it from your account settings.`,
+      );
+    }
+
+    // If moving UP between paid plans (lite→pro, lite→promax, pro→promax),
+    // redirect to the upgrade endpoint to modify the existing subscription
+    // with proration instead of creating a duplicate subscription.
+    if (currentPlan && PLAN_ORDER[plan] > PLAN_ORDER[currentPlan]) {
+      throw new BadRequestException(
+        `Use the upgrade endpoint to upgrade from ${currentPlan.toUpperCase()} to ${plan.toUpperCase()}.`,
+      );
+    }
+
+    // Any other case with an active subscription (downgrade, lateral move, or
+    // an unrecognized current plan) must NOT create a second checkout, or Stripe
+    // would create a duplicate subscription and the webhook would orphan the old
+    // one. Block and direct the user to the customer portal to change/cancel first.
+    throw new BadRequestException(
+      `You already have an active subscription${currentPlan ? ` (${currentPlan.toUpperCase()})` : ''}. ` +
+        `To downgrade or change your plan, manage it from your account settings (customer portal).`,
+    );
+  }
+
   async createCheckoutSession(
     userId: string,
     email: string,
@@ -228,7 +276,70 @@ export class PaymentsService {
     }
 
     // Get or create Stripe customer
-    const user = await this.firestoreService.getUserById(userId);
+    let user = await this.firestoreService.getUserById(userId);
+
+    // El contraste con Stripe va ANTES de mirar el plan del documento, y el orden
+    // importa desde #65. El documento puede decir todavía `pro` mientras el
+    // contrato está impagado —el webhook que lo degrada tarda en llegar, o se
+    // perdió—, y comprobando primero el plan, el cliente al que acaban de cortarle
+    // el PRO por impago no podría recontratar PRO: saldría rechazado por «ya estás
+    // suscrito» sin que nadie llegase a liquidar el contrato muerto. Otro callejón
+    // de la misma familia que el issue.
+    if (user?.stripeSubscriptionId) {
+      try {
+        const existingSubscription = await this.stripe.subscriptions.retrieve(
+          user.stripeSubscriptionId,
+        );
+
+        // Un contrato impagado ya no reserva el sitio: se liquida aquí mismo y
+        // el checkout continúa. Es la salida que le faltaba al cliente de #65
+        // —antes esta rama lo remitía al endpoint de upgrade, que lo rechazaba
+        // por no estar `active`— y de paso evita el duplicado que se produciría
+        // dejándolo pasar sin cancelar el anterior.
+        if (
+          PaymentsService.ESTADOS_IMPAGADOS.includes(
+            existingSubscription.status,
+          )
+        ) {
+          const liquidado = await this.liquidarContratoImpagadoAntesDelAlta(
+            user,
+            existingSubscription,
+          );
+
+          if (liquidado) {
+            // La liquidación dejó el documento en Free; sin releer, la
+            // comprobación de plan de más abajo seguiría viendo el plan muerto y
+            // rechazaría el alta que acabamos de habilitar.
+            user = (await this.firestoreService.getUserById(userId)) ?? user;
+          } else {
+            // El cliente pagó entre la lectura de arriba y la liquidación —desde
+            // el portal, o con un reintento que entró—. El contrato ha vuelto a
+            // la vida, así que se trata como tal: dejarlo pasar abriría un
+            // segundo cobro sobre una renovación que acaba de saldar.
+            this.bloquearAltaSobreContratoVivo(
+              await this.stripe.subscriptions.retrieve(existingSubscription.id),
+              plan,
+            );
+          }
+        } else if (
+          PaymentsService.ESTADOS_VIVOS.includes(existingSubscription.status)
+        ) {
+          this.bloquearAltaSobreContratoVivo(existingSubscription, plan);
+        }
+      } catch (error) {
+        if (error instanceof BadRequestException) throw error;
+        // También sale el fallo de la liquidación. Este `catch` existe para
+        // tolerar que la suscripción no exista en Stripe (típico al cambiar de
+        // modo test/live), no para tragarse un contrato impagado que no se pudo
+        // cerrar: tragándolo dejaría continuar el alta y el cliente acabaría con
+        // dos suscripciones vivas, que es lo que la liquidación venía a impedir.
+        if (error instanceof ServiceUnavailableException) throw error;
+        // Subscription doesn't exist in Stripe (maybe switched test/live mode)
+        this.logger.warn(
+          `Could not verify subscription ${user.stripeSubscriptionId}: ${error.message}`,
+        );
+      }
+    }
 
     // VALIDATION: Prevent duplicate subscriptions
     // Check if user already has the same plan
@@ -236,58 +347,6 @@ export class PaymentsService {
       throw new BadRequestException(
         `You are already subscribed to the ${plan.toUpperCase()} plan. Manage your subscription from your account settings.`,
       );
-    }
-
-    // Check if user has an active subscription in Stripe (defense in depth)
-    if (user?.stripeSubscriptionId) {
-      try {
-        const existingSubscription = await this.stripe.subscriptions.retrieve(
-          user.stripeSubscriptionId,
-        );
-
-        if (
-          ['active', 'trialing', 'past_due'].includes(
-            existingSubscription.status,
-          )
-        ) {
-          // Get the current plan from the subscription
-          const currentPriceId = existingSubscription.items.data[0]?.price?.id;
-          const currentPlan = currentPriceId
-            ? this.getPlanFromPriceId(currentPriceId)
-            : null;
-
-          // If trying to buy the same plan, reject
-          if (currentPlan === plan) {
-            throw new BadRequestException(
-              `You already have an active ${plan.toUpperCase()} subscription. Manage it from your account settings.`,
-            );
-          }
-
-          // If moving UP between paid plans (lite→pro, lite→promax, pro→promax),
-          // redirect to the upgrade endpoint to modify the existing subscription
-          // with proration instead of creating a duplicate subscription.
-          if (currentPlan && PLAN_ORDER[plan] > PLAN_ORDER[currentPlan]) {
-            throw new BadRequestException(
-              `Use the upgrade endpoint to upgrade from ${currentPlan.toUpperCase()} to ${plan.toUpperCase()}.`,
-            );
-          }
-
-          // Any other case with an active subscription (downgrade, lateral move, or
-          // an unrecognized current plan) must NOT create a second checkout, or Stripe
-          // would create a duplicate subscription and the webhook would orphan the old
-          // one. Block and direct the user to the customer portal to change/cancel first.
-          throw new BadRequestException(
-            `You already have an active subscription${currentPlan ? ` (${currentPlan.toUpperCase()})` : ''}. ` +
-              `To downgrade or change your plan, manage it from your account settings (customer portal).`,
-          );
-        }
-      } catch (error) {
-        if (error instanceof BadRequestException) throw error;
-        // Subscription doesn't exist in Stripe (maybe switched test/live mode)
-        this.logger.warn(
-          `Could not verify subscription ${user.stripeSubscriptionId}: ${error.message}`,
-        );
-      }
     }
 
     // VALIDATION: Check for any active subscription by customer ID (defense in depth)
@@ -527,22 +586,25 @@ export class PaymentsService {
   /**
    * Mensaje para un upgrade bloqueado por el estado de la suscripción.
    *
-   * La acción que resuelve el bloqueo depende del estado: cambiar la tarjeta solo
-   * sirve en los estados de cobro (`past_due`, `unpaid`); si la suscripción ya
-   * terminó hay que contratarla de nuevo, y en el resto de estados no hay nada que
-   * el cliente pueda arreglar por su cuenta.
+   * La acción que resuelve el bloqueo depende del estado. En los de cobro
+   * (`past_due`, `unpaid`) la salida ya no es cambiar la tarjeta: desde #65 el
+   * contrato impagado se cancela, así que no queda suscripción que rescatar y lo
+   * que corresponde es contratar de nuevo —el propio checkout liquida los restos—.
+   * Si la suscripción ya terminó, igual; en el resto de estados no hay nada que el
+   * cliente pueda arreglar por su cuenta.
+   *
+   * Este mensaje cierra el callejón de #65 por el otro extremo: el checkout ya no
+   * remite aquí a nadie en `past_due`, y quien llegue igualmente sale hacia el
+   * checkout en vez de quedarse sin instrucción que seguir.
    */
   private inactiveSubscriptionMessage(status: string): string {
     const base = `Your subscription is not active (status: ${status}).`;
 
-    if (status === 'past_due' || status === 'unpaid') {
-      return (
-        `${base} Please update your payment method from your account settings ` +
-        `before upgrading.`
-      );
-    }
-
-    if (status === 'canceled' || status === 'incomplete_expired') {
+    if (
+      PaymentsService.ESTADOS_IMPAGADOS.includes(status) ||
+      status === 'canceled' ||
+      status === 'incomplete_expired'
+    ) {
       return `${base} Please subscribe again to get the plan you need.`;
     }
 
@@ -806,8 +868,15 @@ export class PaymentsService {
       this.throwPendingPaymentError(current, context);
     }
 
+    // Mismo criterio que autorizó el cambio y que lo confirma en el camino
+    // principal: si `trialing` basta para aplicar el upgrade, tiene que bastar
+    // para reconocerlo aplicado. Comparando contra `active` a secas, un upgrade
+    // hecho durante una prueba se daría por no aplicado justo aquí —en el camino
+    // que existe para reparar el desenlace indeterminado— y el cliente quedaría
+    // con el precio nuevo en Stripe y el plan viejo en el producto, sin nada que
+    // lo corrigiera después.
     const applied =
-      current.status === 'active' &&
+      PaymentsService.ESTADOS_MODIFICABLES.includes(current.status) &&
       current.items.data.some((item) => item.price?.id === expectedPriceId);
 
     if (!applied) {
@@ -951,7 +1020,7 @@ export class PaymentsService {
       this.throwPendingPaymentError(subscription, upgradeContext);
     }
 
-    if (subscription.status !== 'active') {
+    if (!PaymentsService.ESTADOS_MODIFICABLES.includes(subscription.status)) {
       this.logger.warn(
         `Upgrade bloqueado: la suscripción está en estado '${subscription.status}' — ${upgradeContext}`,
       );
@@ -1063,7 +1132,7 @@ export class PaymentsService {
           this.throwPendingPaymentError(vigente, upgradeContext);
         }
 
-        if (vigente.status !== 'active') {
+        if (!PaymentsService.ESTADOS_MODIFICABLES.includes(vigente.status)) {
           this.logger.warn(
             `Upgrade bloqueado: la suscripción pasó a '${vigente.status}' ` +
               `mientras se preparaba — ${upgradeContext}`,
@@ -1312,8 +1381,19 @@ export class PaymentsService {
     }
 
     // Defensa en profundidad: el plan solo se marca cuando la suscripción queda
-    // confirmada como activa.
-    if (updatedSubscription.status !== 'active') {
+    // confirmada en un estado que da derecho a él.
+    //
+    // Se compara contra la misma lista que autorizó el cambio, no contra `active`
+    // a secas. Exigir `active` aquí después de haber admitido `trialing` arriba
+    // aplicaría el precio nuevo en Stripe y luego devolvería error sin escribir
+    // el plan: contrato y entitlements desincronizados, y el cliente leyendo que
+    // no se cambió nada mientras se le facturará el plan superior al acabar la
+    // prueba. La salida no es prohibir `trialing` en el upgrade —eso reabriría el
+    // callejón de #65 con otro estado, porque el checkout lo tiene por vivo y
+    // remite aquí—, sino aceptar el estado en que Stripe deja el contrato.
+    if (
+      !PaymentsService.ESTADOS_MODIFICABLES.includes(updatedSubscription.status)
+    ) {
       this.logger.error(
         `Upgrade no confirmado: la suscripción quedó en '${updatedSubscription.status}' ` +
           `tras el cambio de precio — ${upgradeContext}. No se actualiza el plan en Firestore.`,
@@ -1378,8 +1458,41 @@ export class PaymentsService {
     };
   }
 
-  /** Estados en los que una suscripción sigue dando derecho al plan. */
-  private static readonly ESTADOS_VIVOS = ['active', 'trialing', 'past_due'];
+  /**
+   * Estados en los que una suscripción sigue dando derecho al plan.
+   *
+   * Es la ÚNICA fuente de verdad: `createCheckoutSession`, `upgradeSubscription`
+   * y la adopción del checkout la consultan en lugar de mantener su propia lista.
+   * Que hubiera dos fue justo lo que encerró al cliente de #65: checkout tenía a
+   * `past_due` por viva y remitía al upgrade, y el upgrade la rechazaba por no
+   * estar `active`. No quedaba ningún camino.
+   *
+   * `past_due` NO está, y esa es la política de cobro decidida en #65: el primer
+   * cobro fallido de una renovación cancela la suscripción y devuelve al cliente
+   * a Free (`handlePaymentFailed`). Deja de ser una espera con plan concedido y
+   * pasa a ser un tránsito de segundos hacia la cancelación.
+   */
+  private static readonly ESTADOS_VIVOS = ['active', 'trialing'];
+
+  /**
+   * Estados desde los que se puede modificar el plan de una suscripción viva.
+   *
+   * Coincide hoy con `ESTADOS_VIVOS` y se declara aparte porque responde a otra
+   * pregunta: aquella dice si el cliente tiene derecho al plan, esta si Stripe
+   * admite un `subscriptions.update` con proración sobre ese contrato. `trialing`
+   * entra porque Stripe permite el cambio de precio durante la prueba y no cobra
+   * hasta que termina —hoy es teórico, el proyecto no configura `trial_period_days`.
+   */
+  private static readonly ESTADOS_MODIFICABLES = ['active', 'trialing'];
+
+  /**
+   * Estados de cobro fallido: la suscripción existe en Stripe pero ya no da
+   * derecho al plan. Con la política de #65 no deberían durar más que el viaje
+   * del webhook, pero se comprueban igual porque un webhook puede perderse y
+   * porque `unpaid` es el destino de las cuentas cuyo dunning quedó configurado
+   * de otra forma en el Dashboard.
+   */
+  private static readonly ESTADOS_IMPAGADOS = ['past_due', 'unpaid'];
 
   /**
    * Decide si el alta del checkout debe fijar el plan del usuario.
@@ -1906,9 +2019,9 @@ export class PaymentsService {
     const priceId = current.items.data[0]?.price?.id;
     const plan = priceId ? this.getPlanFromPriceId(priceId) : null;
 
-    // Si la suscripción está activa pero no podemos resolver el plan, no tocamos
+    // Si la suscripción está viva pero no podemos resolver el plan, no tocamos
     // el plan del usuario (evita asignar uno incorrecto por mala configuración).
-    if (current.status === 'active' && !plan) {
+    if (PaymentsService.ESTADOS_VIVOS.includes(current.status) && !plan) {
       this.logger.error(
         `CRITICAL: No se pudo determinar el plan para subscription.updated de user ${user.id} ` +
           `(sub ${current.id}). Plan NO actualizado. Revisar STRIPE_*_PRICE_ID.`,
@@ -1919,7 +2032,13 @@ export class PaymentsService {
     // Check subscription status with retry
     const period = this.resolveBillingPeriod(current);
 
-    if (current.status === 'active') {
+    // `trialing` entra aquí junto a `active`: son los dos estados que dan derecho
+    // al plan. Comparar contra `active` a secas dejaba a `trialing` sin ninguna
+    // rama —ni escribe plan ni degrada—, y este webhook es precisamente el que
+    // repara un upgrade que Stripe aplicó pero Firestore no llegó a guardar. Sin
+    // esto, un upgrade durante una prueba se quedaba sin nada que lo arreglase
+    // después: el fallo del camino principal era definitivo.
+    if (PaymentsService.ESTADOS_VIVOS.includes(current.status)) {
       // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
       const activeUpdateData: Record<string, unknown> = {
         plan,
@@ -1946,72 +2065,72 @@ export class PaymentsService {
           ? `Subscription updated for user ${user.id}: active (${plan})`
           : `Subscription updated descartado para user ${user.id}: el documento ya refleja una lectura posterior`,
       );
-    } else if (['canceled', 'unpaid'].includes(current.status)) {
-      // Subscription terminated - downgrade to free and clear subscription ID
-      const previousPlan = user.plan || 'pro';
+    } else if (['canceled', 'unpaid', 'past_due'].includes(current.status)) {
+      // `past_due` entra aquí desde #65: antes tenía una rama propia que
+      // conservaba el plan "para dar tiempo a pagar", y eso concedía plan sin
+      // cobro.
+      //
+      // Pero degradar no basta, y suponer que sí fue un error: limpiar el
+      // `stripeSubscriptionId` sin cancelar en Stripe deja el contrato vivo y sin
+      // dueño. Si este evento se adelanta a `invoice.payment_failed` —Stripe no
+      // garantiza el orden—, el usuario se queda sin ID, contrata de nuevo (la
+      // defensa por customer solo lista `active`, así que no ve la impagada), y
+      // el `payment_failed` que llega después descarta el evento por apuntar a
+      // otro contrato. El viejo sobrevive, y con la tarjeta ya al día Stripe
+      // puede cobrarlo: dos suscripciones cobrables sobre el mismo cliente.
+      //
+      // Liquidando aquí también, los dos caminos convergen y el orden deja de
+      // importar de verdad. La liquidación es reanudable e idempotente, así que
+      // que ambos la ejecuten no duplica nada.
+      if (PaymentsService.ESTADOS_IMPAGADOS.includes(current.status)) {
+        const invoiceId =
+          typeof current.latest_invoice === 'string'
+            ? current.latest_invoice
+            : (current.latest_invoice?.id ?? null);
+        const contexto = `user ${user.id} (subscription.updated en '${current.status}', sub ${current.id})`;
 
-      const applied = await this.withRetry(
-        () =>
-          this.firestoreService.updateUserSubscriptionState(
-            user.id,
-            {
-              plan: 'free',
-              stripeSubscriptionId: null,
-            },
-            readAt,
-            lockToken,
-          ),
-        `handleSubscriptionUpdated(${user.id})`,
-      );
+        // Sin factura que consultar no hay cobro que comprobar: se cancela y
+        // punto. Es un caso de borde —una suscripción impagada siempre trae su
+        // `latest_invoice`—, pero dejarlo sin cancelar reabriría el agujero.
+        let liquidado = true;
 
-      // El email va atado a la escritura: avisar de una degradación que se
-      // descartó por obsoleta alarmaría a un cliente que sigue de pago.
-      if (!applied) {
-        this.logger.log(
-          `Downgrade descartado para user ${user.id}: el documento ya refleja una lectura posterior`,
-        );
-        return;
+        if (invoiceId) {
+          liquidado = await this.liquidarSuscripcionImpagada(
+            invoiceId,
+            current.id,
+            contexto,
+          );
+        } else {
+          await this.cancelarSuscripcion(current.id, contexto);
+        }
+
+        // La factura se saldó entre que Stripe emitió el evento y ahora: el
+        // contrato está al corriente y degradar castigaría a quien acaba de pagar.
+        if (!liquidado) {
+          this.logger.log(
+            `Degradación abortada: la factura se cobró — ${contexto}.`,
+          );
+          return;
+        }
       }
 
-      this.logger.log(
-        `Subscription updated for user ${user.id}: ${current.status}`,
-      );
+      // Por el punto único: si el cobro fallido ya aplicó esta misma baja, aquí
+      // no se reescribe, no se manda un segundo correo y no se cuenta otra vez.
+      // Y si este camino llega primero, es este el que la contabiliza — antes no
+      // lo hacía ninguno de los dos y la baja podía no aparecer en el panel.
+      const razonDeStripe = current.cancellation_details?.reason ?? undefined;
+      const bajaPorImpago =
+        PaymentsService.ESTADOS_IMPAGADOS.includes(current.status) ||
+        razonDeStripe === 'payment_failed';
 
-      // Send downgrade notification email
-      this.emailService
-        .queueSubscriptionDowngradedEmail(
-          {
-            id: user.id,
-            email: user.email,
-            displayName: user.displayName,
-            language: this.detectLanguageFromCountry(user.country),
-          },
-          previousPlan,
-          current.status,
-        )
-        .catch((err) =>
-          this.logger.error(
-            `Failed to queue subscription downgraded email: ${err.message}`,
-          ),
-        );
-    } else if (current.status === 'past_due') {
-      // Payment pending - keep subscriptionId to allow status queries
-      // Don't downgrade immediately, give user time to pay
-      // The handlePaymentFailed method already sends notification emails
-      await this.withRetry(
-        () =>
-          this.firestoreService.updateUserSubscriptionState(
-            user.id,
-            {
-              stripeSubscriptionId: current.id,
-            },
-            readAt,
-            lockToken,
-          ),
-        `handleSubscriptionUpdated(${user.id})`,
-      );
-      this.logger.log(
-        `Subscription past_due for user ${user.id} - keeping subscription active for recovery`,
+      await this.registrarBajaDefinitiva(
+        user,
+        current.id,
+        bajaPorImpago ? 'payment_failed' : 'canceled',
+        readAt,
+        lockToken,
+        { subscription: current },
+        razonDeStripe,
       );
     }
   }
@@ -2090,54 +2209,203 @@ export class PaymentsService {
               `lease: el usuario ${user.id} ya tiene activa ` +
               `${fresh.stripeSubscriptionId}.`,
           );
-          return { aplicado: false as const };
+          return false;
         }
 
-        // El plan cancelado sale de la lectura de DENTRO del lease: si un
+        // Mismo punto único que los otros dos caminos. Este camino tenía su
+        // propia copia de degradar-avisar-registrar, con sus propios valores por
+        // defecto —`'usd'` fijo, plan `'pro'` de relleno—, y era la segunda
+        // implementación de una decisión que solo debería estar escrita una vez.
+        //
+        // El plan sale de la lectura de DENTRO del lease: si un
         // `subscription.updated` pendiente escribió PROMAX entre la lectura
         // inicial y esta, la baja se aplicaría bien pero se registraría y se
-        // notificaría como PRO.
-        const canceladoAhora =
-          fresh.plan === 'lite' ||
-          fresh.plan === 'pro' ||
-          fresh.plan === 'promax'
-            ? fresh.plan
-            : 'pro';
+        // notificaría como PRO. El helper también absorbe el eco de la
+        // cancelación que lanza este mismo servicio al liquidar un impago.
+        const razonDeStripe =
+          subscription.cancellation_details?.reason ?? undefined;
 
-        const escrito = await this.withRetry(
-          () =>
-            this.firestoreService.updateUserSubscriptionState(
-              user.id,
-              {
-                plan: 'free',
-                stripeSubscriptionId: null,
-              },
-              new Date(),
-              lockToken,
-            ),
-          `handleSubscriptionDeleted(${user.id})`,
+        return this.registrarBajaDefinitiva(
+          fresh,
+          subscription.id,
+          razonDeStripe === 'payment_failed' ? 'payment_failed' : 'canceled',
+          new Date(),
+          lockToken,
+          { subscription },
+          razonDeStripe,
         );
-
-        return { aplicado: escrito, canceledPlan: canceladoAhora };
       },
       'la baja de la suscripción',
     );
 
-    const canceledPlan = resultado.canceledPlan ?? 'pro';
-
-    if (!resultado.aplicado) {
-      this.logger.warn(
-        `Baja de ${user.id} no escrita: el documento ya refleja una lectura ` +
-          `posterior o el lease cambió de manos.`,
+    if (!resultado) {
+      this.logger.log(
+        `Baja de ${user.id} no escrita en este ciclo: ya aplicada, descartada ` +
+          `por obsoleta, o de un contrato que no es el vigente.`,
       );
-      return;
+    }
+  }
+
+  /**
+   * Aplica una baja definitiva: degrada a Free, avisa al cliente y la contabiliza.
+   *
+   * Existe porque tres caminos distintos observan la MISMA baja —el cobro
+   * fallido, el `subscription.updated` que lo refleja y el `subscription.deleted`
+   * que provoca nuestra propia cancelación— y cada uno traía su mezcla de
+   * escritura, aviso y registro. De ahí salían los dos defectos que el review
+   * destapó: el cliente recibía un correo por cada camino, y la baja podía no
+   * contabilizarse en ninguno.
+   *
+   * Los tres pasos van juntos y una sola vez: **el primero que llega la aplica**
+   * y los demás la ven aplicada. El corte no es una marca aparte que mantener,
+   * sino el propio estado resultante —Free y sin contrato—, que ningún otro
+   * camino puede confundir con una baja pendiente.
+   *
+   * **La degradación y el registro del churn van en la MISMA transacción.**
+   * Escribir el evento después no servía: si esa segunda escritura fallaba, la
+   * reentrega del webhook encontraba al usuario ya en Free, lo tomaba por trabajo
+   * hecho y la baja no se contabilizaba nunca. Y al revés —registrar primero—
+   * un fencing que descartase la degradación habría contado un churn que no
+   * ocurrió. Dentro de la transacción constan las dos cosas o ninguna.
+   *
+   * El aviso queda fuera a propósito: es el único de los tres que no es dato, y
+   * el servicio de correo se traga sus propios errores. Un correo perdido es
+   * recuperable a mano; una baja sin contabilizar, no.
+   *
+   * @returns `true` si esta llamada fue la que aplicó la baja.
+   */
+  private async calcularMrrPerdido(
+    fuente: FuenteMrrBaja,
+    country?: string,
+  ): Promise<MrrPerdido> {
+    let amountMinor = 0;
+    let sourceCurrency: string | undefined;
+
+    if ('subscription' in fuente) {
+      const items = fuente.subscription.items.data;
+      sourceCurrency = items[0]?.price?.currency;
+      amountMinor = items.reduce((total, item) => {
+        const decimal = item.price?.unit_amount_decimal;
+        const unitAmount =
+          item.price?.unit_amount ?? (decimal ? Number(decimal) : 0);
+        return total + unitAmount * (item.quantity ?? 1);
+      }, 0);
+    } else {
+      sourceCurrency = fuente.invoice.currency;
+      amountMinor = fuente.invoice.amount_due ?? 0;
     }
 
-    this.logger.log(
-      `User ${user.id} downgraded to Free plan (was ${canceledPlan})`,
+    const currency: 'usd' | 'mxn' =
+      sourceCurrency?.toLowerCase() === 'mxn' ||
+      (!sourceCurrency && country === 'MX')
+        ? 'mxn'
+        : 'usd';
+    const mrr = Math.max(0, amountMinor) / 100;
+
+    if (mrr === 0) {
+      this.logger.warn(
+        `No se pudo determinar el MRR perdido desde ${
+          'subscription' in fuente ? fuente.subscription.id : fuente.invoice.id
+        }; el evento de baja conservará importe cero.`,
+      );
+      return { currency, mrr, mrrMxn: 0 };
+    }
+
+    if (currency === 'mxn') {
+      return { currency, mrr, mrrMxn: mrr };
+    }
+
+    try {
+      const conversion = await this.exchangeRateService.convertUsdToMxn(
+        mrr,
+        this.firestoreService,
+      );
+      return { currency, mrr, mrrMxn: conversion.amountMxn };
+    } catch (error) {
+      // La baja no debe perderse porque el proveedor de tipo de cambio esté
+      // caído. Es el mismo fallback que ya usan altas y renovaciones.
+      const fallbackRate = 20;
+      this.logger.warn(
+        `No se pudo convertir el MRR churneado a MXN: ${(error as Error).message}. ` +
+          `Se usa la tasa de respaldo ${fallbackRate}.`,
+      );
+      return { currency, mrr, mrrMxn: mrr * fallbackRate };
+    }
+  }
+
+  private async registrarBajaDefinitiva(
+    user: User,
+    subscriptionId: string,
+    motivo: 'payment_failed' | 'canceled',
+    readAt: Date,
+    lockToken: string,
+    fuenteMrr: FuenteMrrBaja,
+    /** Motivo que da Stripe, cuando la baja viene de un evento suyo. */
+    razonDeStripe?: string,
+  ): Promise<boolean> {
+    if (user.plan === 'free' && !user.stripeSubscriptionId) {
+      this.logger.log(
+        `Baja de ${user.id} (${motivo}) ya aplicada por otro camino; no se ` +
+          `reescribe, ni se avisa, ni se cuenta dos veces.`,
+      );
+      return false;
+    }
+
+    // El plan que se pierde sale del documento, no del evento: es el que el
+    // cliente tenía reconocido y el que hay que nombrarle en el aviso.
+    const planPerdido: PaidPlanType =
+      user.plan === 'lite' ||
+      user.plan === 'pro' ||
+      user.plan === 'promax' ||
+      user.plan === 'enterprise'
+        ? user.plan
+        : 'pro';
+    const mrrPerdido = await this.calcularMrrPerdido(fuenteMrr, user.country);
+
+    // `churned` distingue la baja involuntaria de la que el cliente decide, y
+    // las métricas cuentan ambos tipos, así que separar no esconde nada del panel.
+    const evento: SubscriptionEvent = {
+      id: this.generateSubscriptionEventId(),
+      userId: user.id,
+      userEmail: user.email,
+      eventType: motivo === 'payment_failed' ? 'churned' : 'canceled',
+      plan: planPerdido,
+      previousPlan: planPerdido,
+      currency: mrrPerdido.currency,
+      mrr: mrrPerdido.mrr,
+      mrrMxn: mrrPerdido.mrrMxn,
+      stripeSubscriptionId: subscriptionId,
+      cancellationReason: razonDeStripe ?? motivo,
+      country: user.country,
+      createdAt: new Date(),
+    };
+
+    const aplicado = await this.withRetry(
+      () =>
+        this.firestoreService.updateUserSubscriptionState(
+          user.id,
+          { plan: 'free', stripeSubscriptionId: null },
+          readAt,
+          lockToken,
+          // En la misma transacción: o consta la baja y su registro, o ninguno.
+          evento,
+        ),
+      `registrarBajaDefinitiva(${user.id})`,
     );
 
-    // Send downgrade notification email
+    if (!aplicado) {
+      this.logger.log(
+        `Baja de ${user.id} (${motivo}) descartada: el documento ya refleja ` +
+          `una lectura posterior.`,
+      );
+      return false;
+    }
+
+    this.logger.warn(
+      `Baja aplicada para ${user.id}: ${planPerdido.toUpperCase()} → free ` +
+        `(${motivo}), evento ${evento.id}.`,
+    );
+
     this.emailService
       .queueSubscriptionDowngradedEmail(
         {
@@ -2146,8 +2414,8 @@ export class PaymentsService {
           displayName: user.displayName,
           language: this.detectLanguageFromCountry(user.country),
         },
-        canceledPlan,
-        'canceled',
+        planPerdido,
+        motivo,
       )
       .catch((err) =>
         this.logger.error(
@@ -2155,26 +2423,229 @@ export class PaymentsService {
         ),
       );
 
-    // Save subscription event for churn tracking
-    const subscriptionEvent: SubscriptionEvent = {
-      id: this.generateSubscriptionEventId(),
-      userId: user.id,
-      userEmail: user.email,
-      eventType: 'canceled',
-      plan: canceledPlan,
-      previousPlan: canceledPlan,
-      currency: 'usd', // Default, actual currency not available in deleted event
-      mrr: 0,
-      mrrMxn: 0,
-      stripeSubscriptionId: subscription.id,
-      cancellationReason:
-        subscription.cancellation_details?.reason || undefined,
-      country: user.country,
-      createdAt: new Date(),
-    };
+    return true;
+  }
 
-    await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
-    this.logger.log(`Saved subscription event: canceled for user ${user.id}`);
+  /**
+   * Liquida en Stripe una suscripción cuyo cobro no prosperó: anula la factura
+   * pendiente y cancela el contrato.
+   *
+   * Implementa la mitad "en Stripe" de la política de #65 —que no quede plan
+   * concedido sin pagar, ni factura impagada arrastrándose—. La otra mitad, el
+   * plan del usuario, la escribe quien llama, dentro del mutex de sincronización.
+   *
+   * **Relee la factura antes de tocar nada.** El payload del webhook describe el
+   * instante del fallo, no el de ahora, y entre ambos caben minutos: reentregas
+   * de Stripe, un reintento que sí cobró, o el cliente pagando a mano desde el
+   * portal. Cancelar sobre ese payload le quitaría el plan a alguien que acaba de
+   * pagarlo. Si la factura ya no está `open`, no hay nada que liquidar.
+   *
+   * **Anula antes de cancelar**, y no al revés, porque los dos fallos posibles no
+   * cuestan lo mismo. Si la anulación funciona y la cancelación no, queda un
+   * contrato sin deuda que el siguiente ciclo o el propio Stripe vuelven a poner
+   * en evidencia. Al revés quedaría el cliente sin plan Y con una factura viva
+   * persiguiéndole, que es exactamente lo que esta política venía a evitar.
+   *
+   * Es reanudable: si un ciclo anterior anuló la factura pero murió antes de
+   * cancelar, la reentrega de Stripe encuentra la factura ya anulada y termina el
+   * trabajo. Distinguir eso de una factura cobrada es justo lo que decide entre
+   * rematar la liquidación y no tocar nada.
+   *
+   * @returns `true` si la suscripción quedó liquidada y procede degradar el plan;
+   *          `false` si el cliente pagó y no hay que tocar nada.
+   */
+  private async liquidarSuscripcionImpagada(
+    invoiceId: string,
+    subscriptionId: string,
+    contexto: string,
+  ): Promise<boolean> {
+    const factura = await this.anularFacturaPendiente(invoiceId, contexto);
+
+    if (factura === 'cobrada') {
+      return false;
+    }
+
+    await this.cancelarSuscripcion(subscriptionId, contexto);
+
+    return true;
+  }
+
+  /**
+   * Anula la factura si sigue pendiente, y dice si procede seguir liquidando.
+   *
+   * La distinción que devuelve NO es "estaba abierta o no", sino "hay deuda o el
+   * cliente pagó", y son cosas distintas: una factura `void` significa que un
+   * ciclo anterior ya hizo esta mitad del trabajo y murió antes de cancelar, así
+   * que hay que REMATAR, no abortar. Conflar ambos casos dejaba contratos vivos
+   * sin cobro cada vez que la cancelación fallaba y Stripe reentregaba el evento.
+   *
+   * `uncollectible` cuenta igual que `void`: es deuda dada por perdida, no cobro.
+   * `draft` no se puede anular —no está finalizada— y tampoco acredita pago, así
+   * que se deja pasar sin tocarla; la cancelación del contrato se la lleva.
+   *
+   * Se anula en vez de marcarse incobrable porque no hay nada devengado que
+   * reclamar: el corte de servicio es inmediato, y el CFDI cuelga de
+   * `invoice.payment_succeeded` (`webhooks.service.ts`), así que una factura que
+   * nunca se cobró tampoco llegó a timbrarse — no hay comprobante que corregir.
+   *
+   * @returns `'liquidable'` si procede cancelar el contrato; `'cobrada'` si el
+   *          cliente pagó y no hay que tocar nada.
+   */
+  private async anularFacturaPendiente(
+    invoiceId: string,
+    contexto: string,
+  ): Promise<'liquidable' | 'cobrada'> {
+    const vigente = await this.stripe.invoices.retrieve(invoiceId);
+
+    if (vigente.status === 'paid') {
+      this.logger.log(
+        `Factura ${invoiceId} cobrada; no se liquida nada — ${contexto}.`,
+      );
+      return 'cobrada';
+    }
+
+    if (vigente.status !== 'open') {
+      this.logger.log(
+        `Factura ${invoiceId} en '${vigente.status}': sin cobro y sin nada que ` +
+          `anular, se sigue con la cancelación — ${contexto}.`,
+      );
+      return 'liquidable';
+    }
+
+    await this.stripe.invoices.voidInvoice(invoiceId);
+    this.logger.log(`Factura ${invoiceId} anulada — ${contexto}.`);
+
+    return 'liquidable';
+  }
+
+  /** Cancela la suscripción salvo que Stripe ya la tenga cancelada. */
+  private async cancelarSuscripcion(
+    subscriptionId: string,
+    contexto: string,
+  ): Promise<void> {
+    const suscripcion =
+      await this.stripe.subscriptions.retrieve(subscriptionId);
+
+    if (suscripcion.status === 'canceled') {
+      this.logger.log(
+        `La suscripción ${subscriptionId} ya estaba cancelada — ${contexto}.`,
+      );
+      return;
+    }
+
+    await this.stripe.subscriptions.cancel(subscriptionId);
+    this.logger.log(`Suscripción ${subscriptionId} cancelada — ${contexto}.`);
+  }
+
+  /**
+   * Liquida el contrato impagado que un cliente arrastra al pedir un alta nueva.
+   *
+   * Con `past_due` fuera de los estados vivos, el checkout ya no puede limitarse
+   * a bloquear —eso era el callejón de #65—, pero tampoco puede dejar pasar sin
+   * más: la suscripción anterior seguiría viva en Stripe y el cliente acabaría
+   * con dos. Así que se cierra la vieja antes de abrir la nueva.
+   *
+   * Normalmente esto no llega a ejecutarse: `handlePaymentFailed` liquida el
+   * contrato en cuanto falla el cobro. Queda para la ventana en la que el webhook
+   * aún no ha llegado, se perdió, o el dunning del Dashboard dejó la suscripción
+   * en `unpaid` en vez de cancelarla.
+   *
+   * Si la liquidación falla se bloquea el alta: crear la segunda suscripción
+   * sabiendo que la primera sigue viva dejaría al cliente pagando dos veces.
+   *
+   * @returns `true` si el contrato quedó liquidado y el alta puede continuar;
+   *          `false` si el cliente pagó entre medias y el contrato revivió.
+   */
+  private async liquidarContratoImpagadoAntesDelAlta(
+    user: User,
+    impagada: Stripe.Subscription,
+  ): Promise<boolean> {
+    const contexto = `user ${user.id} (alta nueva sobre contrato ${impagada.status} ${impagada.id})`;
+    const invoiceId =
+      typeof impagada.latest_invoice === 'string'
+        ? impagada.latest_invoice
+        : (impagada.latest_invoice?.id ?? null);
+
+    let liquidado: boolean;
+
+    try {
+      liquidado = await this.withSubscriptionSyncLock(
+        user.id,
+        async (lockToken) => {
+          const fresh =
+            (await this.firestoreService.getUserById(user.id)) ?? user;
+
+          if (
+            fresh.stripeSubscriptionId &&
+            fresh.stripeSubscriptionId !== impagada.id
+          ) {
+            throw new Error(
+              `el usuario ya apunta a otra suscripción (${fresh.stripeSubscriptionId})`,
+            );
+          }
+
+          // El resultado MANDA. La lectura que trajo aquí es de antes del lease,
+          // y en ese hueco cabe el cliente pagando desde el portal: cancelar
+          // ignorando que la factura se saldó le quitaría el contrato que acaba
+          // de poner al día, y el alta que sigue le cobraría por segunda vez.
+          if (invoiceId) {
+            const factura = await this.anularFacturaPendiente(
+              invoiceId,
+              contexto,
+            );
+
+            if (factura === 'cobrada') {
+              return false;
+            }
+          }
+
+          await this.cancelarSuscripcion(impagada.id, contexto);
+
+          // La liquidación observada desde checkout es la misma baja que ven los
+          // webhooks. Debe pasar por el punto único para escribir también el
+          // churn y encolar exactamente una notificación.
+          const aplicado = await this.registrarBajaDefinitiva(
+            fresh,
+            impagada.id,
+            'payment_failed',
+            new Date(),
+            lockToken,
+            { subscription: impagada },
+            'payment_failed',
+          );
+
+          // `false` tras una lectura que todavía conserva el contrato significa
+          // que el fencing rechazó la escritura. Continuar abriría el checkout
+          // con Firestore apuntando al estado viejo.
+          if (
+            !aplicado &&
+            !(fresh.plan === 'free' && !fresh.stripeSubscriptionId)
+          ) {
+            throw new Error(
+              'la escritura de la baja fue rechazada por el fencing de sincronización',
+            );
+          }
+
+          return true;
+        },
+      );
+    } catch (error) {
+      this.logger.error(
+        `No se pudo liquidar el contrato impagado — ${contexto}: ${(error as Error).message}`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not close your previous unpaid subscription. Please try again ' +
+          'in a few minutes or contact support@zplpdf.com.',
+      );
+    }
+
+    this.logger.warn(
+      liquidado
+        ? `Contrato impagado liquidado para permitir el alta — ${contexto}.`
+        : `Alta detenida: el contrato se puso al corriente mientras se liquidaba — ${contexto}.`,
+    );
+
+    return liquidado;
   }
 
   async handlePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
@@ -2189,37 +2660,128 @@ export class PaymentsService {
       return;
     }
 
-    // Log the failed payment
-    this.logger.warn(
-      `Payment failed for user ${user.id}, invoice: ${invoice.id}`,
-    );
-
-    // If this is not the first attempt, send payment failed notification
-    const attemptCount = invoice.attempt_count || 1;
-    if (attemptCount >= 2) {
-      this.logger.warn(
-        `Multiple payment failures (${attemptCount}) for user ${user.id}`,
-      );
-      // Send payment failed notification email
-      this.emailService
-        .queuePaymentFailedEmail(
-          {
-            id: user.id,
-            email: user.email,
-            displayName: user.displayName,
-            language: this.detectLanguageFromCountry(user.country),
-          },
-          attemptCount,
-        )
-        .catch((err) =>
-          this.logger.error(
-            `Failed to queue payment failed email: ${err.message}`,
-          ),
-        );
+    // La política de "no paga → Free" (#65) se aplica SOLO a la renovación, que
+    // es lo que significa literalmente no pagar la suscripción. Los otros dos
+    // motivos que traen aquí un `payment_failed` no son eso:
+    //
+    // - `subscription_create`: el alta que no llegó a cobrarse. No hay plan que
+    //   quitar —nunca se concedió— y Stripe expira sola la suscripción
+    //   `incomplete` a las 23 h.
+    // - `subscription_update`: la proración de un upgrade. El cliente TIENE su
+    //   plan al corriente y lo que falló fue la mejora. Cancelar aquí le quitaría
+    //   lo que sí pagó por no poder pagar lo que pidió de más; además el upgrade
+    //   usa `pending_if_incomplete` justamente para que este fallo no toque la
+    //   suscripción vigente (#73), y esto lo desharía.
+    //
+    // Para ambos se mantiene el comportamiento anterior: registrar y avisar.
+    if (invoice.billing_reason !== 'subscription_cycle') {
+      this.notificarCobroFallido(user, invoice);
+      return;
     }
 
-    // Note: Don't immediately downgrade - Stripe will retry and send subscription.updated
-    // if the final retry fails. This handler is for logging and notifications only.
+    const invoiceId = invoice.id;
+    const subscriptionId = getSubscriptionIdFromInvoice(invoice);
+
+    if (!invoiceId || !subscriptionId) {
+      this.logger.error(
+        `Cobro fallido de ${user.id} sin factura (${invoiceId ?? 'null'}) o sin ` +
+          `suscripción (${subscriptionId ?? 'null'}) que liquidar. Solo se avisa.`,
+      );
+      this.notificarCobroFallido(user, invoice);
+      return;
+    }
+
+    const contexto = `user ${user.id} (renovación impagada, sub ${subscriptionId}, factura ${invoiceId})`;
+
+    // Mismo mutex que los webhooks de suscripción y el upgrade: esto lee el
+    // estado en Stripe y escribe el plan, así que compite con ellos por el mismo
+    // documento (#77). Sin el lease, la cancelación podría pisar un alta recién
+    // confirmada.
+    const degradado = await this.withSubscriptionSyncLock(
+      user.id,
+      async (lockToken) => {
+        // Revalidación dentro del lease: entre el evento y este punto el cliente
+        // pudo contratar de nuevo. Una factura del contrato ANTERIOR no debe
+        // llevarse por delante el que ya está pagando.
+        const fresh =
+          (await this.firestoreService.getUserById(user.id)) ?? user;
+
+        if (
+          fresh.stripeSubscriptionId &&
+          fresh.stripeSubscriptionId !== subscriptionId
+        ) {
+          this.logger.warn(
+            `Cobro fallido ignorado: el usuario ya tiene otra suscripción ` +
+              `(${fresh.stripeSubscriptionId}) — ${contexto}.`,
+          );
+          return false;
+        }
+
+        const liquidada = await this.liquidarSuscripcionImpagada(
+          invoiceId,
+          subscriptionId,
+          contexto,
+        );
+
+        if (!liquidada) {
+          return false;
+        }
+
+        // Degradar, avisar y contabilizar van juntos y una sola vez. El sello se
+        // toma tras liquidar en Stripe: es el instante que esta escritura
+        // describe, y dentro del lease no hay otro ciclo con el que competir.
+        return this.registrarBajaDefinitiva(
+          fresh,
+          subscriptionId,
+          'payment_failed',
+          new Date(),
+          lockToken,
+          { invoice },
+        );
+      },
+    );
+
+    if (!degradado) {
+      this.logger.log(`Sin baja que aplicar en este ciclo — ${contexto}.`);
+    }
+  }
+
+  /**
+   * Aviso de cobro fallido sin degradación: los motivos que no son una
+   * renovación (alta o proración de upgrade) conservan el comportamiento
+   * anterior — registrar, y avisar a partir del segundo intento.
+   */
+  private notificarCobroFallido(user: User, invoice: Stripe.Invoice): void {
+    this.logger.warn(
+      `Payment failed for user ${user.id}, invoice: ${invoice.id} ` +
+        `(billing_reason: ${invoice.billing_reason})`,
+    );
+
+    const attemptCount = invoice.attempt_count || 1;
+
+    if (attemptCount < 2) {
+      return;
+    }
+
+    this.logger.warn(
+      `Multiple payment failures (${attemptCount}) for user ${user.id}`,
+    );
+
+    this.emailService
+      .queuePaymentFailedEmail(
+        {
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          language: this.detectLanguageFromCountry(user.country),
+        },
+        attemptCount,
+      )
+      .catch((err) =>
+        this.logger.error(
+          `Failed to queue payment failed email: ${err.message}`,
+        ),
+      );
   }
 
   async handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
