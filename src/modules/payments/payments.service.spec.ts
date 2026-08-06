@@ -476,12 +476,19 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it('aborta si Stripe ya tiene la suscripción en el plan de destino', async () => {
-    // La comprobación que de verdad impide bajar de plan: el plan efectivo lo
-    // dicta el precio que Stripe tiene puesto, no el documento.
-    const { service, update, retrieve } = buildService({
-      subscription: activeSubscription,
-    });
+  it('sincroniza de forma idempotente si Stripe ya aplicó el destino pero Firestore sigue atrás', async () => {
+    // Caso del reintento tras perder la respuesta del update Y la lectura de
+    // reconciliación: Stripe ya cobró PROMAX, pero el documento todavía dice PRO.
+    const { service, update, retrieve, userDoc, updateUserSubscriptionState } =
+      buildService({
+        subscription: activeSubscription,
+      });
+    userDoc.upgradeIdempotency = {
+      key: 'upgrade_perdido',
+      targetPlan: 'promax',
+      subscriptionId: 'sub_123',
+      createdAt: new Date().toISOString(),
+    };
     retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
       status: 'active',
       items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
@@ -489,8 +496,65 @@ describe('PaymentsService — upgradeSubscription', () => {
 
     await expect(
       service.upgradeSubscription('uid-1', 'promax'),
-    ).rejects.toThrow(BadRequestException);
+    ).resolves.toMatchObject({ success: true });
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      { plan: 'promax' },
+      expect.any(Date),
+      'sync-tok',
+    );
+    expect(userDoc.plan).toBe('promax');
+    expect(userDoc.upgradeIdempotency).toBeNull();
+    // Ya estaba aplicado: repetir la mutación podría volver a facturar.
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it('no afirma éxito si no logra persistir el upgrade ya aplicado', async () => {
+    const { service, retrieve, updateUserSubscriptionState } = buildService({
+      subscription: activeSubscription,
+    });
+    retrieve.mockResolvedValueOnce(activeSubscription).mockResolvedValueOnce({
+      status: 'active',
+      items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+    });
+    updateUserSubscriptionState.mockResolvedValue(false);
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(error.message).toContain('went through');
+  });
+
+  it('rechaza la bajada que solo Stripe conoce, sin confundirla con el caso idempotente', async () => {
+    // La recuperación idempotente solo cubre destino == vigente. Si Stripe está
+    // en un plan SUPERIOR al pedido, sigue siendo una bajada y debe rechazarse:
+    // es la única rama que queda viva en esa guarda, y la protección de fondo
+    // del método.
+    //
+    // Firestore dice lite, así que las dos guardas contra el documento dejan
+    // pasar un lite→pro; solo la comprobación contra el precio vigente en Stripe
+    // ve que en realidad es promax→pro.
+    const { service, update, updateUser, userDoc } = buildService({
+      subscription: {
+        status: 'active',
+        items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+      },
+    });
+    userDoc.plan = 'lite';
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'pro')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    // PROMAX, no LITE: prueba que el rechazo viene de la guarda contra Stripe y
+    // no de las anteriores, que habrían dejado pasar este cambio.
+    expect(error.message).toBe('Cannot upgrade from PROMAX to PRO.');
+    expect(update).not.toHaveBeenCalled();
+    expect(escriturasDePlan(updateUser)).toHaveLength(0);
   });
 
   it('aborta si la suscripción dejó de estar activa mientras se preparaba', async () => {
@@ -937,26 +1001,47 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(updateUser).toHaveBeenCalledWith('uid-1', { plan: 'promax' });
   });
 
-  it('tras un error de conexión en el que NO se aplicó, informa del fallo sin tocar el plan', async () => {
-    const { service, updateUser, retrieve } = buildService({
-      subscription: activeSubscription,
-      updateError: { type: 'StripeConnectionError', message: 'network error' },
-    });
-    // Tercera lectura —la de la reconciliación— sigue en el precio viejo: el
-    // cambio no llegó a aplicarse.
-    retrieve
-      .mockResolvedValueOnce(activeSubscription)
-      .mockResolvedValueOnce(activeSubscription)
-      .mockResolvedValueOnce({
-        status: 'active',
-        items: { data: [{ id: 'si_123', price: { id: 'price_pro_mxn' } }] },
+  it.each(['StripeConnectionError', 'StripeAPIError'])(
+    'tras un %s sin desenlace visible, responde de forma ambigua y conserva la clave',
+    async (type) => {
+      const { service, updateUser, retrieve, userDoc } = buildService({
+        subscription: activeSubscription,
+        updateError: { type, message: 'indeterminate error' },
       });
+      // La lectura inmediata todavía ve PRO, pero eso no demuestra que la
+      // mutación perdida no vaya a terminar o ser reconciliada después.
+      retrieve
+        .mockResolvedValueOnce(activeSubscription)
+        .mockResolvedValueOnce(activeSubscription)
+        .mockResolvedValueOnce({
+          status: 'active',
+          items: { data: [{ id: 'si_123', price: { id: 'price_pro_mxn' } }] },
+        });
 
-    await expect(
-      service.upgradeSubscription('uid-1', 'promax'),
-    ).rejects.toThrow();
-    expect(escriturasDePlan(updateUser)).toHaveLength(0);
-  });
+      const error = await service
+        .upgradeSubscription('uid-1', 'promax')
+        .catch((e: Error) => e);
+
+      expect(error).toBeInstanceOf(ServiceUnavailableException);
+      expect(error.message).toContain('could not confirm');
+      expect(error.message).not.toContain('has not been changed');
+      expect(escriturasDePlan(updateUser)).toHaveLength(0);
+      // El reintento seguro necesita reutilizar exactamente esta clave.
+      expect(userDoc.upgradeIdempotency).toMatchObject({
+        targetPlan: 'promax',
+        subscriptionId: 'sub_123',
+      });
+      // Este throw no pasa por throwStripeApiError, así que el rastro tiene que
+      // dejarlo él: sin esto, el desenlace con un cobro quizá en vuelo sería el
+      // único del flujo sin el mensaje original de Stripe ni nivel `error`.
+      const registrado = service.logger.error.mock.calls
+        .map(([mensaje]: [string]) => mensaje)
+        .join('\n');
+      expect(registrado).toContain(type);
+      expect(registrado).toContain('indeterminate error');
+      expect(registrado).toContain('uid-1');
+    },
+  );
 
   /**
    * La petición perdida pudo llegar a crear un pending update. Clasificarlo como
