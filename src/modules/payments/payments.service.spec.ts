@@ -1404,6 +1404,7 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     const queueSubscriptionDowngradedEmail = jest
       .fn()
       .mockResolvedValue(undefined);
+    const saveSubscriptionEvent = jest.fn().mockResolvedValue(undefined);
 
     // La degradación por impago liquida el contrato en Stripe antes de escribir,
     // así que estos webhooks también pasan por facturas y cancelación.
@@ -1424,6 +1425,8 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       updateUserSubscriptionState,
       acquireSubscriptionSyncLock,
       releaseSubscriptionSyncLock,
+      // La baja se contabiliza en el mismo punto que la escribe y la notifica.
+      saveSubscriptionEvent,
     };
     service.emailService = { queueSubscriptionDowngradedEmail };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -1443,6 +1446,7 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       cancel,
       voidInvoice,
       invoiceRetrieve,
+      saveSubscriptionEvent,
     };
   }
 
@@ -2209,6 +2213,7 @@ describe('PaymentsService — handlePaymentFailed', () => {
       .fn()
       .mockResolvedValue(undefined);
     const queuePaymentFailedEmail = jest.fn().mockResolvedValue(undefined);
+    const saveSubscriptionEvent = jest.fn().mockResolvedValue(undefined);
 
     const service: any = Object.create(PaymentsService.prototype);
     service.stripe = {
@@ -2221,6 +2226,7 @@ describe('PaymentsService — handlePaymentFailed', () => {
       updateUserSubscriptionState,
       acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok-1'),
       releaseSubscriptionSyncLock: jest.fn().mockResolvedValue(undefined),
+      saveSubscriptionEvent,
     };
     service.emailService = {
       queueSubscriptionDowngradedEmail,
@@ -2236,6 +2242,7 @@ describe('PaymentsService — handlePaymentFailed', () => {
       updateUserSubscriptionState,
       queueSubscriptionDowngradedEmail,
       queuePaymentFailedEmail,
+      saveSubscriptionEvent,
     };
   }
 
@@ -2719,5 +2726,187 @@ describe('PaymentsService — el deleted que sigue a la cancelación por impago'
     expect(queueSubscriptionDowngradedEmail).not.toHaveBeenCalled();
     expect(saveSubscriptionEvent).not.toHaveBeenCalled();
     expect(updateUserSubscriptionState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Segunda ronda del review del PR #84. Los dos primeros salen del mismo sitio:
+ * tres caminos observan la MISMA baja y cada uno traía su mezcla de escritura,
+ * aviso y registro. De ahí el correo por duplicado y la baja sin contabilizar.
+ */
+describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', () => {
+  const PRO_MXN = 'price_pro_mxn';
+
+  function buildService(usuario: Record<string, unknown>) {
+    const queueSubscriptionDowngradedEmail = jest
+      .fn()
+      .mockResolvedValue(undefined);
+    const saveSubscriptionEvent = jest.fn().mockResolvedValue(undefined);
+    const updateUserSubscriptionState = jest.fn().mockResolvedValue(true);
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = {
+      subscriptions: {
+        retrieve: jest.fn().mockResolvedValue({
+          id: 'sub_123',
+          status: 'past_due',
+          customer: 'cus_123',
+          latest_invoice: 'in_123',
+          items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+        }),
+        cancel: jest.fn().mockResolvedValue({ status: 'canceled' }),
+      },
+      invoices: {
+        retrieve: jest.fn().mockResolvedValue({ id: 'in_123', status: 'open' }),
+        voidInvoice: jest.fn().mockResolvedValue({ status: 'void' }),
+      },
+    };
+    service.firestoreService = {
+      getUserByStripeCustomerId: jest.fn().mockResolvedValue(usuario),
+      getUserById: jest.fn().mockResolvedValue(usuario),
+      updateUserSubscriptionState,
+      saveSubscriptionEvent,
+      acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok-1'),
+      releaseSubscriptionSyncLock: jest.fn().mockResolvedValue(undefined),
+    };
+    service.emailService = { queueSubscriptionDowngradedEmail };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+    service.proPriceIdMxn = PRO_MXN;
+
+    return {
+      service,
+      queueSubscriptionDowngradedEmail,
+      saveSubscriptionEvent,
+      updateUserSubscriptionState,
+    };
+  }
+
+  const conPlan = {
+    id: 'uid-1',
+    email: 'cliente@example.com',
+    plan: 'lite',
+    country: 'MX',
+    stripeSubscriptionId: 'sub_123',
+  };
+
+  const yaDegradado = {
+    id: 'uid-1',
+    email: 'cliente@example.com',
+    plan: 'free',
+    country: 'MX',
+    stripeSubscriptionId: null,
+  };
+
+  const eventoPastDue = {
+    id: 'sub_123',
+    status: 'past_due',
+    customer: 'cus_123',
+    latest_invoice: 'in_123',
+    items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+  };
+
+  it('contabiliza la baja por impago, que antes no registraba ningún camino', async () => {
+    const { service, saveSubscriptionEvent } = buildService(conPlan);
+
+    await service.handlePaymentFailed({
+      id: 'in_123',
+      customer: 'cus_123',
+      billing_reason: 'subscription_cycle',
+      parent: { subscription_details: { subscription: 'sub_123' } },
+    });
+
+    expect(saveSubscriptionEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'churned',
+        // El plan sale del documento: con el valor por defecto se nombraba PRO
+        // a un cliente de LITE.
+        plan: 'lite',
+        cancellationReason: 'payment_failed',
+        currency: 'mxn',
+      }),
+    );
+  });
+
+  it('el subscription.updated que sigue al impago no manda un segundo correo', async () => {
+    const { service, queueSubscriptionDowngradedEmail, saveSubscriptionEvent } =
+      buildService(yaDegradado);
+
+    await service.handleSubscriptionUpdated(eventoPastDue);
+
+    // Un impago genera payment_failed Y subscription.updated. Antes cada uno
+    // avisaba por su cuenta y el cliente recibía dos correos por una sola baja.
+    expect(queueSubscriptionDowngradedEmail).not.toHaveBeenCalled();
+    expect(saveSubscriptionEvent).not.toHaveBeenCalled();
+  });
+
+  it('si el updated llega primero, es él quien contabiliza la baja', async () => {
+    const { service, saveSubscriptionEvent, queueSubscriptionDowngradedEmail } =
+      buildService(conPlan);
+
+    await service.handleSubscriptionUpdated(eventoPastDue);
+
+    // El orden de los webhooks no lo decide nadie: gane quien gane, la baja
+    // tiene que quedar contada exactamente una vez.
+    expect(saveSubscriptionEvent).toHaveBeenCalledTimes(1);
+    expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('no cuenta la baja si el fencing descarta la escritura', async () => {
+    const { service, saveSubscriptionEvent, updateUserSubscriptionState } =
+      buildService(conPlan);
+    updateUserSubscriptionState.mockResolvedValue(false);
+
+    await service.handleSubscriptionUpdated(eventoPastDue);
+
+    // Sin baja escrita no hay baja que contar: registrarla inflaría el churn con
+    // clientes que siguen pagando.
+    expect(saveSubscriptionEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('PaymentsService — reconciliación de un upgrade en trialing', () => {
+  it('reconoce aplicado el cambio que Stripe dejó en trialing', async () => {
+    const service: any = Object.create(PaymentsService.prototype);
+    const updateUserSubscriptionState = jest.fn().mockResolvedValue(true);
+
+    service.stripe = {
+      subscriptions: {
+        retrieve: jest.fn().mockResolvedValue({
+          id: 'sub_123',
+          status: 'trialing',
+          items: { data: [{ id: 'si_1', price: { id: 'price_promax' } }] },
+        }),
+      },
+    };
+    service.firestoreService = {
+      renewSubscriptionSyncLock: jest.fn().mockResolvedValue(true),
+      updateUserSubscriptionState,
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+
+    const res = await service.reconcileIndeterminateUpgrade(
+      Object.assign(new Error('timeout'), { type: 'StripeConnectionError' }),
+      'uid-1',
+      'promax',
+      'sub_123',
+      'price_promax',
+      'ctx',
+      'tok-1',
+      'idem-1',
+    );
+
+    // Es el camino que repara el desenlace indeterminado. Comparando contra
+    // `active` a secas daba por no aplicado un upgrade que sí se hizo, y el
+    // cliente quedaba con el precio nuevo en Stripe y el plan viejo en el
+    // producto, sin nada que lo corrigiera después.
+    expect(res).toEqual(expect.objectContaining({ success: true }));
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      { plan: 'promax' },
+      expect.any(Date),
+      'tok-1',
+    );
   });
 });

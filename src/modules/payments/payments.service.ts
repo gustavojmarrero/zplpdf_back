@@ -864,8 +864,15 @@ export class PaymentsService {
       this.throwPendingPaymentError(current, context);
     }
 
+    // Mismo criterio que autorizó el cambio y que lo confirma en el camino
+    // principal: si `trialing` basta para aplicar el upgrade, tiene que bastar
+    // para reconocerlo aplicado. Comparando contra `active` a secas, un upgrade
+    // hecho durante una prueba se daría por no aplicado justo aquí —en el camino
+    // que existe para reparar el desenlace indeterminado— y el cliente quedaría
+    // con el precio nuevo en Stripe y el plan viejo en el producto, sin nada que
+    // lo corrigiera después.
     const applied =
-      current.status === 'active' &&
+      PaymentsService.ESTADOS_MODIFICABLES.includes(current.status) &&
       current.items.data.some((item) => item.price?.id === expectedPriceId);
 
     if (!applied) {
@@ -2065,8 +2072,6 @@ export class PaymentsService {
       // Liquidando aquí también, los dos caminos convergen y el orden deja de
       // importar de verdad. La liquidación es reanudable e idempotente, así que
       // que ambos la ejecuten no duplica nada.
-      const previousPlan = user.plan || 'pro';
-
       if (PaymentsService.ESTADOS_IMPAGADOS.includes(current.status)) {
         const invoiceId =
           typeof current.latest_invoice === 'string'
@@ -2099,50 +2104,19 @@ export class PaymentsService {
         }
       }
 
-      const applied = await this.withRetry(
-        () =>
-          this.firestoreService.updateUserSubscriptionState(
-            user.id,
-            {
-              plan: 'free',
-              stripeSubscriptionId: null,
-            },
-            readAt,
-            lockToken,
-          ),
-        `handleSubscriptionUpdated(${user.id})`,
+      // Por el punto único: si el cobro fallido ya aplicó esta misma baja, aquí
+      // no se reescribe, no se manda un segundo correo y no se cuenta otra vez.
+      // Y si este camino llega primero, es este el que la contabiliza — antes no
+      // lo hacía ninguno de los dos y la baja podía no aparecer en el panel.
+      await this.registrarBajaDefinitiva(
+        user,
+        current.id,
+        PaymentsService.ESTADOS_IMPAGADOS.includes(current.status)
+          ? 'payment_failed'
+          : 'canceled',
+        readAt,
+        lockToken,
       );
-
-      // El email va atado a la escritura: avisar de una degradación que se
-      // descartó por obsoleta alarmaría a un cliente que sigue de pago.
-      if (!applied) {
-        this.logger.log(
-          `Downgrade descartado para user ${user.id}: el documento ya refleja una lectura posterior`,
-        );
-        return;
-      }
-
-      this.logger.log(
-        `Subscription updated for user ${user.id}: ${current.status}`,
-      );
-
-      // Send downgrade notification email
-      this.emailService
-        .queueSubscriptionDowngradedEmail(
-          {
-            id: user.id,
-            email: user.email,
-            displayName: user.displayName,
-            language: this.detectLanguageFromCountry(user.country),
-          },
-          previousPlan,
-          current.status,
-        )
-        .catch((err) =>
-          this.logger.error(
-            `Failed to queue subscription downgraded email: ${err.message}`,
-          ),
-        );
     }
   }
 
@@ -2322,6 +2296,114 @@ export class PaymentsService {
 
     await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
     this.logger.log(`Saved subscription event: canceled for user ${user.id}`);
+  }
+
+  /**
+   * Aplica una baja definitiva: degrada a Free, avisa al cliente y la contabiliza.
+   *
+   * Existe porque tres caminos distintos observan la MISMA baja —el cobro
+   * fallido, el `subscription.updated` que lo refleja y el `subscription.deleted`
+   * que provoca nuestra propia cancelación— y cada uno traía su mezcla de
+   * escritura, aviso y registro. De ahí salían los dos defectos que el review
+   * destapó: el cliente recibía un correo por cada camino, y la baja podía no
+   * contabilizarse en ninguno.
+   *
+   * Los tres pasos van juntos y una sola vez: **el primero que llega la aplica**
+   * y los demás la ven aplicada. El corte no es una marca aparte que mantener,
+   * sino el propio estado resultante —Free y sin contrato—, que ningún otro
+   * camino puede confundir con una baja pendiente.
+   *
+   * El aviso y el registro van atados a que la escritura se aplique de verdad:
+   * si el fencing la descarta por obsoleta, no hay baja que contar ni de la que
+   * avisar.
+   *
+   * @returns `true` si esta llamada fue la que aplicó la baja.
+   */
+  private async registrarBajaDefinitiva(
+    user: User,
+    subscriptionId: string,
+    motivo: 'payment_failed' | 'canceled',
+    readAt: Date,
+    lockToken: string,
+  ): Promise<boolean> {
+    if (user.plan === 'free' && !user.stripeSubscriptionId) {
+      this.logger.log(
+        `Baja de ${user.id} (${motivo}) ya aplicada por otro camino; no se ` +
+          `reescribe, ni se avisa, ni se cuenta dos veces.`,
+      );
+      return false;
+    }
+
+    // El plan que se pierde sale del documento, no del evento: es el que el
+    // cliente tenía reconocido y el que hay que nombrarle en el aviso.
+    const planPerdido: PaidPlanType =
+      user.plan === 'lite' ||
+      user.plan === 'pro' ||
+      user.plan === 'promax' ||
+      user.plan === 'enterprise'
+        ? user.plan
+        : 'pro';
+
+    const aplicado = await this.withRetry(
+      () =>
+        this.firestoreService.updateUserSubscriptionState(
+          user.id,
+          { plan: 'free', stripeSubscriptionId: null },
+          readAt,
+          lockToken,
+        ),
+      `registrarBajaDefinitiva(${user.id})`,
+    );
+
+    if (!aplicado) {
+      this.logger.log(
+        `Baja de ${user.id} (${motivo}) descartada: el documento ya refleja ` +
+          `una lectura posterior.`,
+      );
+      return false;
+    }
+
+    this.logger.warn(
+      `Baja aplicada para ${user.id}: ${planPerdido.toUpperCase()} → free (${motivo}).`,
+    );
+
+    this.emailService
+      .queueSubscriptionDowngradedEmail(
+        {
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          language: this.detectLanguageFromCountry(user.country),
+        },
+        planPerdido,
+        motivo,
+      )
+      .catch((err) =>
+        this.logger.error(
+          `Failed to queue subscription downgraded email: ${err.message}`,
+        ),
+      );
+
+    // `churned` distingue la baja involuntaria de la que el cliente decide, y
+    // las métricas ya lo cuentan junto a `canceled` (`finance.service.ts`), así
+    // que separar no esconde ninguna baja del panel.
+    await this.firestoreService.saveSubscriptionEvent({
+      id: this.generateSubscriptionEventId(),
+      userId: user.id,
+      userEmail: user.email,
+      eventType: motivo === 'payment_failed' ? 'churned' : 'canceled',
+      plan: planPerdido,
+      previousPlan: planPerdido,
+      currency: user.country === 'MX' ? 'mxn' : 'usd',
+      mrr: 0,
+      mrrMxn: 0,
+      stripeSubscriptionId: subscriptionId,
+      cancellationReason: motivo,
+      country: user.country,
+      createdAt: new Date(),
+    });
+
+    return true;
   }
 
   /**
@@ -2599,57 +2681,22 @@ export class PaymentsService {
           return false;
         }
 
-        // El sello se toma tras liquidar en Stripe: es el instante que esta
-        // escritura describe, y dentro del lease no hay otro ciclo con el que
-        // competir.
-        const aplicado = await this.withRetry(
-          () =>
-            this.firestoreService.updateUserSubscriptionState(
-              fresh.id,
-              { plan: 'free', stripeSubscriptionId: null },
-              new Date(),
-              lockToken,
-            ),
-          `handlePaymentFailed(${fresh.id})`,
+        // Degradar, avisar y contabilizar van juntos y una sola vez. El sello se
+        // toma tras liquidar en Stripe: es el instante que esta escritura
+        // describe, y dentro del lease no hay otro ciclo con el que competir.
+        return this.registrarBajaDefinitiva(
+          fresh,
+          subscriptionId,
+          'payment_failed',
+          new Date(),
+          lockToken,
         );
-
-        if (!aplicado) {
-          this.logger.log(
-            `Degradación descartada: el documento ya refleja una lectura ` +
-              `posterior — ${contexto}.`,
-          );
-          return false;
-        }
-
-        this.logger.warn(
-          `Plan degradado a Free por renovación impagada — ${contexto}.`,
-        );
-        return true;
       },
     );
 
     if (!degradado) {
-      return;
+      this.logger.log(`Sin baja que aplicar en este ciclo — ${contexto}.`);
     }
-
-    // El aviso va atado a la escritura y fuera del lease: contar una degradación
-    // que no llegó a aplicarse alarmaría a un cliente que sigue de pago.
-    this.emailService
-      .queueSubscriptionDowngradedEmail(
-        {
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-          language: this.detectLanguageFromCountry(user.country),
-        },
-        user.plan || 'pro',
-        'payment_failed',
-      )
-      .catch((err) =>
-        this.logger.error(
-          `Failed to queue subscription downgraded email: ${err.message}`,
-        ),
-      );
   }
 
   /**
