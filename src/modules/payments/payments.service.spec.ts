@@ -1565,6 +1565,7 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
       { plan: 'free', stripeSubscriptionId: null },
       expect.any(Date),
       'tok-1',
+      expect.objectContaining({ eventType: 'churned' }),
     );
   });
 
@@ -2114,6 +2115,8 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
       expect.objectContaining({ plan: 'free' }),
       expect.any(Date),
       'tok-1',
+      // La baja se contabiliza en la misma transacción que la escribe.
+      expect.objectContaining({ eventType: 'canceled' }),
     );
     // Sin sello ni token, podía pisar un upgrade recién confirmado.
     expect(
@@ -2259,11 +2262,14 @@ describe('PaymentsService — handlePaymentFailed', () => {
 
     expect(voidInvoice).toHaveBeenCalledWith('in_123');
     expect(cancel).toHaveBeenCalledWith('sub_123');
+    // La baja y su registro viajan en la MISMA transacción: el evento es el
+    // quinto argumento, no una escritura posterior que pudiera perderse.
     expect(updateUserSubscriptionState).toHaveBeenCalledWith(
       'uid-1',
       { plan: 'free', stripeSubscriptionId: null },
       expect.any(Date),
       'tok-1',
+      expect.objectContaining({ eventType: 'churned', plan: 'pro' }),
     );
     expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'uid-1' }),
@@ -2807,7 +2813,7 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
   };
 
   it('contabiliza la baja por impago, que antes no registraba ningún camino', async () => {
-    const { service, saveSubscriptionEvent } = buildService(conPlan);
+    const { service, updateUserSubscriptionState } = buildService(conPlan);
 
     await service.handlePaymentFailed({
       id: 'in_123',
@@ -2816,7 +2822,14 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
       parent: { subscription_details: { subscription: 'sub_123' } },
     });
 
-    expect(saveSubscriptionEvent).toHaveBeenCalledWith(
+    // El evento viaja DENTRO de la transacción que degrada, no en una escritura
+    // posterior: si esta fallaba, la reentrega veía al usuario ya en Free, lo
+    // tomaba por trabajo hecho y la baja no se contabilizaba nunca.
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      { plan: 'free', stripeSubscriptionId: null },
+      expect.any(Date),
+      'tok-1',
       expect.objectContaining({
         eventType: 'churned',
         // El plan sale del documento: con el valor por defecto se nombraba PRO
@@ -2841,14 +2854,20 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
   });
 
   it('si el updated llega primero, es él quien contabiliza la baja', async () => {
-    const { service, saveSubscriptionEvent, queueSubscriptionDowngradedEmail } =
-      buildService(conPlan);
+    const {
+      service,
+      updateUserSubscriptionState,
+      queueSubscriptionDowngradedEmail,
+    } = buildService(conPlan);
 
     await service.handleSubscriptionUpdated(eventoPastDue);
 
     // El orden de los webhooks no lo decide nadie: gane quien gane, la baja
     // tiene que quedar contada exactamente una vez.
-    expect(saveSubscriptionEvent).toHaveBeenCalledTimes(1);
+    expect(updateUserSubscriptionState).toHaveBeenCalledTimes(1);
+    expect(updateUserSubscriptionState.mock.calls[0][4]).toEqual(
+      expect.objectContaining({ eventType: 'churned' }),
+    );
     expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledTimes(1);
   });
 
@@ -2860,7 +2879,8 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
     await service.handleSubscriptionUpdated(eventoPastDue);
 
     // Sin baja escrita no hay baja que contar: registrarla inflaría el churn con
-    // clientes que siguen pagando.
+    // clientes que siguen pagando. Lo garantiza la transacción — el evento entra
+    // en ella, así que un fencing que descarte la escritura lo descarta también.
     expect(saveSubscriptionEvent).not.toHaveBeenCalled();
   });
 });
@@ -2907,6 +2927,113 @@ describe('PaymentsService — reconciliación de un upgrade en trialing', () => 
       { plan: 'promax' },
       expect.any(Date),
       'tok-1',
+    );
+  });
+});
+
+/**
+ * Tercera ronda del review del PR #84.
+ */
+describe('PaymentsService — el webhook repara también trialing', () => {
+  const PROMAX_MXN = 'price_promax_mxn';
+
+  it('escribe el plan cuando Stripe tiene la suscripción en trialing', async () => {
+    const usuario = {
+      id: 'uid-1',
+      email: 'cliente@example.com',
+      plan: 'pro',
+      country: 'MX',
+      stripeSubscriptionId: 'sub_123',
+    };
+    const updateUserSubscriptionState = jest.fn().mockResolvedValue(true);
+    const enTrial = {
+      id: 'sub_123',
+      status: 'trialing',
+      customer: 'cus_123',
+      items: { data: [{ id: 'si_1', price: { id: PROMAX_MXN } }] },
+    };
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = {
+      subscriptions: { retrieve: jest.fn().mockResolvedValue(enTrial) },
+    };
+    service.firestoreService = {
+      getUserByStripeCustomerId: jest.fn().mockResolvedValue(usuario),
+      getUserById: jest.fn().mockResolvedValue(usuario),
+      updateUserSubscriptionState,
+      acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok-1'),
+      releaseSubscriptionSyncLock: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+    service.promaxPriceIdMxn = PROMAX_MXN;
+
+    await service.handleSubscriptionUpdated(enTrial);
+
+    // Este webhook es el que repara un upgrade que Stripe aplicó pero Firestore
+    // no llegó a guardar. Comparando contra `active` a secas, `trialing` no
+    // entraba en ninguna rama —ni escribía plan ni degradaba— y el fallo del
+    // camino principal quedaba sin nada que lo corrigiera después.
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({ plan: 'promax' }),
+      expect.any(Date),
+      'tok-1',
+    );
+  });
+});
+
+describe('PaymentsService — subscription.deleted usa el mismo punto único', () => {
+  const PRO_MXN = 'price_pro_mxn';
+
+  it('registra la baja con los datos del usuario, no con valores de relleno', async () => {
+    const usuario = {
+      id: 'uid-1',
+      email: 'cliente@example.com',
+      plan: 'lite',
+      country: 'MX',
+      stripeSubscriptionId: 'sub_123',
+    };
+    const updateUserSubscriptionState = jest.fn().mockResolvedValue(true);
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = { subscriptions: { retrieve: jest.fn() } };
+    service.firestoreService = {
+      getUserByStripeCustomerId: jest.fn().mockResolvedValue(usuario),
+      getUserById: jest.fn().mockResolvedValue(usuario),
+      updateUserSubscriptionState,
+      saveSubscriptionEvent: jest.fn().mockResolvedValue(undefined),
+      acquireSubscriptionSyncLock: jest.fn().mockResolvedValue('tok-1'),
+      releaseSubscriptionSyncLock: jest.fn().mockResolvedValue(undefined),
+    };
+    service.emailService = {
+      queueSubscriptionDowngradedEmail: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.MAX_RETRIES = 3;
+
+    await service.handleSubscriptionDeleted({
+      id: 'sub_123',
+      customer: 'cus_1',
+      cancellation_details: { reason: 'cancellation_requested' },
+      items: { data: [{ price: { id: PRO_MXN } }] },
+    });
+
+    // Este camino tenía su propia copia de degradar-avisar-registrar, con sus
+    // propios valores por defecto: moneda `usd` fija y plan de relleno. Ahora
+    // entra por el mismo helper, así que la moneda sale del país y el plan del
+    // documento, y la razón de Stripe se conserva.
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      { plan: 'free', stripeSubscriptionId: null },
+      expect.any(Date),
+      'tok-1',
+      expect.objectContaining({
+        eventType: 'canceled',
+        plan: 'lite',
+        currency: 'mxn',
+        cancellationReason: 'cancellation_requested',
+      }),
     );
   });
 });

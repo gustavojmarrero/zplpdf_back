@@ -2015,9 +2015,9 @@ export class PaymentsService {
     const priceId = current.items.data[0]?.price?.id;
     const plan = priceId ? this.getPlanFromPriceId(priceId) : null;
 
-    // Si la suscripción está activa pero no podemos resolver el plan, no tocamos
+    // Si la suscripción está viva pero no podemos resolver el plan, no tocamos
     // el plan del usuario (evita asignar uno incorrecto por mala configuración).
-    if (current.status === 'active' && !plan) {
+    if (PaymentsService.ESTADOS_VIVOS.includes(current.status) && !plan) {
       this.logger.error(
         `CRITICAL: No se pudo determinar el plan para subscription.updated de user ${user.id} ` +
           `(sub ${current.id}). Plan NO actualizado. Revisar STRIPE_*_PRICE_ID.`,
@@ -2028,7 +2028,13 @@ export class PaymentsService {
     // Check subscription status with retry
     const period = this.resolveBillingPeriod(current);
 
-    if (current.status === 'active') {
+    // `trialing` entra aquí junto a `active`: son los dos estados que dan derecho
+    // al plan. Comparar contra `active` a secas dejaba a `trialing` sin ninguna
+    // rama —ni escribe plan ni degrada—, y este webhook es precisamente el que
+    // repara un upgrade que Stripe aplicó pero Firestore no llegó a guardar. Sin
+    // esto, un upgrade durante una prueba se quedaba sin nada que lo arreglase
+    // después: el fallo del camino principal era definitivo.
+    if (PaymentsService.ESTADOS_VIVOS.includes(current.status)) {
       // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
       const activeUpdateData: Record<string, unknown> = {
         plan,
@@ -2194,108 +2200,37 @@ export class PaymentsService {
               `lease: el usuario ${user.id} ya tiene activa ` +
               `${fresh.stripeSubscriptionId}.`,
           );
-          return { aplicado: false as const };
+          return false;
         }
 
-        // Eco de una baja ya aplicada. Desde #65 lo provoca el flujo normal: la
-        // cancelación por impago la lanza este mismo servicio, y Stripe devuelve
-        // el `deleted` cuando el usuario ya está en Free y sin contrato. Sin este
-        // corte se reescribe lo mismo, se manda un segundo correo de degradación
-        // —a veces un tercero, contando el de `subscription.updated`— y se guarda
-        // otro evento de baja, con lo que el churn queda contado por duplicado.
-        // Peor aún: con el plan ya en `free`, el cálculo de abajo cae al
-        // `'pro'` por defecto, así que a un cliente de LITE se le nombraría un
-        // plan que nunca tuvo.
-        if (fresh.plan === 'free' && !fresh.stripeSubscriptionId) {
-          this.logger.log(
-            `subscription.deleted de ${subscription.id} es eco de una baja ya ` +
-              `aplicada para ${user.id}; no se reescribe ni se vuelve a avisar.`,
-          );
-          return { aplicado: false as const };
-        }
-
-        // El plan cancelado sale de la lectura de DENTRO del lease: si un
+        // Mismo punto único que los otros dos caminos. Este camino tenía su
+        // propia copia de degradar-avisar-registrar, con sus propios valores por
+        // defecto —`'usd'` fijo, plan `'pro'` de relleno—, y era la segunda
+        // implementación de una decisión que solo debería estar escrita una vez.
+        //
+        // El plan sale de la lectura de DENTRO del lease: si un
         // `subscription.updated` pendiente escribió PROMAX entre la lectura
         // inicial y esta, la baja se aplicaría bien pero se registraría y se
-        // notificaría como PRO.
-        const canceladoAhora =
-          fresh.plan === 'lite' ||
-          fresh.plan === 'pro' ||
-          fresh.plan === 'promax'
-            ? fresh.plan
-            : 'pro';
-
-        const escrito = await this.withRetry(
-          () =>
-            this.firestoreService.updateUserSubscriptionState(
-              user.id,
-              {
-                plan: 'free',
-                stripeSubscriptionId: null,
-              },
-              new Date(),
-              lockToken,
-            ),
-          `handleSubscriptionDeleted(${user.id})`,
+        // notificaría como PRO. El helper también absorbe el eco de la
+        // cancelación que lanza este mismo servicio al liquidar un impago.
+        return this.registrarBajaDefinitiva(
+          fresh,
+          subscription.id,
+          'canceled',
+          new Date(),
+          lockToken,
+          subscription.cancellation_details?.reason || undefined,
         );
-
-        return { aplicado: escrito, canceledPlan: canceladoAhora };
       },
       'la baja de la suscripción',
     );
 
-    const canceledPlan = resultado.canceledPlan ?? 'pro';
-
-    if (!resultado.aplicado) {
-      this.logger.warn(
-        `Baja de ${user.id} no escrita: el documento ya refleja una lectura ` +
-          `posterior o el lease cambió de manos.`,
+    if (!resultado) {
+      this.logger.log(
+        `Baja de ${user.id} no escrita en este ciclo: ya aplicada, descartada ` +
+          `por obsoleta, o de un contrato que no es el vigente.`,
       );
-      return;
     }
-
-    this.logger.log(
-      `User ${user.id} downgraded to Free plan (was ${canceledPlan})`,
-    );
-
-    // Send downgrade notification email
-    this.emailService
-      .queueSubscriptionDowngradedEmail(
-        {
-          id: user.id,
-          email: user.email,
-          displayName: user.displayName,
-          language: this.detectLanguageFromCountry(user.country),
-        },
-        canceledPlan,
-        'canceled',
-      )
-      .catch((err) =>
-        this.logger.error(
-          `Failed to queue subscription downgraded email: ${err.message}`,
-        ),
-      );
-
-    // Save subscription event for churn tracking
-    const subscriptionEvent: SubscriptionEvent = {
-      id: this.generateSubscriptionEventId(),
-      userId: user.id,
-      userEmail: user.email,
-      eventType: 'canceled',
-      plan: canceledPlan,
-      previousPlan: canceledPlan,
-      currency: 'usd', // Default, actual currency not available in deleted event
-      mrr: 0,
-      mrrMxn: 0,
-      stripeSubscriptionId: subscription.id,
-      cancellationReason:
-        subscription.cancellation_details?.reason || undefined,
-      country: user.country,
-      createdAt: new Date(),
-    };
-
-    await this.firestoreService.saveSubscriptionEvent(subscriptionEvent);
-    this.logger.log(`Saved subscription event: canceled for user ${user.id}`);
   }
 
   /**
@@ -2313,9 +2248,16 @@ export class PaymentsService {
    * sino el propio estado resultante —Free y sin contrato—, que ningún otro
    * camino puede confundir con una baja pendiente.
    *
-   * El aviso y el registro van atados a que la escritura se aplique de verdad:
-   * si el fencing la descarta por obsoleta, no hay baja que contar ni de la que
-   * avisar.
+   * **La degradación y el registro del churn van en la MISMA transacción.**
+   * Escribir el evento después no servía: si esa segunda escritura fallaba, la
+   * reentrega del webhook encontraba al usuario ya en Free, lo tomaba por trabajo
+   * hecho y la baja no se contabilizaba nunca. Y al revés —registrar primero—
+   * un fencing que descartase la degradación habría contado un churn que no
+   * ocurrió. Dentro de la transacción constan las dos cosas o ninguna.
+   *
+   * El aviso queda fuera a propósito: es el único de los tres que no es dato, y
+   * el servicio de correo se traga sus propios errores. Un correo perdido es
+   * recuperable a mano; una baja sin contabilizar, no.
    *
    * @returns `true` si esta llamada fue la que aplicó la baja.
    */
@@ -2325,6 +2267,8 @@ export class PaymentsService {
     motivo: 'payment_failed' | 'canceled',
     readAt: Date,
     lockToken: string,
+    /** Motivo que da Stripe, cuando la baja viene de un evento suyo. */
+    razonDeStripe?: string,
   ): Promise<boolean> {
     if (user.plan === 'free' && !user.stripeSubscriptionId) {
       this.logger.log(
@@ -2344,6 +2288,24 @@ export class PaymentsService {
         ? user.plan
         : 'pro';
 
+    // `churned` distingue la baja involuntaria de la que el cliente decide, y
+    // las métricas cuentan ambos tipos, así que separar no esconde nada del panel.
+    const evento: SubscriptionEvent = {
+      id: this.generateSubscriptionEventId(),
+      userId: user.id,
+      userEmail: user.email,
+      eventType: motivo === 'payment_failed' ? 'churned' : 'canceled',
+      plan: planPerdido,
+      previousPlan: planPerdido,
+      currency: user.country === 'MX' ? 'mxn' : 'usd',
+      mrr: 0,
+      mrrMxn: 0,
+      stripeSubscriptionId: subscriptionId,
+      cancellationReason: razonDeStripe ?? motivo,
+      country: user.country,
+      createdAt: new Date(),
+    };
+
     const aplicado = await this.withRetry(
       () =>
         this.firestoreService.updateUserSubscriptionState(
@@ -2351,6 +2313,8 @@ export class PaymentsService {
           { plan: 'free', stripeSubscriptionId: null },
           readAt,
           lockToken,
+          // En la misma transacción: o consta la baja y su registro, o ninguno.
+          evento,
         ),
       `registrarBajaDefinitiva(${user.id})`,
     );
@@ -2364,7 +2328,8 @@ export class PaymentsService {
     }
 
     this.logger.warn(
-      `Baja aplicada para ${user.id}: ${planPerdido.toUpperCase()} → free (${motivo}).`,
+      `Baja aplicada para ${user.id}: ${planPerdido.toUpperCase()} → free ` +
+        `(${motivo}), evento ${evento.id}.`,
     );
 
     this.emailService
@@ -2383,25 +2348,6 @@ export class PaymentsService {
           `Failed to queue subscription downgraded email: ${err.message}`,
         ),
       );
-
-    // `churned` distingue la baja involuntaria de la que el cliente decide, y
-    // las métricas ya lo cuentan junto a `canceled` (`finance.service.ts`), así
-    // que separar no esconde ninguna baja del panel.
-    await this.firestoreService.saveSubscriptionEvent({
-      id: this.generateSubscriptionEventId(),
-      userId: user.id,
-      userEmail: user.email,
-      eventType: motivo === 'payment_failed' ? 'churned' : 'canceled',
-      plan: planPerdido,
-      previousPlan: planPerdido,
-      currency: user.country === 'MX' ? 'mxn' : 'usd',
-      mrr: 0,
-      mrrMxn: 0,
-      stripeSubscriptionId: subscriptionId,
-      cancellationReason: motivo,
-      country: user.country,
-      createdAt: new Date(),
-    });
 
     return true;
   }

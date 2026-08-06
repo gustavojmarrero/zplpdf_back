@@ -746,11 +746,24 @@ export class FirestoreService {
    * no dispare efectos secundarios (emails de degradación) por un cambio que no
    * ocurrió.
    */
+  /**
+   * @param subscriptionEvent Evento que debe quedar escrito EN LA MISMA
+   *   transacción que el cambio de plan, o no escribirse en absoluto.
+   *
+   *   Existe para las bajas. Escribirlo después, en una operación aparte, dejaba
+   *   dos desenlaces malos: si esa segunda escritura fallaba, la reentrega del
+   *   webhook encontraba al usuario ya degradado, lo tomaba por trabajo hecho y
+   *   la baja no se contabilizaba nunca; y si la degradación se descartaba por
+   *   fencing, un evento ya escrito habría contado un churn que no ocurrió.
+   *   Dentro de la transacción los dos casos desaparecen: o constan ambas cosas,
+   *   o ninguna.
+   */
   async updateUserSubscriptionState(
     userId: string,
     data: Record<string, unknown>,
     readAt: Date,
     lockToken?: string,
+    subscriptionEvent?: SubscriptionEvent,
   ): Promise<boolean> {
     const ref = this.firestore.collection(this.usersCollection).doc(userId);
 
@@ -792,6 +805,16 @@ export class FirestoreService {
         subscriptionSyncedAt: readAt.toISOString(),
         updatedAt: new Date(),
       });
+
+      if (subscriptionEvent) {
+        transaction.set(
+          this.firestore
+            .collection(this.subscriptionEventsCollection)
+            .doc(subscriptionEvent.id),
+          { ...subscriptionEvent, createdAt: subscriptionEvent.createdAt },
+        );
+      }
+
       return true;
     });
   }
@@ -4306,7 +4329,8 @@ export class FirestoreService {
   async getSubscriptionEvents(filters: {
     startDate?: Date;
     endDate?: Date;
-    eventType?: string;
+    /** Uno o varios tipos; una baja se reparte entre `canceled` y `churned`. */
+    eventType?: string | string[];
     userId?: string;
   }): Promise<SubscriptionEvent[]> {
     try {
@@ -4321,7 +4345,9 @@ export class FirestoreService {
         query = query.where('createdAt', '<=', filters.endDate);
       }
       if (filters.eventType) {
-        query = query.where('eventType', '==', filters.eventType);
+        query = Array.isArray(filters.eventType)
+          ? query.where('eventType', 'in', filters.eventType)
+          : query.where('eventType', '==', filters.eventType);
       }
       if (filters.userId) {
         query = query.where('userId', '==', filters.userId);
