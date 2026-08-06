@@ -2181,6 +2181,8 @@ describe('PaymentsService — handlePaymentFailed', () => {
       customer: 'cus_123',
       billing_reason: 'subscription_cycle',
       attempt_count: 1,
+      amount_due: 19900,
+      currency: 'mxn',
       parent: { subscription_details: { subscription: 'sub_123' } },
       ...overrides,
     };
@@ -2269,7 +2271,13 @@ describe('PaymentsService — handlePaymentFailed', () => {
       { plan: 'free', stripeSubscriptionId: null },
       expect.any(Date),
       'tok-1',
-      expect.objectContaining({ eventType: 'churned', plan: 'pro' }),
+      expect.objectContaining({
+        eventType: 'churned',
+        plan: 'pro',
+        currency: 'mxn',
+        mrr: 199,
+        mrrMxn: 199,
+      }),
     );
     expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'uid-1' }),
@@ -2405,7 +2413,14 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
       id: 'sub_vieja',
       status: overrides.estadoContrato ?? 'past_due',
       latest_invoice: 'in_vieja',
-      items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+      items: {
+        data: [
+          {
+            id: 'si_1',
+            price: { id: PRO_MXN, currency: 'mxn', unit_amount: 19900 },
+          },
+        ],
+      },
     });
     const cancel = overrides.cancelError
       ? jest.fn().mockRejectedValue(overrides.cancelError)
@@ -2414,6 +2429,9 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
     const sessionsCreate = jest
       .fn()
       .mockResolvedValue({ url: 'https://checkout', id: 'cs_1' });
+    const queueSubscriptionDowngradedEmail = jest
+      .fn()
+      .mockResolvedValue(undefined);
 
     const updateUserSubscriptionState = jest
       .fn()
@@ -2448,6 +2466,7 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
     service.billingService = {
       syncTaxProfileToStripe: jest.fn().mockResolvedValue(undefined),
     };
+    service.emailService = { queueSubscriptionDowngradedEmail };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
     service.proPriceIdMxn = PRO_MXN;
@@ -2459,11 +2478,19 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
       voidInvoice,
       sessionsCreate,
       updateUserSubscriptionState,
+      queueSubscriptionDowngradedEmail,
     };
   }
 
   it('liquida el contrato impagado y deja continuar el alta', async () => {
-    const { service, cancel, voidInvoice, sessionsCreate } = buildService({});
+    const {
+      service,
+      cancel,
+      voidInvoice,
+      sessionsCreate,
+      updateUserSubscriptionState,
+      queueSubscriptionDowngradedEmail,
+    } = buildService({});
 
     const res = await service.createCheckoutSession(
       'uid-1',
@@ -2476,6 +2503,18 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
 
     expect(voidInvoice).toHaveBeenCalledWith('in_vieja');
     expect(cancel).toHaveBeenCalledWith('sub_vieja');
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      { plan: 'free', stripeSubscriptionId: null },
+      expect.any(Date),
+      'tok-1',
+      expect.objectContaining({
+        eventType: 'churned',
+        mrr: 199,
+        mrrMxn: 199,
+      }),
+    );
+    expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledTimes(1);
     expect(sessionsCreate).toHaveBeenCalled();
     expect(res.checkoutUrl).toBe('https://checkout');
   });
@@ -2517,6 +2556,25 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
         'pro',
       ),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it('detiene el alta si el fencing rechaza registrar la baja', async () => {
+    const { service, sessionsCreate, updateUserSubscriptionState } =
+      buildService({});
+    updateUserSubscriptionState.mockResolvedValue(false);
+
+    await expect(
+      service.createCheckoutSession(
+        'uid-1',
+        'cliente@example.com',
+        'https://ok',
+        'https://ko',
+        'MX',
+        'pro',
+      ),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
     expect(sessionsCreate).not.toHaveBeenCalled();
   });
 
@@ -2758,7 +2816,14 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
           status: 'past_due',
           customer: 'cus_123',
           latest_invoice: 'in_123',
-          items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+          items: {
+            data: [
+              {
+                id: 'si_1',
+                price: { id: PRO_MXN, currency: 'mxn', unit_amount: 14900 },
+              },
+            ],
+          },
         }),
         cancel: jest.fn().mockResolvedValue({ status: 'canceled' }),
       },
@@ -2809,7 +2874,14 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
     status: 'past_due',
     customer: 'cus_123',
     latest_invoice: 'in_123',
-    items: { data: [{ id: 'si_1', price: { id: PRO_MXN } }] },
+    items: {
+      data: [
+        {
+          id: 'si_1',
+          price: { id: PRO_MXN, currency: 'mxn', unit_amount: 14900 },
+        },
+      ],
+    },
   };
 
   it('contabiliza la baja por impago, que antes no registraba ningún camino', async () => {
@@ -2819,6 +2891,8 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
       id: 'in_123',
       customer: 'cus_123',
       billing_reason: 'subscription_cycle',
+      amount_due: 14900,
+      currency: 'mxn',
       parent: { subscription_details: { subscription: 'sub_123' } },
     });
 
@@ -2837,6 +2911,8 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
         plan: 'lite',
         cancellationReason: 'payment_failed',
         currency: 'mxn',
+        mrr: 149,
+        mrrMxn: 149,
       }),
     );
   });
@@ -2866,9 +2942,44 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
     // tiene que quedar contada exactamente una vez.
     expect(updateUserSubscriptionState).toHaveBeenCalledTimes(1);
     expect(updateUserSubscriptionState.mock.calls[0][4]).toEqual(
-      expect.objectContaining({ eventType: 'churned' }),
+      expect.objectContaining({
+        eventType: 'churned',
+        mrr: 149,
+        mrrMxn: 149,
+      }),
     );
     expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('conserva payment_failed si el updated retrasado relee una cancelación por impago', async () => {
+    const {
+      service,
+      updateUserSubscriptionState,
+      queueSubscriptionDowngradedEmail,
+    } = buildService(conPlan);
+    service.stripe.subscriptions.retrieve.mockResolvedValue({
+      id: 'sub_123',
+      status: 'canceled',
+      customer: 'cus_123',
+      cancellation_details: { reason: 'payment_failed' },
+      items: eventoPastDue.items,
+    });
+
+    await service.handleSubscriptionUpdated(eventoPastDue);
+
+    expect(updateUserSubscriptionState.mock.calls[0][4]).toEqual(
+      expect.objectContaining({
+        eventType: 'churned',
+        cancellationReason: 'payment_failed',
+        mrr: 149,
+        mrrMxn: 149,
+      }),
+    );
+    expect(queueSubscriptionDowngradedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'uid-1' }),
+      'lite',
+      'payment_failed',
+    );
   });
 
   it('no cuenta la baja si el fencing descarta la escritura', async () => {
@@ -2986,7 +3097,7 @@ describe('PaymentsService — el webhook repara también trialing', () => {
 describe('PaymentsService — subscription.deleted usa el mismo punto único', () => {
   const PRO_MXN = 'price_pro_mxn';
 
-  it('registra la baja con los datos del usuario, no con valores de relleno', async () => {
+  it('registra la baja con los datos reales y conserva si fue por impago', async () => {
     const usuario = {
       id: 'uid-1',
       email: 'cliente@example.com',
@@ -3016,7 +3127,13 @@ describe('PaymentsService — subscription.deleted usa el mismo punto único', (
       id: 'sub_123',
       customer: 'cus_1',
       cancellation_details: { reason: 'cancellation_requested' },
-      items: { data: [{ price: { id: PRO_MXN } }] },
+      items: {
+        data: [
+          {
+            price: { id: PRO_MXN, currency: 'mxn', unit_amount: 19900 },
+          },
+        ],
+      },
     });
 
     // Este camino tenía su propia copia de degradar-avisar-registrar, con sus
@@ -3032,8 +3149,40 @@ describe('PaymentsService — subscription.deleted usa el mismo punto único', (
         eventType: 'canceled',
         plan: 'lite',
         currency: 'mxn',
+        mrr: 199,
+        mrrMxn: 199,
         cancellationReason: 'cancellation_requested',
       }),
+    );
+
+    updateUserSubscriptionState.mockClear();
+    service.emailService.queueSubscriptionDowngradedEmail.mockClear();
+
+    await service.handleSubscriptionDeleted({
+      id: 'sub_123',
+      customer: 'cus_1',
+      cancellation_details: { reason: 'payment_failed' },
+      items: {
+        data: [
+          {
+            price: { id: PRO_MXN, currency: 'mxn', unit_amount: 19900 },
+          },
+        ],
+      },
+    });
+
+    expect(updateUserSubscriptionState.mock.calls[0][4]).toEqual(
+      expect.objectContaining({
+        eventType: 'churned',
+        cancellationReason: 'payment_failed',
+      }),
+    );
+    expect(
+      service.emailService.queueSubscriptionDowngradedEmail,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'uid-1' }),
+      'lite',
+      'payment_failed',
     );
   });
 });

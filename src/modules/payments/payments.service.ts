@@ -35,6 +35,10 @@ import { randomUUID } from 'node:crypto';
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
 /** Planes de pago vendibles por checkout/upgrade (excluye enterprise, que es manual). */
 type SellablePlan = 'lite' | 'pro' | 'promax';
+type FuenteMrrBaja =
+  | { subscription: Stripe.Subscription }
+  | { invoice: Stripe.Invoice };
+type MrrPerdido = Pick<SubscriptionEvent, 'currency' | 'mrr' | 'mrrMxn'>;
 
 @Injectable()
 export class PaymentsService {
@@ -2114,14 +2118,19 @@ export class PaymentsService {
       // no se reescribe, no se manda un segundo correo y no se cuenta otra vez.
       // Y si este camino llega primero, es este el que la contabiliza — antes no
       // lo hacía ninguno de los dos y la baja podía no aparecer en el panel.
+      const razonDeStripe = current.cancellation_details?.reason ?? undefined;
+      const bajaPorImpago =
+        PaymentsService.ESTADOS_IMPAGADOS.includes(current.status) ||
+        razonDeStripe === 'payment_failed';
+
       await this.registrarBajaDefinitiva(
         user,
         current.id,
-        PaymentsService.ESTADOS_IMPAGADOS.includes(current.status)
-          ? 'payment_failed'
-          : 'canceled',
+        bajaPorImpago ? 'payment_failed' : 'canceled',
         readAt,
         lockToken,
+        { subscription: current },
+        razonDeStripe,
       );
     }
   }
@@ -2213,13 +2222,17 @@ export class PaymentsService {
         // inicial y esta, la baja se aplicaría bien pero se registraría y se
         // notificaría como PRO. El helper también absorbe el eco de la
         // cancelación que lanza este mismo servicio al liquidar un impago.
+        const razonDeStripe =
+          subscription.cancellation_details?.reason ?? undefined;
+
         return this.registrarBajaDefinitiva(
           fresh,
           subscription.id,
-          'canceled',
+          razonDeStripe === 'payment_failed' ? 'payment_failed' : 'canceled',
           new Date(),
           lockToken,
-          subscription.cancellation_details?.reason || undefined,
+          { subscription },
+          razonDeStripe,
         );
       },
       'la baja de la suscripción',
@@ -2261,12 +2274,72 @@ export class PaymentsService {
    *
    * @returns `true` si esta llamada fue la que aplicó la baja.
    */
+  private async calcularMrrPerdido(
+    fuente: FuenteMrrBaja,
+    country?: string,
+  ): Promise<MrrPerdido> {
+    let amountMinor = 0;
+    let sourceCurrency: string | undefined;
+
+    if ('subscription' in fuente) {
+      const items = fuente.subscription.items.data;
+      sourceCurrency = items[0]?.price?.currency;
+      amountMinor = items.reduce((total, item) => {
+        const decimal = item.price?.unit_amount_decimal;
+        const unitAmount =
+          item.price?.unit_amount ?? (decimal ? Number(decimal) : 0);
+        return total + unitAmount * (item.quantity ?? 1);
+      }, 0);
+    } else {
+      sourceCurrency = fuente.invoice.currency;
+      amountMinor = fuente.invoice.amount_due ?? 0;
+    }
+
+    const currency: 'usd' | 'mxn' =
+      sourceCurrency?.toLowerCase() === 'mxn' ||
+      (!sourceCurrency && country === 'MX')
+        ? 'mxn'
+        : 'usd';
+    const mrr = Math.max(0, amountMinor) / 100;
+
+    if (mrr === 0) {
+      this.logger.warn(
+        `No se pudo determinar el MRR perdido desde ${
+          'subscription' in fuente ? fuente.subscription.id : fuente.invoice.id
+        }; el evento de baja conservará importe cero.`,
+      );
+      return { currency, mrr, mrrMxn: 0 };
+    }
+
+    if (currency === 'mxn') {
+      return { currency, mrr, mrrMxn: mrr };
+    }
+
+    try {
+      const conversion = await this.exchangeRateService.convertUsdToMxn(
+        mrr,
+        this.firestoreService,
+      );
+      return { currency, mrr, mrrMxn: conversion.amountMxn };
+    } catch (error) {
+      // La baja no debe perderse porque el proveedor de tipo de cambio esté
+      // caído. Es el mismo fallback que ya usan altas y renovaciones.
+      const fallbackRate = 20;
+      this.logger.warn(
+        `No se pudo convertir el MRR churneado a MXN: ${(error as Error).message}. ` +
+          `Se usa la tasa de respaldo ${fallbackRate}.`,
+      );
+      return { currency, mrr, mrrMxn: mrr * fallbackRate };
+    }
+  }
+
   private async registrarBajaDefinitiva(
     user: User,
     subscriptionId: string,
     motivo: 'payment_failed' | 'canceled',
     readAt: Date,
     lockToken: string,
+    fuenteMrr: FuenteMrrBaja,
     /** Motivo que da Stripe, cuando la baja viene de un evento suyo. */
     razonDeStripe?: string,
   ): Promise<boolean> {
@@ -2287,6 +2360,7 @@ export class PaymentsService {
       user.plan === 'enterprise'
         ? user.plan
         : 'pro';
+    const mrrPerdido = await this.calcularMrrPerdido(fuenteMrr, user.country);
 
     // `churned` distingue la baja involuntaria de la que el cliente decide, y
     // las métricas cuentan ambos tipos, así que separar no esconde nada del panel.
@@ -2297,9 +2371,9 @@ export class PaymentsService {
       eventType: motivo === 'payment_failed' ? 'churned' : 'canceled',
       plan: planPerdido,
       previousPlan: planPerdido,
-      currency: user.country === 'MX' ? 'mxn' : 'usd',
-      mrr: 0,
-      mrrMxn: 0,
+      currency: mrrPerdido.currency,
+      mrr: mrrPerdido.mrr,
+      mrrMxn: mrrPerdido.mrrMxn,
       stripeSubscriptionId: subscriptionId,
       cancellationReason: razonDeStripe ?? motivo,
       country: user.country,
@@ -2498,6 +2572,18 @@ export class PaymentsService {
       liquidado = await this.withSubscriptionSyncLock(
         user.id,
         async (lockToken) => {
+          const fresh =
+            (await this.firestoreService.getUserById(user.id)) ?? user;
+
+          if (
+            fresh.stripeSubscriptionId &&
+            fresh.stripeSubscriptionId !== impagada.id
+          ) {
+            throw new Error(
+              `el usuario ya apunta a otra suscripción (${fresh.stripeSubscriptionId})`,
+            );
+          }
+
           // El resultado MANDA. La lectura que trajo aquí es de antes del lease,
           // y en ese hueco cabe el cliente pagando desde el portal: cancelar
           // ignorando que la factura se saldó le quitaría el contrato que acaba
@@ -2515,16 +2601,30 @@ export class PaymentsService {
 
           await this.cancelarSuscripcion(impagada.id, contexto);
 
-          await this.withRetry(
-            () =>
-              this.firestoreService.updateUserSubscriptionState(
-                user.id,
-                { plan: 'free', stripeSubscriptionId: null },
-                new Date(),
-                lockToken,
-              ),
-            `liquidarContratoImpagadoAntesDelAlta(${user.id})`,
+          // La liquidación observada desde checkout es la misma baja que ven los
+          // webhooks. Debe pasar por el punto único para escribir también el
+          // churn y encolar exactamente una notificación.
+          const aplicado = await this.registrarBajaDefinitiva(
+            fresh,
+            impagada.id,
+            'payment_failed',
+            new Date(),
+            lockToken,
+            { subscription: impagada },
+            'payment_failed',
           );
+
+          // `false` tras una lectura que todavía conserva el contrato significa
+          // que el fencing rechazó la escritura. Continuar abriría el checkout
+          // con Firestore apuntando al estado viejo.
+          if (
+            !aplicado &&
+            !(fresh.plan === 'free' && !fresh.stripeSubscriptionId)
+          ) {
+            throw new Error(
+              'la escritura de la baja fue rechazada por el fencing de sincronización',
+            );
+          }
 
           return true;
         },
@@ -2636,6 +2736,7 @@ export class PaymentsService {
           'payment_failed',
           new Date(),
           lockToken,
+          { invoice },
         );
       },
     );
