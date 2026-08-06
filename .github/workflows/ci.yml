@@ -1,0 +1,48 @@
+name: CI
+
+# Hasta ahora build, lint y pruebas dependían de que alguien los corriera a mano
+# antes de aprobar un PR, y no quedaba constancia de si se habían corrido (#79).
+on:
+  pull_request:
+    branches: [development, main]
+  push:
+    branches: [development, main]
+
+# Un PR que recibe varios push seguidos no necesita terminar las ejecuciones
+# viejas: solo importa el estado del último commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: build · lint · tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # La misma que corre en producción (`FROM node:18-slim` en el
+          # Dockerfile). Verificar sobre otra versión dejaría pasar justo lo que
+          # solo falla en la desplegada.
+          node-version: '18'
+          cache: npm
+
+      # `ci` y no `install`: instala exactamente lo del lockfile y falla si se
+      # ha desincronizado de package.json, en vez de resolverlo por su cuenta.
+      - run: npm ci
+
+      # Sin `--fix`, a diferencia de `npm run lint`: aquí hay que detectar, no
+      # arreglar. Con auto-fix el job pasaría en verde dejando los arreglos en un
+      # runner que se destruye a continuación.
+      - run: npm run lint:ci
+
+      # `nest build` corre TSC además de compilar, así que esto también cubre el
+      # chequeo de tipos del código de producción. Los specs quedan fuera: `tsc
+      # --noEmit` todavía falla por imports sin extensión `.js` (#79), y añadirlo
+      # como gate antes de sanearlos dejaría el CI en rojo desde el primer día.
+      - run: npm run build
+
+      - run: npm test
