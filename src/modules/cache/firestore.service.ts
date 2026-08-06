@@ -44,6 +44,8 @@ import type {
   UpdateEmailTemplateData,
   EligibleEmailUser,
   EligibleEmailUsersResult,
+  HighUsageUser,
+  HighUsageUsersResult,
 } from '../email/interfaces/email.interface.js';
 
 // ============== Daily Stats (Aggregated Metrics) ==============
@@ -5639,31 +5641,12 @@ export class FirestoreService {
     minPdfsPerDay: number;
     consecutiveDays: number;
     limit?: number;
-  }): Promise<
-    Array<{
-      userId: string;
-      userEmail: string;
-      displayName?: string;
-      language: string;
-      avgPdfsPerDay: number;
-      pdfsUsed: number;
-      limit: number;
-      projectedDaysToLimit: number;
-      periodEnd: Date;
-    }>
-  > {
+  }): Promise<HighUsageUsersResult> {
     const { minPdfsPerDay, consecutiveDays, limit = 100 } = params;
-    const highUsageUsers: Array<{
-      userId: string;
-      userEmail: string;
-      displayName?: string;
-      language: string;
-      avgPdfsPerDay: number;
-      pdfsUsed: number;
-      limit: number;
-      projectedDaysToLimit: number;
-      periodEnd: Date;
-    }> = [];
+    const highUsageUsers: HighUsageUser[] = [];
+    // Se cuenta aquí porque es donde ocurre el descarte: quien llama solo recibe
+    // la lista final y no puede saber cuántos candidatos se filtraron.
+    const skipped = { alreadyReceived: 0 };
 
     // Get all FREE users
     const usersSnapshot = await this.firestore
@@ -5676,18 +5659,6 @@ export class FirestoreService {
 
       const userData = userDoc.data();
       const userId = userDoc.id;
-
-      // Check if already received high_usage email in current period
-      const periodStart =
-        userData.periodStart?.toDate?.() || userData.periodStart;
-      if (periodStart) {
-        const hasEmail = await this.hasUserReceivedEmailInPeriod(
-          userId,
-          'high_usage',
-          periodStart,
-        );
-        if (hasEmail) continue;
-      }
 
       // Get conversions for the last N days
       const daysAgo = new Date();
@@ -5750,6 +5721,26 @@ export class FirestoreService {
       // Only include if projected to hit limit soon (within 14 days)
       if (projectedDaysToLimit > 14) continue;
 
+      // Deliberadamente el ÚLTIMO filtro. Si se comprueba antes de evaluar el
+      // uso, el descarte alcanza a todo free que ya recibió el email tenga o no
+      // uso alto ahora, y el conteo resultante no dice nada. Aquí solo cuenta a
+      // quien de verdad merecía el email hoy. De paso sale más barato: esta
+      // consulta pasa de correr una vez por usuario free a correr solo para los
+      // pocos que cumplen el patrón de uso.
+      const periodStart =
+        userData.periodStart?.toDate?.() || userData.periodStart;
+      if (periodStart) {
+        const hasEmail = await this.hasUserReceivedEmailInPeriod(
+          userId,
+          'high_usage',
+          periodStart,
+        );
+        if (hasEmail) {
+          skipped.alreadyReceived++;
+          continue;
+        }
+      }
+
       const periodEnd =
         userData.periodEnd?.toDate?.() || userData.periodEnd || new Date();
 
@@ -5766,7 +5757,7 @@ export class FirestoreService {
       });
     }
 
-    return highUsageUsers;
+    return { users: highUsageUsers, skipped };
   }
 
   /**

@@ -697,3 +697,183 @@ describe('FirestoreService — renewSubscriptionSyncLock', () => {
     expect(update).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * `getUsersWithHighUsage` comprobaba `hasUserReceivedEmailInPeriod` ANTES de
+ * evaluar el uso, así que descartaba en silencio y el conteo que se podía sacar
+ * de ahí mezclaba a todo free ya avisado con los que hoy tienen uso alto. Ahora
+ * ese filtro va el último y devuelve `{ users, skipped }` (issue #60).
+ */
+describe('FirestoreService — getUsersWithHighUsage', () => {
+  /** Dos días con 3 conversiones cada uno: cumple el patrón de uso alto. */
+  const USO_ALTO = [
+    ...Array.from({ length: 3 }, () => ({
+      createdAt: new Date('2026-08-04T10:00:00.000Z'),
+    })),
+    ...Array.from({ length: 3 }, () => ({
+      createdAt: new Date('2026-08-05T10:00:00.000Z'),
+    })),
+  ];
+
+  /** Un solo día: no llega a los 2 días consecutivos exigidos. */
+  const USO_BAJO = [{ createdAt: new Date('2026-08-05T10:00:00.000Z') }];
+
+  function usuario(id: string, conversiones = USO_ALTO) {
+    return {
+      id,
+      conversiones,
+      data: {
+        email: `${id}@ejemplo.com`,
+        displayName: `User ${id}`,
+        country: 'MX',
+        plan: 'free',
+        // Con el límite free en 10 PDFs, 6 usados y 3/día de media, la
+        // proyección son 2 días: entra dentro de la ventana de 14.
+        pdfCount: 6,
+        periodStart: new Date('2026-08-01T00:00:00.000Z'),
+        periodEnd: new Date('2026-09-01T00:00:00.000Z'),
+      },
+    };
+  }
+
+  /**
+   * Mockea Firestore por colección. Registra a quién se consultó en cada una
+   * para poder afirmar el ORDEN de los filtros, no solo su resultado.
+   */
+  function buildService(
+    usuarios: ReturnType<typeof usuario>[],
+    yaAvisados: string[] = [],
+  ) {
+    const consultados = {
+      conversiones: [] as string[],
+      emails: [] as string[],
+    };
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.historyCollection = 'conversion_history';
+    service.emailQueueCollection = 'email_queue';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    service.firestore = {
+      collection: (nombre: string) => {
+        const filtros: Array<{ campo: string; valor: unknown }> = [];
+        const q: any = {
+          where: (campo: string, _op: string, valor: unknown) => {
+            filtros.push({ campo, valor });
+            return q;
+          },
+          orderBy: () => q,
+          limit: () => q,
+          get: async () => {
+            if (nombre === 'users') {
+              const docs = usuarios.map((u) => ({
+                id: u.id,
+                data: () => u.data,
+              }));
+              return { docs, empty: docs.length === 0 };
+            }
+
+            const userId = filtros.find((f) => f.campo === 'userId')
+              ?.valor as string;
+
+            if (nombre === 'conversion_history') {
+              consultados.conversiones.push(userId);
+              const docs = (
+                usuarios.find((u) => u.id === userId)?.conversiones ?? []
+              ).map((c) => ({ data: () => c }));
+              return { docs, empty: docs.length === 0 };
+            }
+
+            // email_queue: solo importa si hay o no algún documento.
+            consultados.emails.push(userId);
+            const avisado = yaAvisados.includes(userId);
+            return { docs: avisado ? [{}] : [], empty: !avisado };
+          },
+        };
+        return q;
+      },
+    };
+
+    return { service, consultados };
+  }
+
+  const params = { minPdfsPerDay: 3, consecutiveDays: 2 };
+
+  it('cuenta como descartado a quien tiene uso alto pero ya recibió el email', async () => {
+    // 5 candidatos con uso alto, de los cuales 3 ya fueron avisados.
+    const { service } = buildService(
+      ['a', 'b', 'c', 'd', 'e'].map((id) => usuario(id)),
+      ['a', 'b', 'c'],
+    );
+
+    const resultado = await service.getUsersWithHighUsage(params);
+
+    expect(resultado.users).toHaveLength(2);
+    expect(resultado.skipped.alreadyReceived).toBe(3);
+    expect(resultado.users.map((u: any) => u.userId)).toEqual(['d', 'e']);
+  });
+
+  it('no cuenta como descartado a quien simplemente no tiene uso alto', async () => {
+    // Un no-candidato no es un descarte: si contara, `skipped` acabaría
+    // reportando casi toda la base free y dejaría de significar nada.
+    const { service } = buildService([
+      usuario('activo'),
+      usuario('flojo', USO_BAJO),
+      usuario('inactivo', []),
+    ]);
+
+    const resultado = await service.getUsersWithHighUsage(params);
+
+    expect(resultado.users).toHaveLength(1);
+    expect(resultado.skipped.alreadyReceived).toBe(0);
+  });
+
+  it('ignora a los ya avisados que hoy no tienen uso alto', async () => {
+    // El caso que hacía inservible el conteo con el filtro por delante: un free
+    // avisado el mes pasado y hoy inactivo entraba en `skipped` igual que quien
+    // de verdad merecía el email. Aquí solo cuenta 'activo'.
+    const { service } = buildService(
+      [
+        usuario('activo'),
+        usuario('avisado-y-flojo', USO_BAJO),
+        usuario('avisado-e-inactivo', []),
+      ],
+      ['activo', 'avisado-y-flojo', 'avisado-e-inactivo'],
+    );
+
+    const resultado = await service.getUsersWithHighUsage(params);
+
+    expect(resultado.users).toHaveLength(0);
+    expect(resultado.skipped.alreadyReceived).toBe(1);
+  });
+
+  it('comprueba el envío previo solo para quien cumple el patrón de uso', async () => {
+    // El orden importa: con el filtro delante, esta consulta corría una vez por
+    // usuario free y el conteo mezclaba avisados con y sin uso alto.
+    const { service, consultados } = buildService([
+      usuario('activo'),
+      usuario('flojo', USO_BAJO),
+      usuario('inactivo', []),
+    ]);
+
+    await service.getUsersWithHighUsage(params);
+
+    expect(consultados.emails).toEqual(['activo']);
+    // Las conversiones sí se consultan para todos: es el filtro discriminante.
+    expect(consultados.conversiones).toEqual(['activo', 'flojo', 'inactivo']);
+  });
+
+  it('respeta el tope sin contar como descartados a los que no llegó a examinar', async () => {
+    const { service } = buildService(
+      Array.from({ length: 10 }, (_, i) => usuario(`u${i}`)),
+    );
+
+    const resultado = await service.getUsersWithHighUsage({
+      ...params,
+      limit: 3,
+    });
+
+    expect(resultado.users).toHaveLength(3);
+    expect(resultado.skipped.alreadyReceived).toBe(0);
+  });
+});
