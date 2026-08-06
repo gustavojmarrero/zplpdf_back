@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [development, main]
   push:
-    branches: [development, main, chore/ci-verificacion-en-prs]
+    branches: [development, main]
 
 # Un PR que recibe varios push seguidos no necesita terminar las ejecuciones
 # viejas: solo importa el estado del último commit.
