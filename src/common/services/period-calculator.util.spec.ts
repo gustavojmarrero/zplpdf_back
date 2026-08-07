@@ -3,7 +3,7 @@ import {
   calculateFreePeriod,
   generatePeriodId,
   UserForPeriod,
-} from './period-calculator.util';
+} from './period-calculator.util.js';
 
 describe('period-calculator.util', () => {
   describe('calculateFreePeriod (usuario Free registrado a mitad de mes)', () => {

@@ -51,10 +51,13 @@ jobs:
       # runner que se destruye a continuación.
       - run: npm run lint:ci
 
-      # `nest build` corre TSC además de compilar, así que esto también cubre el
-      # chequeo de tipos del código de producción. Los specs quedan fuera: `tsc
-      # --noEmit` todavía falla por imports sin extensión `.js` (#79), y añadirlo
-      # como gate antes de sanearlos dejaría el CI en rojo desde el primer día.
+      # Cubre lo que `build` no ve. `nest build` corre TSC, pero solo sobre el
+      # código que compila a `dist/`: los specs quedaban sin comprobar, y ahí es
+      # donde vivían los 11 imports sin extensión `.js` de #79. Con el proyecto
+      # en ESM, TypeScript los exige aunque el fuente sea `.ts`, y jest no lo
+      # delataba porque su `moduleNameMapper` reescribe esas rutas.
+      - run: npm run typecheck
+
       - run: npm run build
 
       - run: npm test
