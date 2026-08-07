@@ -18,7 +18,7 @@ jest.mock('@google-cloud/storage', () => ({
   })),
 }));
 
-import { ZplService, LabelSize } from './zpl.service';
+import { ZplService, LabelSize } from './zpl.service.js';
 
 /**
  * Regresión: una etiqueta de envío real (Amazon Logistics) que empieza con un

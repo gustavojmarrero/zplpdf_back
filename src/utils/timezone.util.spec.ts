@@ -1,7 +1,7 @@
 import {
   getStartOfDateInTimezone,
   getEndOfDateInTimezone,
-} from './timezone.util';
+} from './timezone.util.js';
 
 /**
  * El dashboard opera en GMT-6 (Mérida). Estos helpers convierten un string de

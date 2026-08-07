@@ -1,10 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
-import { EmailService } from './email.service';
-import { FirestoreService } from '../cache/firestore.service';
-import { PeriodCalculatorService } from '../../common/services/period-calculator.service';
-import { User, PlanType } from '../../common/interfaces/user.interface';
+import { EmailService } from './email.service.js';
+import { FirestoreService } from '../cache/firestore.service.js';
+import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
+import { User, PlanType } from '../../common/interfaces/user.interface.js';
 
 describe('EmailService.triggerBlockedEmail', () => {
   let service: EmailService;

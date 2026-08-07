@@ -4,7 +4,7 @@ jest.mock('@google-cloud/storage', () => ({
 }));
 jest.mock('stripe', () => jest.fn());
 
-import { AdminService } from './admin.service';
+import { AdminService } from './admin.service.js';
 
 /**
  * Los eventos de cuota/acceso anteriores al fix del conversion-gate se
