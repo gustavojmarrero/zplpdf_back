@@ -3,22 +3,22 @@ name: CI
 # Hasta ahora build, lint y pruebas dependían de que alguien los corriera a mano
 # antes de aprobar un PR, y no quedaba constancia de si se habían corrido (#79).
 #
-# El disparador es `push` SIN filtro de ramas, y no `pull_request`, por una razón
-# empírica: en este repositorio los eventos `pull_request` no generan ninguna
-# ejecución. Comprobado en los PR #85 y #86 —cero runs, y ninguno esperando
-# aprobación—, mientras que el `push` a `development` sí corrió. La causa está en
-# el lado de GitHub y no se ha podido determinar desde el repositorio, donde todo
-# está en orden: Actions habilitado, YAML válido y el archivo en su sitio.
+# Los dos disparadores se reparten el trabajo sin solaparse: `pull_request` cubre
+# las ramas mientras se revisan, y `push` solo las dos ramas de integración, para
+# dejar constancia de lo que queda mergeado. Filtrar el `push` no es cosmético:
+# sin `branches` correría también en cada rama de PR, y como `concurrency` agrupa
+# por `github.ref` —que vale `refs/heads/rama` en un caso y `refs/pull/N/merge`
+# en el otro— no los deduplicaría: serían dos ejecuciones idénticas por push.
 #
-# No es un apaño: los check-runs se asocian al SHA del commit, no al PR, así que
-# un run disparado por `push` sobre la rama de un PR aparece igual como check en
-# ese PR. Se conserva `pull_request` por si vuelve a funcionar; tenerlo no cuesta
-# nada y `concurrency` evita que, si algún día dispara, se dupliquen ejecuciones
-# sobre el mismo ref.
+# Nota para quien vea un PR viejo sin checks: hasta su primera ejecución GitHub
+# no tenía registrado el workflow, y en esa ventana ningún evento disparaba nada
+# —los PR #85 y #86 se abrieron ahí—. Se registró con el primer `push` a
+# `development`, y desde entonces ambos triggers responden.
 on:
   pull_request:
     branches: [development, main]
   push:
+    branches: [development, main]
 
 # Un PR que recibe varios push seguidos no necesita terminar las ejecuciones
 # viejas: solo importa el estado del último commit.
