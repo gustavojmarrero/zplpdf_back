@@ -2,6 +2,18 @@ name: CI
 
 # Hasta ahora build, lint y pruebas dependían de que alguien los corriera a mano
 # antes de aprobar un PR, y no quedaba constancia de si se habían corrido (#79).
+#
+# Los dos disparadores se reparten el trabajo sin solaparse: `pull_request` cubre
+# las ramas mientras se revisan, y `push` solo las dos ramas de integración, para
+# dejar constancia de lo que queda mergeado. Filtrar el `push` no es cosmético:
+# sin `branches` correría también en cada rama de PR, y como `concurrency` agrupa
+# por `github.ref` —que vale `refs/heads/rama` en un caso y `refs/pull/N/merge`
+# en el otro— no los deduplicaría: serían dos ejecuciones idénticas por push.
+#
+# Nota para quien vea un PR viejo sin checks: hasta su primera ejecución GitHub
+# no tenía registrado el workflow, y en esa ventana ningún evento disparaba nada
+# —los PR #85 y #86 se abrieron ahí—. Se registró con el primer `push` a
+# `development`, y desde entonces ambos triggers responden.
 on:
   pull_request:
     branches: [development, main]
@@ -24,10 +36,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # La misma que corre en producción (`FROM node:18-slim` en el
+          # La misma que corre en producción (`FROM node:22-slim` en el
           # Dockerfile). Verificar sobre otra versión dejaría pasar justo lo que
           # solo falla en la desplegada.
-          node-version: '18'
+          node-version: '22'
           cache: npm
 
       # `ci` y no `install`: instala exactamente lo del lockfile y falla si se
