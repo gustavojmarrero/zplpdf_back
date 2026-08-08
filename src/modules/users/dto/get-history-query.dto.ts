@@ -2,7 +2,7 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsOptional,
   IsString,
-  IsNumber,
+  IsInt,
   IsEnum,
   IsDateString,
   Min,
@@ -32,7 +32,7 @@ export class GetHistoryQueryDto {
   @ApiPropertyOptional({ default: 1, minimum: 1, description: 'Page number' })
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
   @Min(1)
   page?: number = 1;
 
@@ -44,7 +44,7 @@ export class GetHistoryQueryDto {
   })
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
   @Min(1)
   @Max(100)
   limit?: number = 25;
@@ -68,10 +68,22 @@ export class GetHistoryQueryDto {
   @IsEnum(OutputFormat)
   outputFormat?: OutputFormat;
 
-  @ApiPropertyOptional({ enum: LabelSize })
+  /**
+   * No se valida contra `LabelSize`: las conversiones batch guardan el tamaño
+   * tal cual llega (`BatchConvertDto.labelSize` es un string libre), así que el
+   * historial contiene valores fuera del enum (`small`, `large`, `4x4`…). Como
+   * `facets.labelSizes` los expone para poblar el select del frontend, un enum
+   * estricto rechazaría con 400 el propio valor que el endpoint acaba de
+   * ofrecer. Un tamaño inexistente simplemente no devuelve resultados.
+   */
+  @ApiPropertyOptional({
+    description: `Label size, e.g. ${Object.values(LabelSize).join(', ')}. Acepta cualquiera de los valores listados en facets.labelSizes`,
+    maxLength: 50,
+  })
   @IsOptional()
-  @IsEnum(LabelSize)
-  labelSize?: LabelSize;
+  @IsString()
+  @MaxLength(50)
+  labelSize?: string;
 
   @ApiPropertyOptional({
     description: 'Filter by conversion date from (ISO 8601, inclusive)',

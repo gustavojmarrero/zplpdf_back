@@ -4,8 +4,11 @@ jest.mock('@google-cloud/storage', () => ({
 }));
 jest.mock('stripe', () => jest.fn());
 
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { UsersService, MAX_HISTORY_SCAN } from './users.service.js';
 import {
+  GetHistoryQueryDto,
   HistorySortBy,
   HistorySortOrder,
   HistoryStatus,
@@ -123,6 +126,20 @@ describe('UsersService — getUserHistory', () => {
     });
 
     it('marca truncated cuando el usuario supera el tope de escaneo', async () => {
+      // El servicio pide un documento de más; devolverlo significa que sobran.
+      const overCap = Array.from({ length: MAX_HISTORY_SCAN + 1 }, (_, i) =>
+        record({ id: `t${i}` }),
+      );
+      const { service } = buildService(overCap);
+
+      const result = await service.getUserHistory('uid-1', { limit: 10 });
+
+      expect(result.pagination.truncated).toBe(true);
+      // El registro sobrante es solo la señal: no debe contarse como resultado.
+      expect(result.pagination.total).toBe(MAX_HISTORY_SCAN);
+    });
+
+    it('no marca truncated con exactamente el tope de conversiones', async () => {
       const atCap = Array.from({ length: MAX_HISTORY_SCAN }, (_, i) =>
         record({ id: `t${i}` }),
       );
@@ -130,7 +147,8 @@ describe('UsersService — getUserHistory', () => {
 
       const result = await service.getUserHistory('uid-1', { limit: 10 });
 
-      expect(result.pagination.truncated).toBe(true);
+      expect(result.pagination.truncated).toBeUndefined();
+      expect(result.pagination.total).toBe(MAX_HISTORY_SCAN);
     });
 
     it('no marca truncated por debajo del tope', async () => {
@@ -139,6 +157,17 @@ describe('UsersService — getUserHistory', () => {
       const result = await service.getUserHistory('uid-1', {});
 
       expect(result.pagination.truncated).toBeUndefined();
+    });
+
+    it('pide un documento más que el tope, para detectar el corte', async () => {
+      const { service, scanUserConversionHistory } = buildService([]);
+
+      await service.getUserHistory('uid-1', {});
+
+      expect(scanUserConversionHistory).toHaveBeenCalledWith(
+        'uid-1',
+        MAX_HISTORY_SCAN + 1,
+      );
     });
   });
 
@@ -253,6 +282,22 @@ describe('UsersService — getUserHistory', () => {
 
       expect(result.data.map((r: { id: string }) => r.id)).toEqual(['b']);
       expect(result.pagination.total).toBe(1);
+    });
+
+    it('filtra por un labelSize fuera del enum, como los que guarda el batch', async () => {
+      // `BatchConvertDto.labelSize` es un string libre: el historial contiene
+      // valores como `large` que los facets exponen y el filtro debe aceptar.
+      const { service } = buildService([
+        record({ id: 'a', labelSize: 'large' }),
+        record({ id: 'b', labelSize: LabelSize.FOUR_BY_SIX }),
+      ]);
+
+      const result = await service.getUserHistory('uid-1', {
+        labelSize: 'large',
+      });
+
+      expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a']);
+      expect(result.facets.labelSizes).toEqual(['4x6', 'large']);
     });
 
     it('combina outputFormat y labelSize', async () => {
@@ -457,10 +502,6 @@ describe('UsersService — getUserHistory', () => {
       await service.getUserHistory('uid-1', { page: 1, search: 'job' });
 
       expect(scanUserConversionHistory).toHaveBeenCalledTimes(1);
-      expect(scanUserConversionHistory).toHaveBeenCalledWith(
-        'uid-1',
-        MAX_HISTORY_SCAN,
-      );
     });
 
     it('vuelve a leer cuando la entrada ha caducado', async () => {
@@ -486,5 +527,100 @@ describe('UsersService — getUserHistory', () => {
 
       expect(scanUserConversionHistory).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+/**
+ * La validación del query es lo que separa un 400 con mensaje claro de un 500 o,
+ * peor, de una respuesta con metadatos incoherentes.
+ */
+describe('GetHistoryQueryDto', () => {
+  /** Reproduce lo que hace el ValidationPipe global (`transform: true`). */
+  async function validateQuery(query: Record<string, string>) {
+    const dto = plainToInstance(GetHistoryQueryDto, query, {
+      enableImplicitConversion: false,
+    });
+    const errors = await validate(dto);
+    return {
+      dto,
+      failed: errors.map((e) => e.property),
+    };
+  }
+
+  it('acepta un query vacío y aplica los defaults', async () => {
+    const { dto, failed } = await validateQuery({});
+
+    expect(failed).toEqual([]);
+    expect(dto.page).toBe(1);
+    expect(dto.limit).toBe(25);
+    expect(dto.sortBy).toBe(HistorySortBy.CREATED_AT);
+    expect(dto.sortOrder).toBe(HistorySortOrder.DESC);
+  });
+
+  it('rechaza un limit fraccionario', async () => {
+    // `Array.slice` truncaría el índice mientras `totalPages` conservaría el
+    // divisor decimal: páginas de tamaño variable y metadatos incoherentes.
+    const { failed } = await validateQuery({ limit: '2.5' });
+
+    expect(failed).toContain('limit');
+  });
+
+  it('rechaza una page fraccionaria', async () => {
+    const { failed } = await validateQuery({ page: '1.5' });
+
+    expect(failed).toContain('page');
+  });
+
+  it('rechaza un limit por encima de 100', async () => {
+    const { failed } = await validateQuery({ limit: '101' });
+
+    expect(failed).toContain('limit');
+  });
+
+  it('rechaza page y limit por debajo de 1', async () => {
+    expect((await validateQuery({ page: '0' })).failed).toContain('page');
+    expect((await validateQuery({ limit: '0' })).failed).toContain('limit');
+  });
+
+  it('rechaza enums desconocidos', async () => {
+    expect((await validateQuery({ status: 'pending' })).failed).toContain(
+      'status',
+    );
+    expect((await validateQuery({ outputFormat: 'gif' })).failed).toContain(
+      'outputFormat',
+    );
+    expect((await validateQuery({ sortBy: 'fileUrl' })).failed).toContain(
+      'sortBy',
+    );
+  });
+
+  it('rechaza fechas que no son ISO 8601', async () => {
+    expect((await validateQuery({ dateFrom: '20-01-2026' })).failed).toContain(
+      'dateFrom',
+    );
+  });
+
+  it('acepta un labelSize fuera del enum', async () => {
+    // Lo contrario rechazaría con 400 el valor que `facets.labelSizes` ofrece.
+    const { failed } = await validateQuery({ labelSize: 'large' });
+
+    expect(failed).toEqual([]);
+  });
+
+  it('acepta un query completo y válido', async () => {
+    const { failed } = await validateQuery({
+      page: '2',
+      limit: '50',
+      search: 'job-abc',
+      status: 'completed',
+      outputFormat: 'pdf',
+      labelSize: '4x6',
+      dateFrom: '2026-01-01',
+      dateTo: '2026-01-31T23:59:59.999Z',
+      sortBy: 'labelCount',
+      sortOrder: 'asc',
+    });
+
+    expect(failed).toEqual([]);
   });
 });

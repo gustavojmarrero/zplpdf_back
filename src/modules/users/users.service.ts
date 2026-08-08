@@ -77,6 +77,8 @@ const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 interface HistoryScanCacheEntry {
   records: ConversionHistoryRecord[];
+  /** El usuario tiene más conversiones de las que cabían en el escaneo. */
+  truncated: boolean;
   expiresAt: number;
 }
 
@@ -378,8 +380,8 @@ export class UsersService {
     // Se lee un bloque acotado del historial y se filtra/ordena/pagina en memoria:
     // así `search`, `sortBy=labelCount` y las combinaciones de filtros no exigen
     // un índice compuesto por cada permutación (ver issue #89).
-    const scanned = await this.getScannedHistory(userId);
-    const truncated = scanned.length >= MAX_HISTORY_SCAN;
+    const { records: scanned, truncated } =
+      await this.getScannedHistory(userId);
 
     // Los facets salen del escaneo completo, no de la página: describen lo que
     // el usuario tiene, para que el frontend pueble los selects sin hardcodear.
@@ -421,16 +423,21 @@ export class UsersService {
    */
   private async getScannedHistory(
     userId: string,
-  ): Promise<ConversionHistoryRecord[]> {
+  ): Promise<{ records: ConversionHistoryRecord[]; truncated: boolean }> {
     const cached = this.historyScanCache.get(userId);
     if (cached && cached.expiresAt > Date.now()) {
-      return cached.records;
+      return { records: cached.records, truncated: cached.truncated };
     }
 
-    const records = await this.firestoreService.scanUserConversionHistory(
+    // Se pide un documento de más: si llega, es que quedaron conversiones fuera.
+    // Con `length >= MAX_HISTORY_SCAN` un usuario con exactamente ese número se
+    // marcaría como truncado sin haberse omitido nada.
+    const scanned = await this.firestoreService.scanUserConversionHistory(
       userId,
-      MAX_HISTORY_SCAN,
+      MAX_HISTORY_SCAN + 1,
     );
+    const truncated = scanned.length > MAX_HISTORY_SCAN;
+    const records = truncated ? scanned.slice(0, MAX_HISTORY_SCAN) : scanned;
 
     // Evitar que la caché crezca sin límite en instancias longevas
     if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
@@ -439,10 +446,11 @@ export class UsersService {
 
     this.historyScanCache.set(userId, {
       records,
+      truncated,
       expiresAt: Date.now() + HISTORY_SCAN_CACHE_TTL_MS,
     });
 
-    return records;
+    return { records, truncated };
   }
 
   /** Invalida la caché del historial de un usuario (tras registrar una conversión). */
