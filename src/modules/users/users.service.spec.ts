@@ -1179,20 +1179,26 @@ describe('UsersService — acciones sobre el historial', () => {
     it('solo consulta los ZPLs de la página, no los del escaneo entero', async () => {
       // El escaneo llega hasta MAX_HISTORY_SCAN registros; resolver el flag para
       // todos costaría cientos de lecturas por request.
+      //
+      // Cada registro lleva su propia fecha, decreciente: con la fecha por
+      // defecto los 40 `new Date()` caen en el mismo milisegundo casi siempre,
+      // pero si el bucle cruza uno el orden cambia y con él la página.
       const { service, firestoreService } = buildService({
         history: Array.from({ length: 40 }, (_, i) =>
-          registroDeHistorial({ id: `hist-${i}`, jobId: `job-${i}` }),
+          registroDeHistorial({
+            id: `hist-${i}`,
+            jobId: `job-${i}`,
+            createdAt: new Date(Date.now() - i * 60_000),
+          }),
         ),
       });
 
       await service.getUserHistory(UID, { limit: 10 });
 
+      // Los diez más recientes, en orden: nada del resto del escaneo.
       expect(firestoreService.getSavedZplDatesByJobId).toHaveBeenCalledWith(
-        expect.arrayContaining(['job-0']),
+        Array.from({ length: 10 }, (_, i) => `job-${i}`),
       );
-      expect(
-        firestoreService.getSavedZplDatesByJobId.mock.calls[0][0],
-      ).toHaveLength(10);
     });
   });
 });
