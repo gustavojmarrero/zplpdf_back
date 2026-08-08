@@ -26,6 +26,9 @@ describe('UsersService — acciones sobre el historial', () => {
   const OTRO_UID = 'uid-ajeno';
   const HISTORY_ID = 'hist-1';
 
+  const diasAtras = (dias: number) =>
+    new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+
   function registroDeHistorial(overrides: Record<string, unknown> = {}) {
     return {
       id: HISTORY_ID,
@@ -46,6 +49,7 @@ describe('UsersService — acciones sobre el historial', () => {
     debugFile?: Record<string, unknown> | null;
     zplContent?: string | null;
     history?: Record<string, unknown>[];
+    jobIdsConZpl?: Set<string> | Error;
   }) {
     const firestoreService = {
       getUserById: jest
@@ -73,6 +77,15 @@ describe('UsersService — acciones sobre el historial', () => {
       getUserConversionHistory: jest
         .fn()
         .mockResolvedValue(overrides.history ?? []),
+      getJobIdsWithSavedZpl: jest
+        .fn()
+        .mockImplementation((jobIds: string[]) => {
+          if (overrides.jobIdsConZpl instanceof Error) {
+            return Promise.reject(overrides.jobIdsConZpl);
+          }
+          // Por defecto, todos los jobs del historial tienen su ZPL guardado.
+          return Promise.resolve(overrides.jobIdsConZpl ?? new Set(jobIds));
+        }),
       // Si algún camino intentara tocar la cuota, el test lo vería aquí.
       incrementUsage: jest.fn(),
       updateUsage: jest.fn(),
@@ -216,9 +229,6 @@ describe('UsersService — acciones sobre el historial', () => {
   });
 
   describe('getUserHistory — flag canReconvert', () => {
-    const diasAtras = (dias: number) =>
-      new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
-
     it('marca reconvertible lo que sigue dentro de la ventana de retención', async () => {
       const { service } = buildService({
         history: [registroDeHistorial({ createdAt: diasAtras(1) })],
@@ -250,6 +260,33 @@ describe('UsersService — acciones sobre el historial', () => {
       const [record] = await service.getUserHistory(UID);
 
       expect(record.id).toBe(HISTORY_ID);
+    });
+
+    it('no promete reconvertir una fila cuyo ZPL nunca se guardó', async () => {
+      // Las filas que el flujo batch creó antes de que guardara el ZPL son
+      // recientes pero irrecuperables: por edad saldrían como reconvertibles y
+      // el botón devolvería 410 al pulsarlo.
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        jobIdsConZpl: new Set<string>(),
+      });
+
+      const [record] = await service.getUserHistory(UID);
+
+      expect(record.canReconvert).toBe(false);
+    });
+
+    it('degrada a no reconvertible si la consulta de ZPLs falla', async () => {
+      // Un botón de más deshabilitado es preferible a prometer un 410, y a que
+      // el listado entero reviente por un flag.
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        jobIdsConZpl: new Error('firestore caído'),
+      });
+
+      const [record] = await service.getUserHistory(UID);
+
+      expect(record.canReconvert).toBe(false);
     });
   });
 });

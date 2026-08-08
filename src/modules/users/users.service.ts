@@ -367,11 +367,11 @@ export class UsersService {
   }
 
   /**
-   * Indica si el ZPL original de un registro sigue dentro de la ventana de
-   * retención del bucket. Se calcula por edad, sin tocar Storage: resolverlo
-   * fila a fila costaría una lectura de Firestore y otra de GCS por cada una.
+   * Indica si el registro sigue dentro de la ventana de retención del bucket.
+   * Se calcula por edad, sin tocar Storage: comprobar el objeto fila a fila
+   * costaría una llamada a GCS por cada una.
    */
-  private canReconvert(createdAt: Date | undefined): boolean {
+  private isWithinZplRetention(createdAt: Date | undefined): boolean {
     if (!createdAt) return false;
 
     // Firestore devuelve Date, pero los registros antiguos pueden traer la
@@ -382,6 +382,40 @@ export class UsersService {
 
     const ageMs = Date.now() - created.getTime();
     return ageMs < ZPL_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  }
+
+  /**
+   * Marca cada fila con si admite "reconvertir". Son dos condiciones y hacen
+   * falta las dos:
+   *
+   *  - que se guardara el ZPL (una sola consulta en lote para toda la página).
+   *    No todas las filas lo tienen: hasta este cambio, el flujo batch creaba
+   *    historial sin guardar ZPL, así que esas filas nunca podrán reconvertirse.
+   *  - que el registro siga dentro de la ventana de retención, porque el doc de
+   *    metadata sobrevive al archivo que el bucket ya borró.
+   *
+   * Si la consulta en lote falla, marca todo como no reconvertible: un botón de
+   * más deshabilitado es preferible a prometer algo que devolverá 410.
+   */
+  private async marcarReconvertibles(
+    history: ConversionHistory[],
+  ): Promise<void> {
+    let jobIdsConZpl = new Set<string>();
+    try {
+      jobIdsConZpl = await this.firestoreService.getJobIdsWithSavedZpl(
+        history.map((record) => record.jobId),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to resolve canReconvert flags: ${error.message}`,
+      );
+    }
+
+    for (const record of history) {
+      record.canReconvert =
+        jobIdsConZpl.has(record.jobId) &&
+        this.isWithinZplRetention(record.createdAt);
+    }
   }
 
   async getUserHistory(
@@ -397,6 +431,10 @@ export class UsersService {
       limit,
       offset,
     );
+
+    // El frontend deshabilita "reconvertir" con este flag en vez de descubrir
+    // la caducidad a base de 410s al pulsar el botón.
+    await this.marcarReconvertibles(history);
 
     // Regenerar URLs firmadas frescas para cada registro completado
     return Promise.all(
@@ -419,9 +457,6 @@ export class UsersService {
             }
           }
         }
-        // El frontend deshabilita "reconvertir" con este flag en vez de
-        // descubrir la caducidad a base de 410s al pulsar el botón.
-        record.canReconvert = this.canReconvert(record.createdAt);
         return record;
       }),
     );

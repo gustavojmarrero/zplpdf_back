@@ -2156,10 +2156,12 @@ export class ZplService {
 
     // Obtener el plan del usuario (batch solo disponible para pro/enterprise)
     let userPlan: UserPlan = 'pro';
+    let userEmail = 'unknown';
     if (userId) {
       try {
         const user = await this.usersService.getUserById(userId);
         userPlan = (user?.plan as UserPlan) || 'pro';
+        userEmail = user?.email || 'unknown';
       } catch {
         userPlan = 'pro'; // Default para batch
       }
@@ -2177,6 +2179,24 @@ export class ZplService {
       } catch (error) {
         this.logger.warn(
           `Error contando labels en ${file.fileName}: ${error.message}`,
+        );
+      }
+
+      // Cada archivo del batch acaba como una fila propia en el historial (ver
+      // recordConversion más abajo), así que tiene que dejar su ZPL guardado
+      // igual que una conversión individual: si no, esas filas nunca podrían
+      // reconvertirse y GET /users/history/:id/zpl devolvería siempre 410.
+      if (userId) {
+        this.saveZplForDebug(
+          file.content,
+          job.jobId,
+          userId,
+          userEmail,
+          labelSize,
+          labelCount,
+          outputFormat as OutputFormat,
+        ).catch((err) =>
+          this.logger.warn(`Failed to save ZPL for debug: ${err.message}`),
         );
       }
 
@@ -2244,6 +2264,14 @@ export class ZplService {
             undefined,
             periodInfo,
           );
+          // Update ZPL debug result
+          this.firestoreService
+            .updateZplDebugResult(job.jobId, 'success')
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to update ZPL debug result: ${err.message}`,
+              ),
+            );
         }
 
         this.logger.log(
@@ -2275,6 +2303,14 @@ export class ZplService {
               `Error registrando conversión fallida: ${recordError.message}`,
             );
           }
+          // Update ZPL debug result
+          this.firestoreService
+            .updateZplDebugResult(job.jobId, 'error', error.message)
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to update ZPL debug result: ${err.message}`,
+              ),
+            );
         }
       }
 

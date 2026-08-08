@@ -7155,6 +7155,36 @@ export class FirestoreService {
     }
   }
 
+  /**
+   * De una lista de jobIds, devuelve los que tienen ZPL guardado.
+   *
+   * Una sola llamada para toda la página del historial: los docs de
+   * `zpl_debug_files` usan el jobId como id, así que se resuelven con un
+   * `getAll` en vez de una query por fila.
+   *
+   * Responde a "¿se llegó a guardar el ZPL?", no a "¿sigue en el bucket?" — el
+   * doc sobrevive al archivo, que caduca por lifecycle. Quien llama combina
+   * este dato con la edad del registro.
+   */
+  async getJobIdsWithSavedZpl(jobIds: string[]): Promise<Set<string>> {
+    const unicos = [...new Set(jobIds.filter(Boolean))];
+    if (unicos.length === 0) {
+      return new Set();
+    }
+
+    try {
+      const refs = unicos.map((jobId) =>
+        this.firestore.collection(this.zplDebugCollection).doc(jobId),
+      );
+      const docs = await this.firestore.getAll(...refs);
+
+      return new Set(docs.filter((doc) => doc.exists).map((doc) => doc.id));
+    } catch (error) {
+      this.logger.error(`Error comprobando ZPLs guardados: ${error.message}`);
+      throw error;
+    }
+  }
+
   async getZplDebugFileByJobId(jobId: string): Promise<{
     id: string;
     userId: string;

@@ -127,8 +127,11 @@ depender de una tabla que el usuario puede vaciar) ni los agregados de `daily_st
 `global_totals`, pero la fila sí desaparece de `/admin/conversions`, que lee de esta
 misma colección.
 
-`canReconvert` no se persiste: se calcula al leer comparando `createdAt` con
-`ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle del bucket sobre `debug-zpl/`).
+`canReconvert` no se persiste: se calcula al leer, y exige las dos condiciones —
+que exista el doc de `zpl_debug_files` con ese jobId (el ZPL se llegó a guardar) y que
+`createdAt` esté dentro de `ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle del
+bucket sobre `debug-zpl/`). Las filas que el flujo batch creó antes de agosto de 2026 no
+tienen ZPL guardado y nunca son reconvertibles.
 
 **Queries:**
 - User history: `firestore.collection('conversion_history').where('userId', '==', userId).orderBy('createdAt', 'desc').limit(50)`
