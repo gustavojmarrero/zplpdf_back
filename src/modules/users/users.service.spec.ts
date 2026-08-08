@@ -49,7 +49,7 @@ describe('UsersService — acciones sobre el historial', () => {
     debugFile?: Record<string, unknown> | null;
     zplContent?: string | null;
     history?: Record<string, unknown>[];
-    jobIdsConZpl?: Set<string> | Error;
+    zplsGuardados?: Map<string, Date | null> | Error;
   }) {
     const firestoreService = {
       getUserById: jest
@@ -77,14 +77,17 @@ describe('UsersService — acciones sobre el historial', () => {
       getUserConversionHistory: jest
         .fn()
         .mockResolvedValue(overrides.history ?? []),
-      getJobIdsWithSavedZpl: jest
+      getSavedZplDatesByJobId: jest
         .fn()
         .mockImplementation((jobIds: string[]) => {
-          if (overrides.jobIdsConZpl instanceof Error) {
-            return Promise.reject(overrides.jobIdsConZpl);
+          if (overrides.zplsGuardados instanceof Error) {
+            return Promise.reject(overrides.zplsGuardados);
           }
-          // Por defecto, todos los jobs del historial tienen su ZPL guardado.
-          return Promise.resolve(overrides.jobIdsConZpl ?? new Set(jobIds));
+          // Por defecto, todos los jobs tienen su ZPL guardado hoy mismo.
+          return Promise.resolve(
+            overrides.zplsGuardados ??
+              new Map(jobIds.map((jobId) => [jobId, new Date()])),
+          );
         }),
       // Si algún camino intentara tocar la cuota, el test lo vería aquí.
       incrementUsage: jest.fn(),
@@ -245,11 +248,42 @@ describe('UsersService — acciones sobre el historial', () => {
         history: [
           registroDeHistorial({ createdAt: diasAtras(ZPL_RETENTION_DAYS + 1) }),
         ],
+        zplsGuardados: new Map([['job-1', diasAtras(ZPL_RETENTION_DAYS + 1)]]),
       });
 
       const [record] = await service.getUserHistory(UID);
 
       expect(record.canReconvert).toBe(false);
+    });
+
+    it('cuenta la ventana desde que se guardó el ZPL, no desde la fila del historial', async () => {
+      // El objeto se sube al empezar la conversión y la fila nace al terminarla:
+      // en el borde de la ventana, fecharlo por el historial promete de más.
+      const { service } = buildService({
+        history: [
+          registroDeHistorial({
+            createdAt: diasAtras(ZPL_RETENTION_DAYS - 0.5),
+          }),
+        ],
+        zplsGuardados: new Map([
+          ['job-1', diasAtras(ZPL_RETENTION_DAYS + 0.5)],
+        ]),
+      });
+
+      const [record] = await service.getUserHistory(UID);
+
+      expect(record.canReconvert).toBe(false);
+    });
+
+    it('recurre a la fecha del historial si el doc de metadata no la trae', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([['job-1', null]]),
+      });
+
+      const [record] = await service.getUserHistory(UID);
+
+      expect(record.canReconvert).toBe(true);
     });
 
     it('expone el id del documento, que es la clave de las dos acciones nuevas', async () => {
@@ -268,7 +302,7 @@ describe('UsersService — acciones sobre el historial', () => {
       // el botón devolvería 410 al pulsarlo.
       const { service } = buildService({
         history: [registroDeHistorial({ createdAt: diasAtras(1) })],
-        jobIdsConZpl: new Set<string>(),
+        zplsGuardados: new Map<string, Date | null>(),
       });
 
       const [record] = await service.getUserHistory(UID);
@@ -281,7 +315,7 @@ describe('UsersService — acciones sobre el historial', () => {
       // el listado entero reviente por un flag.
       const { service } = buildService({
         history: [registroDeHistorial({ createdAt: diasAtras(1) })],
-        jobIdsConZpl: new Error('firestore caído'),
+        zplsGuardados: new Error('firestore caído'),
       });
 
       const [record] = await service.getUserHistory(UID);

@@ -7156,20 +7156,28 @@ export class FirestoreService {
   }
 
   /**
-   * De una lista de jobIds, devuelve los que tienen ZPL guardado.
+   * De una lista de jobIds, devuelve los que tienen ZPL guardado y **cuándo** se
+   * guardó. Los que no aparecen en el mapa no tienen copia.
    *
    * Una sola llamada para toda la página del historial: los docs de
    * `zpl_debug_files` usan el jobId como id, así que se resuelven con un
    * `getAll` en vez de una query por fila.
    *
+   * La fecha importa: el lifecycle del bucket cuenta desde que se subió el
+   * objeto, y eso ocurre al empezar la conversión, no al terminarla — la fila
+   * del historial nace después. Fechar la caducidad con el historial haría
+   * parecer al ZPL más joven de lo que es, y el flag prometería de más justo en
+   * el borde de la ventana.
+   *
    * Responde a "¿se llegó a guardar el ZPL?", no a "¿sigue en el bucket?" — el
-   * doc sobrevive al archivo, que caduca por lifecycle. Quien llama combina
-   * este dato con la edad del registro.
+   * doc sobrevive al archivo que el lifecycle ya borró.
    */
-  async getJobIdsWithSavedZpl(jobIds: string[]): Promise<Set<string>> {
+  async getSavedZplDatesByJobId(
+    jobIds: string[],
+  ): Promise<Map<string, Date | null>> {
     const unicos = [...new Set(jobIds.filter(Boolean))];
     if (unicos.length === 0) {
-      return new Set();
+      return new Map();
     }
 
     try {
@@ -7178,7 +7186,14 @@ export class FirestoreService {
       );
       const docs = await this.firestore.getAll(...refs);
 
-      return new Set(docs.filter((doc) => doc.exists).map((doc) => doc.id));
+      return new Map(
+        docs
+          .filter((doc) => doc.exists)
+          .map((doc) => {
+            const createdAt = doc.data()?.createdAt;
+            return [doc.id, createdAt?.toDate?.() || createdAt || null];
+          }),
+      );
     } catch (error) {
       this.logger.error(`Error comprobando ZPLs guardados: ${error.message}`);
       throw error;

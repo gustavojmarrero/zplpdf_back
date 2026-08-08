@@ -528,4 +528,30 @@ describe('ZplService — el batch deja el ZPL disponible para reconvertir', () =
 
     expect(updateZplDebugResult).toHaveBeenCalledWith('job-batch-1', 'success');
   });
+
+  it('espera a que el ZPL esté guardado antes de marcar su resultado', async () => {
+    // updateZplDebugResult usa update() y se traga el fallo si el doc todavía no
+    // existe; el set() posterior del guardado dejaría el registro en `pending`
+    // para siempre. Con una subida más lenta que la conversión, el orden importa.
+    const { service, updateZplDebugResult } = buildBatchService();
+    let zplYaGuardado = false;
+    service.saveZplForDebug = jest.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) =>
+          setImmediate(() => {
+            zplYaGuardado = true;
+            resolve();
+          }),
+        ),
+    );
+    const observado: boolean[] = [];
+    updateZplDebugResult.mockImplementation(() => {
+      observado.push(zplYaGuardado);
+      return Promise.resolve();
+    });
+
+    await service.processBatchFiles('batch-1', [archivo], [job], '4x6', 'pdf');
+
+    expect(observado).toEqual([true]);
+  });
 });

@@ -2186,8 +2186,14 @@ export class ZplService {
       // recordConversion más abajo), así que tiene que dejar su ZPL guardado
       // igual que una conversión individual: si no, esas filas nunca podrían
       // reconvertirse y GET /users/history/:id/zpl devolvería siempre 410.
+      //
+      // Se lanza en paralelo con la conversión, pero la promesa se conserva: hay
+      // que esperarla antes de marcar el resultado. `updateZplDebugResult` usa
+      // update() y se traga el fallo si el doc aún no existe, de modo que un
+      // set() posterior dejaría el registro en `pending` para siempre.
+      let zplGuardado: Promise<void> = Promise.resolve();
       if (userId) {
-        this.saveZplForDebug(
+        zplGuardado = this.saveZplForDebug(
           file.content,
           job.jobId,
           userId,
@@ -2265,6 +2271,7 @@ export class ZplService {
             periodInfo,
           );
           // Update ZPL debug result
+          await zplGuardado;
           this.firestoreService
             .updateZplDebugResult(job.jobId, 'success')
             .catch((err) =>
@@ -2304,6 +2311,7 @@ export class ZplService {
             );
           }
           // Update ZPL debug result
+          await zplGuardado;
           this.firestoreService
             .updateZplDebugResult(job.jobId, 'error', error.message)
             .catch((err) =>

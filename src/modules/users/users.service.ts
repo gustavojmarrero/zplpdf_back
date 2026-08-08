@@ -391,8 +391,14 @@ export class UsersService {
    *  - que se guardara el ZPL (una sola consulta en lote para toda la página).
    *    No todas las filas lo tienen: hasta este cambio, el flujo batch creaba
    *    historial sin guardar ZPL, así que esas filas nunca podrán reconvertirse.
-   *  - que el registro siga dentro de la ventana de retención, porque el doc de
+   *  - que el ZPL siga dentro de la ventana de retención, porque el doc de
    *    metadata sobrevive al archivo que el bucket ya borró.
+   *
+   * La ventana se cuenta desde que se guardó el ZPL, no desde que se registró
+   * la conversión: el objeto se sube al empezar y la fila del historial nace al
+   * terminar, así que el lifecycle lleva ya un rato corriendo cuando aparece la
+   * fila. Solo se recurre a la fecha del historial si el doc de metadata es
+   * antiguo y no la trae.
    *
    * Si la consulta en lote falla, marca todo como no reconvertible: un botón de
    * más deshabilitado es preferible a prometer algo que devolverá 410.
@@ -400,9 +406,9 @@ export class UsersService {
   private async marcarReconvertibles(
     history: ConversionHistory[],
   ): Promise<void> {
-    let jobIdsConZpl = new Set<string>();
+    let zplsGuardados = new Map<string, Date | null>();
     try {
-      jobIdsConZpl = await this.firestoreService.getJobIdsWithSavedZpl(
+      zplsGuardados = await this.firestoreService.getSavedZplDatesByJobId(
         history.map((record) => record.jobId),
       );
     } catch (error) {
@@ -413,8 +419,10 @@ export class UsersService {
 
     for (const record of history) {
       record.canReconvert =
-        jobIdsConZpl.has(record.jobId) &&
-        this.isWithinZplRetention(record.createdAt);
+        zplsGuardados.has(record.jobId) &&
+        this.isWithinZplRetention(
+          zplsGuardados.get(record.jobId) ?? record.createdAt,
+        );
     }
   }
 
