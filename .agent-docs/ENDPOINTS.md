@@ -57,11 +57,16 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 - Pasada esa ventana, `GET /users/history/:id/zpl` responde `410 ZPL_NOT_AVAILABLE`.
   Para no descubrirlo a base de errores, cada ítem de `GET /users/history` trae
   `canReconvert: boolean`. Son **dos** condiciones y hacen falta las dos: que el ZPL
-  se llegara a guardar (una consulta en lote a `zpl_debug_files` por página, los docs
-  usan el jobId como id) y que el registro siga dentro de la ventana de retención.
+  se llegara a guardar (una consulta en lote a `zpl_debug_files`, solo con los jobIds
+  de la página; los docs usan el jobId como id) y que siga dentro de la ventana,
+  contada desde que se guardó el ZPL —no desde la fila del historial, que nace al
+  terminar la conversión mientras el objeto se sube al empezarla—.
   Las filas creadas por batch **antes** de agosto de 2026 no tienen ZPL: el flujo
   batch registraba historial sin llamar a `saveZplForDebug`. Salen con
   `canReconvert: false` para siempre.
+- El listado sirve de una caché en memoria de 60s (`historyScanCache`, issue #89), así
+  que `deleteHistoryEntry` la invalida: sin eso la fila borrada reaparecería en la
+  siguiente carga de la tabla.
 - El ZPL **no** está en Firestore: `ConversionStatus.zplContent` existe en el tipo pero
   nunca se escribe. La copia real vive en `debug-zpl/{userId}/{fecha}/{jobId}.zpl`,
   indexada por jobId en `zpl_debug_files`.

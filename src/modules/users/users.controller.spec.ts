@@ -91,7 +91,7 @@ describe('UsersController — rutas del historial', () => {
   it('GET /users/history sigue resolviendo al listado, no a la ruta con parámetro', async () => {
     await request(app.getHttpServer()).get('/users/history').expect(200);
 
-    expect(usersService.getUserHistory).toHaveBeenCalledWith(UID, 1, 50);
+    expect(usersService.getUserHistory).toHaveBeenCalledWith(UID, {});
     expect(usersService.getHistoryZpl).not.toHaveBeenCalled();
   });
 

@@ -109,7 +109,6 @@ Record of each conversion (successful or failed).
 ```typescript
 // Interface: src/common/interfaces/conversion-history.interface.ts
 interface ConversionHistory {
-  id?: string;              // Doc id; solo al leer. Es el :id de DELETE /users/history/:id
   userId: string;
   jobId: string;
   labelCount: number;
@@ -118,7 +117,11 @@ interface ConversionHistory {
   outputFormat: 'pdf' | 'png' | 'jpeg';
   fileUrl?: string | null;  // Signed URL for completed
   createdAt: Date;
-  canReconvert?: boolean;   // Derivado, no almacenado: edad < ZPL_RETENTION_DAYS
+}
+
+// Al leer se añade el doc id: es el :id de DELETE /users/history/:id
+interface ConversionHistoryRecord extends ConversionHistory {
+  id: string;
 }
 ```
 
@@ -127,11 +130,12 @@ depender de una tabla que el usuario puede vaciar) ni los agregados de `daily_st
 `global_totals`, pero la fila sí desaparece de `/admin/conversions`, que lee de esta
 misma colección.
 
-`canReconvert` no se persiste: se calcula al leer, y exige las dos condiciones —
+`canReconvert` no se persiste ni vive en esta interfaz: es un campo de
+`ConversionHistoryItemDto` que se calcula al responder, y exige las dos condiciones —
 que exista el doc de `zpl_debug_files` con ese jobId (el ZPL se llegó a guardar) y que
-`createdAt` esté dentro de `ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle del
-bucket sobre `debug-zpl/`). Las filas que el flujo batch creó antes de agosto de 2026 no
-tienen ZPL guardado y nunca son reconvertibles.
+su `createdAt` esté dentro de `ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle
+del bucket sobre `debug-zpl/`). Las filas que el flujo batch creó antes de agosto de 2026
+no tienen ZPL guardado y nunca son reconvertibles.
 
 **Queries:**
 - User history: `firestore.collection('conversion_history').where('userId', '==', userId).orderBy('createdAt', 'desc').limit(50)`

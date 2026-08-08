@@ -20,7 +20,10 @@ import type {
   Cfdi,
   CfdiClaim,
 } from '../../common/interfaces/cfdi.interface.js';
-import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
+import type {
+  ConversionHistory,
+  ConversionHistoryRecord,
+} from '../../common/interfaces/conversion-history.interface.js';
 import type { BatchJob } from '../zpl/interfaces/batch.interface.js';
 import type { HourlyLabelaryStats } from '../zpl/interfaces/labelary-analytics.interface.js';
 import { getDateStringInTimezone } from '../../utils/timezone.util.js';
@@ -1317,12 +1320,44 @@ export class FirestoreService {
         const data = doc.data();
         return {
           ...data,
-          id: doc.id,
           createdAt: data.createdAt?.toDate?.() || data.createdAt,
         } as ConversionHistory;
       });
     } catch (error) {
       this.logger.error(`Error al obtener historial: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Lee hasta `maxScan` conversiones del usuario (las más recientes primero)
+   * incluyendo el id del documento, para filtrar, ordenar y paginar en memoria.
+   *
+   * Usa el mismo índice que `getUserConversionHistory` (`userId` + `createdAt desc`),
+   * así que no requiere índices compuestos nuevos por cada combinación de filtros.
+   */
+  async scanUserConversionHistory(
+    userId: string,
+    maxScan: number,
+  ): Promise<ConversionHistoryRecord[]> {
+    try {
+      const snapshot = await this.firestore
+        .collection(this.historyCollection)
+        .where('userId', '==', userId)
+        .orderBy('createdAt', 'desc')
+        .limit(maxScan)
+        .get();
+
+      return snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: doc.id,
+          createdAt: data.createdAt?.toDate?.() || data.createdAt,
+        } as ConversionHistoryRecord;
+      });
+    } catch (error) {
+      this.logger.error(`Error al escanear historial: ${error.message}`);
       throw error;
     }
   }
@@ -1334,7 +1369,7 @@ export class FirestoreService {
    */
   async getConversionHistoryById(
     id: string,
-  ): Promise<ConversionHistory | null> {
+  ): Promise<ConversionHistoryRecord | null> {
     try {
       const doc = await this.firestore
         .collection(this.historyCollection)
@@ -1350,7 +1385,7 @@ export class FirestoreService {
         ...data,
         id: doc.id,
         createdAt: data.createdAt?.toDate?.() || data.createdAt,
-      } as ConversionHistory;
+      } as ConversionHistoryRecord;
     } catch (error) {
       this.logger.error(
         `Error al obtener registro de historial ${id}: ${error.message}`,

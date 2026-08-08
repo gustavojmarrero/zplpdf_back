@@ -1,10 +1,4 @@
 export interface ConversionHistory {
-  /**
-   * Doc id de `conversion_history`. Opcional porque al guardar aún no existe:
-   * lo asigna Firestore. Al leer siempre viene informado — es la clave con la
-   * que el frontend borra la fila o recupera su ZPL.
-   */
-  id?: string;
   userId: string;
   jobId: string;
   labelCount: number;
@@ -13,12 +7,14 @@ export interface ConversionHistory {
   outputFormat: 'pdf' | 'png' | 'jpeg';
   fileUrl?: string;
   createdAt: Date;
-  /**
-   * Si el ZPL original sigue dentro de la ventana de retención y, por tanto,
-   * la fila admite "reconvertir". Se deriva de la edad del registro para no
-   * pagar una lectura por fila; ver ZPL_RETENTION_DAYS.
-   */
-  canReconvert?: boolean;
+}
+
+/**
+ * Registro de historial tal y como vive en Firestore: incluye el id del
+ * documento, necesario para las acciones por fila del frontend.
+ */
+export interface ConversionHistoryRecord extends ConversionHistory {
+  id: string;
 }
 
 /**
@@ -32,9 +28,10 @@ export interface ConversionHistory {
  *
  *   gsutil lifecycle get gs://zplpdf-app-files
  *
- * Se usa para calcular `canReconvert` sin tocar Storage. El borrado real lo
- * ejecuta GCS de forma asíncrona (puede tardar hasta 24h más), de modo que el
- * flag peca de conservador: un ZPL marcado como no reconvertible puede seguir
- * existiendo un rato, nunca al revés.
+ * Acota la ventana de "reconvertir" (`canReconvert` en cada ítem del historial,
+ * 410 en `GET /users/history/:id/zpl`). El borrado real lo ejecuta GCS de forma
+ * asíncrona y puede tardar hasta 24h más, de modo que el flag peca de
+ * conservador: un ZPL marcado como no reconvertible puede seguir existiendo un
+ * rato, nunca al revés.
  */
 export const ZPL_RETENTION_DAYS = 15;
