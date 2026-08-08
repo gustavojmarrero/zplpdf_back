@@ -5999,30 +5999,49 @@ export class FirestoreService {
         plan: string;
       }> = [];
 
-      // PHASE 1: Get lastActiveAt from conversion history for all users (parallel queries)
-      // lastActiveAt is NOT stored in user document - it must be calculated from conversions history
-      const historyPromises = usersSnapshot.docs.map(
-        (doc) =>
+      // PHASE 1: la última actividad sale de `users.lastActivityAt`, que
+      // recordConversion escribe en cada conversión. Es la fuente correcta
+      // porque el usuario no puede borrarla: derivarla del historial hacía que
+      // quien vacía su historial —ahora puede, con DELETE /users/history/:id—
+      // pareciera inactivo desde su alta y recibiera emails de retención el día
+      // después de convertir.
+      //
+      // El historial sigue como respaldo, y solo para los usuarios que aún no
+      // tienen el campo (convirtieron por última vez antes de que existiera).
+      // Eso además ahorra una query por usuario en el caso normal.
+      const lastActiveAtMap = new Map<string, Date | null>();
+      const sinCampoDeActividad: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+
+      for (const doc of usersSnapshot.docs) {
+        const registrada = doc.data().lastActivityAt;
+        const fecha = registrada?.toDate?.() || registrada || null;
+        if (fecha) {
+          lastActiveAtMap.set(doc.id, fecha);
+        } else {
+          sinCampoDeActividad.push(doc);
+        }
+      }
+
+      const historySnapshots = await Promise.all(
+        sinCampoDeActividad.map((doc) =>
           this.firestore
             .collection(this.historyCollection)
             .where('userId', '==', doc.id)
             .orderBy('createdAt', 'desc')
             .limit(1)
             .get()
-            .catch(() => null), // Ignore errors (e.g., no index)
+            .catch(() => null),
+        ), // Ignore errors (e.g., no index)
       );
-      const historySnapshots = await Promise.all(historyPromises);
 
-      // Create Map of userId -> lastActiveAt
-      const lastActiveAtMap = new Map<string, Date | null>();
       historySnapshots.forEach((snapshot, index) => {
         if (snapshot && !snapshot.empty) {
           const historyData = snapshot.docs[0].data();
           const lastActiveAt =
             historyData.createdAt?.toDate?.() || historyData.createdAt || null;
-          lastActiveAtMap.set(usersSnapshot.docs[index].id, lastActiveAt);
+          lastActiveAtMap.set(sinCampoDeActividad[index].id, lastActiveAt);
         } else {
-          lastActiveAtMap.set(usersSnapshot.docs[index].id, null);
+          lastActiveAtMap.set(sinCampoDeActividad[index].id, null);
         }
       });
 

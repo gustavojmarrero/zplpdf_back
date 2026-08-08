@@ -1117,3 +1117,125 @@ describe('FirestoreService — la baja y su evento van en la misma transacción'
     expect(set).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * `getProInactiveUsers` decide a quién se le manda un email de "te echamos de
+ * menos". Derivaba la última actividad del historial de conversiones, que desde
+ * `DELETE /users/history/:id` el propio usuario puede vaciar: un cliente de pago
+ * que convierte a diario y limpia su historial pasaba a parecer inactivo desde
+ * su fecha de alta.
+ */
+describe('FirestoreService — la inactividad no depende del historial', () => {
+  function buildService(
+    usuarios: Array<{
+      id: string;
+      data: Record<string, unknown>;
+      ultimaConversion?: string;
+    }>,
+  ) {
+    const historialConsultadoPara: string[] = [];
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.historyCollection = 'conversion_history';
+    service.usageCollection = 'usage';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    service.firestore = {
+      getAll: async (...refs: Array<{ id: string }>) =>
+        refs.map((r) => ({ id: r.id, exists: false, data: () => undefined })),
+      collection: (nombre: string) => {
+        let userIdFiltrado: string | undefined;
+        const q: any = {
+          doc: (id: string) => ({ id }),
+          where: (campo: string, _op: string, valor: any) => {
+            if (campo === 'userId') userIdFiltrado = valor;
+            return q;
+          },
+          select: () => q,
+          orderBy: () => q,
+          limit: () => q,
+          get: async () => {
+            if (nombre === 'users') {
+              return {
+                docs: usuarios.map((u) => ({
+                  id: u.id,
+                  exists: true,
+                  data: () => u.data,
+                })),
+                empty: usuarios.length === 0,
+              };
+            }
+            if (nombre === 'conversion_history') {
+              historialConsultadoPara.push(userIdFiltrado);
+              const u = usuarios.find((x) => x.id === userIdFiltrado);
+              const docs = u?.ultimaConversion
+                ? [
+                    {
+                      data: () => ({ createdAt: new Date(u.ultimaConversion) }),
+                    },
+                  ]
+                : [];
+              return { docs, empty: docs.length === 0 };
+            }
+            return { docs: [], empty: true };
+          },
+        };
+        return q;
+      },
+    };
+
+    return { service, historialConsultadoPara };
+  }
+
+  const hace = (dias: number) =>
+    new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+
+  it('no da por inactivo a quien convirtió hoy aunque haya vaciado su historial', async () => {
+    const { service } = buildService([
+      {
+        id: 'uid-activo',
+        // Convirtió hoy: el campo lo escribe recordConversion y el usuario no
+        // puede borrarlo. Su historial, en cambio, está vacío.
+        data: {
+          plan: 'pro',
+          email: 'pro@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(0),
+        },
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    expect(resultado.users).toHaveLength(0);
+  });
+
+  it('recurre al historial solo para quien todavía no tiene el campo', async () => {
+    const { service, historialConsultadoPara } = buildService([
+      {
+        id: 'uid-con-campo',
+        data: {
+          plan: 'pro',
+          email: 'a@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(1),
+        },
+      },
+      {
+        id: 'uid-antiguo',
+        data: { plan: 'pro', email: 'b@ejemplo.com', createdAt: hace(400) },
+        ultimaConversion: hace(50).toISOString(),
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    // Una query menos por cada usuario que ya trae su actividad registrada.
+    expect(historialConsultadoPara).toEqual(['uid-antiguo']);
+    expect(resultado.users.map((u: any) => u.userId)).toEqual(['uid-antiguo']);
+  });
+});
