@@ -8,3 +8,11 @@ export interface ConversionHistory {
   fileUrl?: string;
   createdAt: Date;
 }
+
+/**
+ * Registro de historial tal y como vive en Firestore: incluye el id del
+ * documento, necesario para las acciones por fila del frontend.
+ */
+export interface ConversionHistoryRecord extends ConversionHistory {
+  id: string;
+}
