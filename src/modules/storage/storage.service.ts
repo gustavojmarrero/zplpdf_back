@@ -14,7 +14,13 @@ export class StorageService {
     private configService: ConfigService,
     @Inject('GOOGLE_AUTH_OPTIONS') private googleAuthOptions: any,
   ) {
-    this.bucketName = this.configService.get<string>('GCP_STORAGE_BUCKET');
+    // Mismo fallback que ZplService, AdminService y app.config: sin él, este
+    // servicio resolvía `undefined` y leía de un bucket distinto al que escribe
+    // quien guarda los archivos. Un ZPL guardado por ZplService no se podría
+    // recuperar, y el fallo sería un 500 opaco en `.bucket(undefined)`.
+    this.bucketName =
+      this.configService.get<string>('GCP_STORAGE_BUCKET') ||
+      'zplpdf-app-files';
     this.storage = new Storage(this.googleAuthOptions);
   }
 
