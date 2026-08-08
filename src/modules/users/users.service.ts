@@ -47,6 +47,7 @@ import { GeoService } from '../admin/services/geo.service.js';
 import { EmailService } from '../email/email.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { normalizeLabelSize } from '../zpl/enums/label-size.enum.js';
+import { normalizeOutputFormat } from '../zpl/enums/output-format.enum.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -780,30 +781,12 @@ export class UsersService {
     // falló, borrar esta fila eliminaría la única fecha fiable y podría hacer
     // que un cliente recién activo pareciera inactivo desde su alta.
     try {
-      const user = await this.firestoreService.getUserById(userId);
-      // Aunque getUserById normaliza el Timestamp, esta defensa también cubre
-      // adaptadores y registros antiguos con fechas ISO. Comparar los valores
-      // crudos haría que JavaScript comparase strings según el día de la semana.
-      const toMilliseconds = (value: unknown): number | null => {
-        const normalized =
-          (value as { toDate?: () => Date })?.toDate?.() ?? value;
-        const date =
-          normalized instanceof Date
-            ? normalized
-            : new Date(normalized as string);
-        const milliseconds = date.getTime();
-        return Number.isNaN(milliseconds) ? null : milliseconds;
-      };
-      const activityDates = [record.createdAt, user?.lastActivityAt]
-        .map(toMilliseconds)
-        .filter((value): value is number => value !== null);
-
-      if (activityDates.length === 0) {
-        throw new Error('No valid activity date was found');
-      }
-
-      const lastActivityAt = new Date(Math.max(...activityDates));
-      await this.firestoreService.updateUser(userId, { lastActivityAt });
+      // El máximo se calcula dentro de una transacción: dos borrados paralelos
+      // no pueden confirmar una fecha antigua después de otra más reciente.
+      await this.firestoreService.preserveLastActivityAt(
+        userId,
+        record.createdAt,
+      );
     } catch (error) {
       // Preservar la señal de actividad es defensivo; un fallo aquí no debe
       // convertir en imborrable una fila que el usuario ya decidió eliminar.
@@ -882,7 +865,10 @@ export class UsersService {
       // Devolverlo tal cual haría que reconvertir fallara con un 400 usando el
       // mismo tamaño con el que la conversión original funcionó.
       labelSize: normalizeLabelSize(record.labelSize),
-      outputFormat: record.outputFormat,
+      // El batch también guarda el formato sin validar. La normalización debe
+      // seguir su rama efectiva: solo `pdf` y `png` exactos son especiales;
+      // cualquier otro string generó JPEG.
+      outputFormat: normalizeOutputFormat(record.outputFormat),
     };
   }
 

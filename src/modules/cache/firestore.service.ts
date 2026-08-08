@@ -605,6 +605,45 @@ export class FirestoreService {
   }
 
   /**
+   * Conserva atómicamente la actividad más reciente conocida del usuario.
+   *
+   * La comparación vive dentro de la transacción porque dos borrados de
+   * historial pueden llegar en paralelo. Firestore reintenta la operación si
+   * cambia el documento leído, evitando que una fecha antigua se confirme
+   * después de una más reciente y haga retroceder `lastActivityAt`.
+   */
+  async preserveLastActivityAt(userId: string, candidate: Date): Promise<void> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    const toMilliseconds = (value: unknown): number | null => {
+      const normalized =
+        (value as { toDate?: () => Date })?.toDate?.() ?? value;
+      const date =
+        normalized instanceof Date
+          ? normalized
+          : new Date(normalized as string);
+      const milliseconds = date.getTime();
+      return Number.isNaN(milliseconds) ? null : milliseconds;
+    };
+
+    await this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const activityDates = [candidate, snapshot.data()?.lastActivityAt]
+        .map(toMilliseconds)
+        .filter((value): value is number => value !== null);
+
+      if (activityDates.length === 0) {
+        throw new Error('No valid activity date was found');
+      }
+
+      transaction.update(ref, {
+        lastActivityAt: new Date(Math.max(...activityDates)),
+        updatedAt: new Date(),
+      });
+    });
+  }
+
+  /**
    * Adquiere de forma ATÓMICA la clave de idempotencia del upgrade en curso.
    *
    * Leer y escribir por separado permitiría que dos upgrades simultáneos vieran

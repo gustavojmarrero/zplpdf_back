@@ -782,7 +782,7 @@ describe('UsersService — acciones sobre el historial', () => {
     zplContent?: string | null;
     history?: Record<string, unknown>[];
     zplsGuardados?: Map<string, Date | null> | Error;
-    updateUserError?: Error;
+    preserveLastActivityAtError?: Error;
   }) {
     const firestoreService = {
       getUserById: jest
@@ -800,8 +800,8 @@ describe('UsersService — acciones sobre el historial', () => {
             : overrides.record,
         ),
       deleteConversionHistory: jest.fn().mockResolvedValue(undefined),
-      updateUser: overrides.updateUserError
-        ? jest.fn().mockRejectedValue(overrides.updateUserError)
+      preserveLastActivityAt: overrides.preserveLastActivityAtError
+        ? jest.fn().mockRejectedValue(overrides.preserveLastActivityAtError)
         : jest.fn().mockResolvedValue(undefined),
       getZplDebugFileByJobId: jest.fn().mockResolvedValue(
         overrides.debugFile === undefined
@@ -884,17 +884,18 @@ describe('UsersService — acciones sobre el historial', () => {
 
       await service.deleteHistoryEntry(UID, HISTORY_ID);
 
-      expect(firestoreService.updateUser).toHaveBeenCalledWith(UID, {
-        lastActivityAt: createdAt,
-      });
+      expect(firestoreService.preserveLastActivityAt).toHaveBeenCalledWith(
+        UID,
+        createdAt,
+      );
       expect(
-        firestoreService.updateUser.mock.invocationCallOrder[0],
+        firestoreService.preserveLastActivityAt.mock.invocationCallOrder[0],
       ).toBeLessThan(
         firestoreService.deleteConversionHistory.mock.invocationCallOrder[0],
       );
 
       const fallo = buildService({
-        updateUserError: new Error('Firestore no disponible'),
+        preserveLastActivityAtError: new Error('Firestore no disponible'),
       });
 
       await expect(
@@ -904,29 +905,6 @@ describe('UsersService — acciones sobre el historial', () => {
       expect(fallo.service.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining('Failed to preserve lastActivityAt'),
       );
-    });
-
-    it('conserva la actividad más reciente cuando Firestore devuelve un Timestamp', async () => {
-      const createdAt = new Date('2026-08-05T12:00:00.000Z');
-      const lastActivityAt = new Date('2026-08-06T12:00:00.000Z');
-      const { service, firestoreService } = buildService({
-        user: {
-          id: UID,
-          plan: 'pro',
-          role: 'user',
-          lastActivityAt: { toDate: () => lastActivityAt },
-        },
-        record: registroDeHistorial({ createdAt }),
-      });
-
-      await service.deleteHistoryEntry(UID, HISTORY_ID);
-
-      expect(firestoreService.updateUser).toHaveBeenCalledWith(UID, {
-        lastActivityAt,
-      });
-      expect(firestoreService.updateUser).not.toHaveBeenCalledWith(UID, {
-        lastActivityAt: createdAt,
-      });
     });
 
     it('no toca el uso mensual al borrar', async () => {
@@ -1023,6 +1001,38 @@ describe('UsersService — acciones sobre el historial', () => {
       const { labelSize } = await service.getHistoryZpl(UID, HISTORY_ID);
 
       expect(labelSize).toBe('2x1');
+    });
+
+    it('normaliza el alias jpg al valor JPEG que acepta la reconversión', async () => {
+      const { service } = buildService({
+        record: registroDeHistorial({ outputFormat: 'jpg' }),
+      });
+
+      const { outputFormat } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(outputFormat).toBe('jpeg');
+    });
+
+    it('devuelve JPEG para PDF porque el batch lo procesó como imagen', async () => {
+      // `processBatchFiles` compara con `pdf` antes de elegir la rama de
+      // imagen; `PDF` cae en JPEG aunque parezca un alias natural de PDF.
+      const { service } = buildService({
+        record: registroDeHistorial({ outputFormat: 'PDF' }),
+      });
+
+      const { outputFormat } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(outputFormat).toBe('jpeg');
+    });
+
+    it('devuelve JPEG para un formato desconocido, igual que el batch', async () => {
+      const { service } = buildService({
+        record: registroDeHistorial({ outputFormat: 'webp' }),
+      });
+
+      const { outputFormat } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(outputFormat).toBe('jpeg');
     });
 
     it('responde 404 ante un registro de otro usuario, sin leer el ZPL', async () => {

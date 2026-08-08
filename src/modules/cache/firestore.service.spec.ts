@@ -137,6 +137,58 @@ describe('FirestoreService — updateUserSubscriptionState', () => {
 });
 
 /**
+ * Borrar varias filas a la vez no puede hacer retroceder la actividad: la
+ * comparación y la escritura deben compartir la misma transacción para que
+ * Firestore reintente si otro borrado modifica el usuario entre ambas.
+ */
+describe('FirestoreService — preserveLastActivityAt', () => {
+  it('escribe el máximo dentro de una transacción aunque el candidato sea anterior', async () => {
+    const registrada = new Date('2026-08-06T12:00:00.000Z');
+    const posterior = new Date('2026-08-07T12:00:00.000Z');
+    const docData: { lastActivityAt: unknown } = {
+      lastActivityAt: { toDate: () => registrada },
+    };
+    const ref = { id: 'uid-1' };
+    const update = jest
+      .fn()
+      .mockImplementation((_ref: unknown, data: Record<string, unknown>) => {
+        docData.lastActivityAt = data.lastActivityAt;
+      });
+    const runTransaction = jest
+      .fn()
+      .mockImplementation((fn: (transaction: unknown) => Promise<void>) =>
+        fn({
+          get: async () => ({ data: () => docData }),
+          update,
+        }),
+      );
+
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.firestore = {
+      collection: () => ({ doc: () => ref }),
+      runTransaction,
+    };
+
+    await service.preserveLastActivityAt(
+      'uid-1',
+      new Date('2026-08-05T12:00:00.000Z'),
+    );
+    await service.preserveLastActivityAt('uid-1', posterior);
+
+    expect(runTransaction).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenNthCalledWith(1, ref, {
+      lastActivityAt: registrada,
+      updatedAt: expect.any(Date),
+    });
+    expect(update).toHaveBeenNthCalledWith(2, ref, {
+      lastActivityAt: posterior,
+      updatedAt: expect.any(Date),
+    });
+  });
+});
+
+/**
  * La clave protege del doble cargo del MISMO upgrade, pero dos upgrades a
  * destinos DISTINTOS no pueden compartirla: si el segundo sobrescribe al
  * primero, Stripe procesa ambas mutaciones (issue #73).
