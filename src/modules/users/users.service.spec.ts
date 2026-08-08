@@ -60,7 +60,7 @@ describe('UsersService — getUserHistory', () => {
     const service: any = Object.create(UsersService.prototype);
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.historyScanCache = new Map();
-    service.historyScanGeneration = new Map();
+    service.historyCacheGeneration = 0;
     service.firestoreService = {
       getUserById: jest.fn().mockResolvedValue(user),
       scanUserConversionHistory,
@@ -654,6 +654,43 @@ describe('GetHistoryQueryDto', () => {
     expect((await validateQuery({ dateFrom: '20-01-2026' })).failed).toContain(
       'dateFrom',
     );
+    expect((await validateQuery({ dateFrom: '2026-13-45' })).failed).toContain(
+      'dateFrom',
+    );
+  });
+
+  it('rechaza el separador espacio, que Date.parse resuelve en zona local', async () => {
+    const { failed } = await validateQuery({ dateFrom: '2026-01-20 12:00:00' });
+
+    expect(failed).toContain('dateFrom');
+  });
+
+  it('rechaza el formato básico sin guiones, que Date.parse no entiende', async () => {
+    // `20260120T120000Z` pasaría `@IsDateString()` pero da NaN al parsear: el
+    // límite quedaría ignorado en silencio en vez de devolver un 400.
+    expect(Number.isNaN(Date.parse('20260120T120000Z'))).toBe(true);
+
+    const { failed } = await validateQuery({ dateTo: '20260120T120000Z' });
+
+    expect(failed).toContain('dateTo');
+  });
+
+  it('acepta las formas de fecha que el frontend puede enviar', async () => {
+    const validas = [
+      '2026-01-20',
+      '2026-01-20T12:00',
+      '2026-01-20T12:00:00',
+      '2026-01-20T12:00:00Z',
+      '2026-01-20T12:00:00.999Z',
+      '2026-01-20T12:00:00-06:00',
+    ];
+
+    for (const dateFrom of validas) {
+      const { failed } = await validateQuery({ dateFrom });
+      expect({ dateFrom, failed }).toEqual({ dateFrom, failed: [] });
+      // Nada que pase la validación puede quedar sin parsear.
+      expect(Number.isNaN(Date.parse(dateFrom))).toBe(false);
+    }
   });
 
   it('acepta un labelSize fuera del enum', async () => {

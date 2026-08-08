@@ -91,10 +91,18 @@ export class UsersService {
   private readonly historyScanCache = new Map<string, HistoryScanCacheEntry>();
 
   /**
-   * Contador de invalidaciones por usuario. Permite detectar que una conversión
-   * se registró mientras un escaneo estaba en vuelo y descartar su resultado.
+   * Contador monótono de invalidaciones. Permite detectar que se registró una
+   * conversión mientras un escaneo estaba en vuelo y descartar su resultado.
+   *
+   * Es global en vez de por usuario a propósito: un mapa crecería sin límite con
+   * los usuarios que convierten sin mirar nunca el historial (Free y Lite ni
+   * siquiera tienen acceso), y podarlo podría devolver un contador a su valor
+   * inicial justo mientras hay una lectura en vuelo, que es el caso que esta
+   * guarda existe para evitar. El coste de un contador único es que la
+   * conversión de un usuario impide cachear el escaneo simultáneo de otro: se
+   * pierde una oportunidad de caché, nunca se sirven datos obsoletos.
    */
-  private readonly historyScanGeneration = new Map<string, number>();
+  private historyCacheGeneration = 0;
 
   constructor(
     private readonly firestoreService: FirestoreService,
@@ -435,11 +443,11 @@ export class UsersService {
       return { records: cached.records, truncated: cached.truncated };
     }
 
-    // Generación del usuario antes de leer: si `recordConversion` invalida
-    // mientras el escaneo está en vuelo, al resolverse habría que descartarlo.
-    // Sin esta guarda se recachearía una instantánea previa a la conversión
-    // recién guardada y quedaría oculta durante todo el TTL.
-    const generation = this.historyScanGeneration.get(userId) ?? 0;
+    // Generación antes de leer: si `recordConversion` invalida mientras el
+    // escaneo está en vuelo, al resolverse hay que descartarlo. Sin esta guarda
+    // se recachearía una instantánea previa a la conversión recién guardada y
+    // quedaría oculta durante todo el TTL.
+    const generation = this.historyCacheGeneration;
 
     // Se pide un documento de más: si llega, es que quedaron conversiones fuera.
     // Con `length >= MAX_HISTORY_SCAN` un usuario con exactamente ese número se
@@ -451,7 +459,7 @@ export class UsersService {
     const truncated = scanned.length > MAX_HISTORY_SCAN;
     const records = truncated ? scanned.slice(0, MAX_HISTORY_SCAN) : scanned;
 
-    if ((this.historyScanGeneration.get(userId) ?? 0) === generation) {
+    if (this.historyCacheGeneration === generation) {
       // Evitar que la caché crezca sin límite en instancias longevas
       if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
         this.pruneHistoryScanCache();
@@ -469,10 +477,7 @@ export class UsersService {
 
   /** Invalida la caché del historial de un usuario (tras registrar una conversión). */
   private invalidateHistoryScanCache(userId: string): void {
-    this.historyScanGeneration.set(
-      userId,
-      (this.historyScanGeneration.get(userId) ?? 0) + 1,
-    );
+    this.historyCacheGeneration++;
     this.historyScanCache.delete(userId);
   }
 
@@ -486,11 +491,6 @@ export class UsersService {
     }
     if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
       this.historyScanCache.clear();
-    }
-    // Las generaciones se podan con la caché: perder una solo hace que un
-    // escaneo en vuelo no se cachee, nunca que se sirvan datos obsoletos.
-    if (this.historyScanGeneration.size >= MAX_HISTORY_CACHE_ENTRIES) {
-      this.historyScanGeneration.clear();
     }
   }
 
@@ -584,15 +584,17 @@ export class UsersService {
   }
 
   /**
-   * Fuerza a UTC las fechas-hora sin offset. `@IsDateString()` acepta
-   * `2026-01-20T12:00:00` y `Date.parse` lo resuelve en la zona local del
-   * proceso: el mismo filtro significaría las 12:00 UTC en Cloud Run y las 18:00
-   * desarrollando en Mérida (GMT-6). Una fecha suelta (`YYYY-MM-DD`) ya es UTC
-   * por especificación, así que se deja intacta.
+   * Fuerza a UTC las fechas-hora sin offset. `2026-01-20T12:00:00` es válido y
+   * `Date.parse` lo resuelve en la zona local del proceso: el mismo filtro
+   * significaría las 12:00 UTC en Cloud Run y las 18:00 desarrollando en Mérida
+   * (GMT-6). Una fecha suelta (`YYYY-MM-DD`) ya es UTC por especificación, así
+   * que se deja intacta.
+   *
+   * El formato de entrada lo garantiza `ISO_DATE_PATTERN` en el DTO.
    */
   private assumeUtc(value: string): string {
     const hasTime = value.includes('T');
-    const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(value);
+    const hasZone = /(Z|[+-]\d{2}:\d{2})$/.test(value);
     return hasTime && !hasZone ? `${value}Z` : value;
   }
 
