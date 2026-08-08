@@ -92,6 +92,35 @@ export class StorageService {
   }
 
   /**
+   * Lee un archivo de texto del bucket.
+   *
+   * Devuelve `null` cuando el objeto ya no existe (404 de GCS) en vez de
+   * lanzar: los archivos con ciclo de vida — el ZPL original de una conversión
+   * caduca a los 15 días — desaparecen por diseño, y quien llama traduce esa
+   * ausencia a un 410, no a un 500.
+   *
+   * @param filePath Path del archivo en el bucket (ej: debug-zpl/uid/2026-08-08/job.zpl)
+   */
+  async readTextFile(filePath: string): Promise<string | null> {
+    try {
+      const [contents] = await this.storage
+        .bucket(this.bucketName)
+        .file(filePath)
+        .download();
+
+      return contents.toString('utf-8');
+    } catch (error) {
+      if (error?.code === 404) {
+        return null;
+      }
+      this.logger.error(
+        `Error al leer el archivo ${filePath}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Genera una URL firmada para cualquier archivo en el bucket
    * @param filePath Path del archivo en el bucket (ej: label-xxx.pdf)
    * @param downloadFilename Nombre del archivo para descarga (opcional)

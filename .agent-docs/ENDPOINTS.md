@@ -34,8 +34,34 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 | GET | /users/verification-status | User | UsersController.getVerificationStatus | Check email verification status |
 | GET | /users/limits | User | UsersController.getUserLimits | Get plan limits and current usage |
 | GET | /users/history | User | UsersController.getUserHistory | Get conversion history (Pro+ only) |
+| DELETE | /users/history/:id | User | UsersController.deleteHistoryEntry | Delete a history record (Pro+ only) |
+| GET | /users/history/:id/zpl | User | UsersController.getHistoryZpl | Get the original ZPL to reconvert (Pro+ only) |
 
 **File:** `src/modules/users/users.controller.ts`
+
+### Acciones sobre el historial
+
+`:id` es el **doc id de `conversion_history`** (no el `jobId`), y viene en el campo
+`id` de cada ítem de `GET /users/history`.
+
+- **Ownership:** un registro ajeno responde `404 HISTORY_NOT_FOUND`, igual que uno
+  inexistente. Un `403` confirmaría que el id existe.
+- **Borrado real**, y no toca `usage`: si borrar filas descontara PDFs del período,
+  cualquiera reiniciaría su cuota vaciando el historial. Las métricas viven agregadas
+  en `daily_stats` / `global_totals`, así que tampoco se ven afectadas. El PDF de
+  Cloud Storage se queda donde está.
+- **Retención del ZPL: 15 días** (`ZPL_RETENTION_DAYS`). No la decide la aplicación:
+  la impone una regla de lifecycle del bucket `zplpdf-app-files` que borra el prefijo
+  `debug-zpl/` a los 15 días (`gsutil lifecycle get gs://zplpdf-app-files`). Si se
+  cambia esa regla hay que actualizar la constante.
+- Pasada esa ventana, `GET /users/history/:id/zpl` responde `410 ZPL_NOT_AVAILABLE`.
+  Para no descubrirlo a base de errores, cada ítem de `GET /users/history` trae
+  `canReconvert: boolean`, calculado por edad del registro (sin lecturas extra).
+- El ZPL **no** está en Firestore: `ConversionStatus.zplContent` existe en el tipo pero
+  nunca se escribe. La copia real vive en `debug-zpl/{userId}/{fecha}/{jobId}.zpl`,
+  indexada por jobId en `zpl_debug_files`.
+- La reconversión no tiene endpoint propio: el frontend precarga el ZPL y usa el flujo
+  normal `POST /zpl/convert`, que es donde se aplican los límites de plan.
 
 ## Payments (`/payments`)
 

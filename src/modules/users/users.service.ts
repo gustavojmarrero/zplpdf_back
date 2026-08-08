@@ -2,6 +2,8 @@ import {
   Injectable,
   Logger,
   ForbiddenException,
+  GoneException,
+  NotFoundException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
@@ -22,7 +24,9 @@ import type {
   PlanType,
   PlanLimits,
 } from '../../common/interfaces/user.interface.js';
+import { ZPL_RETENTION_DAYS } from '../../common/interfaces/conversion-history.interface.js';
 import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
+import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
@@ -312,11 +316,12 @@ export class UsersService {
     };
   }
 
-  async getUserHistory(
-    userId: string,
-    page: number = 1,
-    limit: number = 50,
-  ): Promise<ConversionHistory[]> {
+  /**
+   * Gate de plan del historial, compartido por todos sus endpoints (listar,
+   * borrar, recuperar el ZPL). Vive aparte para que una acción nueva sobre el
+   * historial no pueda olvidarse de comprobarlo.
+   */
+  private async assertCanViewHistory(userId: string): Promise<void> {
     const user = await this.firestoreService.getUserById(userId);
 
     if (!user) {
@@ -336,6 +341,55 @@ export class UsersService {
         'History is only available for Pro, Pro Max and Enterprise plans',
       );
     }
+  }
+
+  /**
+   * Carga un registro de historial exigiendo que sea del usuario.
+   *
+   * Un registro ajeno se responde igual que uno inexistente (404): un 403
+   * delataría que el id existe, y el id es adivinable.
+   */
+  private async getOwnedHistoryRecord(
+    userId: string,
+    historyId: string,
+  ): Promise<ConversionHistory> {
+    const record =
+      await this.firestoreService.getConversionHistoryById(historyId);
+
+    if (!record || record.userId !== userId) {
+      throw new NotFoundException({
+        error: ErrorCodes.HISTORY_NOT_FOUND,
+        message: 'History record not found',
+      });
+    }
+
+    return record;
+  }
+
+  /**
+   * Indica si el ZPL original de un registro sigue dentro de la ventana de
+   * retención del bucket. Se calcula por edad, sin tocar Storage: resolverlo
+   * fila a fila costaría una lectura de Firestore y otra de GCS por cada una.
+   */
+  private canReconvert(createdAt: Date | undefined): boolean {
+    if (!createdAt) return false;
+
+    // Firestore devuelve Date, pero los registros antiguos pueden traer la
+    // fecha como string ISO: normalizar aquí evita un NaN silencioso.
+    const created =
+      createdAt instanceof Date ? createdAt : new Date(createdAt as string);
+    if (Number.isNaN(created.getTime())) return false;
+
+    const ageMs = Date.now() - created.getTime();
+    return ageMs < ZPL_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  }
+
+  async getUserHistory(
+    userId: string,
+    page: number = 1,
+    limit: number = 50,
+  ): Promise<ConversionHistory[]> {
+    await this.assertCanViewHistory(userId);
 
     const offset = (page - 1) * limit;
     const history = await this.firestoreService.getUserConversionHistory(
@@ -365,9 +419,88 @@ export class UsersService {
             }
           }
         }
+        // El frontend deshabilita "reconvertir" con este flag en vez de
+        // descubrir la caducidad a base de 410s al pulsar el botón.
+        record.canReconvert = this.canReconvert(record.createdAt);
         return record;
       }),
     );
+  }
+
+  /**
+   * Elimina un registro del historial del usuario.
+   *
+   * Deliberadamente NO toca `usage`: si borrar filas descontara PDFs del
+   * período, cualquiera podría reiniciar su cuota vaciando el historial. El
+   * historial es un registro de consulta; la cuota se lleva aparte. Tampoco
+   * borra el PDF de Cloud Storage, que tiene su propio ciclo de vida.
+   */
+  async deleteHistoryEntry(
+    userId: string,
+    historyId: string,
+  ): Promise<{ id: string; deleted: true }> {
+    await this.assertCanViewHistory(userId);
+    await this.getOwnedHistoryRecord(userId, historyId);
+
+    await this.firestoreService.deleteConversionHistory(historyId);
+
+    return { id: historyId, deleted: true };
+  }
+
+  /**
+   * Devuelve el ZPL original de una conversión para que el frontend lo
+   * precargue en el conversor. La reconversión en sí pasa por el flujo normal
+   * (`POST /zpl/convert`), que es donde viven los límites de plan.
+   *
+   * El ZPL no está en Firestore — `ConversionStatus.zplContent` existe en el
+   * tipo pero nunca se escribe, y un ZPL de varios MB no cabría en un
+   * documento. La copia real está en el bucket, bajo `debug-zpl/`, indexada
+   * por jobId en `zpl_debug_files`. Ese prefijo caduca a los
+   * ZPL_RETENTION_DAYS días: pasado ese plazo la respuesta es 410, no 500.
+   */
+  async getHistoryZpl(
+    userId: string,
+    historyId: string,
+  ): Promise<{
+    zplContent: string;
+    labelSize: string;
+    outputFormat: 'pdf' | 'png' | 'jpeg';
+  }> {
+    await this.assertCanViewHistory(userId);
+    const record = await this.getOwnedHistoryRecord(userId, historyId);
+
+    const zplNoLongerAvailable = new GoneException({
+      error: ErrorCodes.ZPL_NOT_AVAILABLE,
+      message: `The original ZPL is only kept for ${ZPL_RETENTION_DAYS} days and is no longer available for this conversion`,
+      data: { retentionDays: ZPL_RETENTION_DAYS },
+    });
+
+    const debugFile = await this.firestoreService.getZplDebugFileByJobId(
+      record.jobId,
+    );
+
+    // Sin metadata no hay path que leer: el guardado del ZPL es fire-and-forget
+    // y pudo fallar en su día.
+    if (!debugFile || debugFile.userId !== userId) {
+      throw zplNoLongerAvailable;
+    }
+
+    // El doc de `zpl_debug_files` sobrevive al archivo — el lifecycle solo
+    // borra en GCS —, así que su presencia no garantiza nada: la única prueba
+    // de que el ZPL sigue ahí es leer el objeto.
+    const zplContent = await this.storageService.readTextFile(
+      debugFile.storagePath,
+    );
+
+    if (!zplContent) {
+      throw zplNoLongerAvailable;
+    }
+
+    return {
+      zplContent,
+      labelSize: record.labelSize,
+      outputFormat: record.outputFormat,
+    };
   }
 
   /**

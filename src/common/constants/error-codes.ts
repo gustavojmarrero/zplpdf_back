@@ -27,6 +27,18 @@ export const ErrorCodes = {
   BATCH_NOT_FOUND: 'BATCH_NOT_FOUND',
   USER_NOT_FOUND: 'USER_NOT_FOUND',
   DOWNLOAD_NOT_AVAILABLE: 'DOWNLOAD_NOT_AVAILABLE',
+  /**
+   * El registro de historial no existe o no pertenece a quien pregunta. Un solo
+   * código para ambos casos a propósito: distinguirlos confirmaría al atacante
+   * que el id existe.
+   */
+  HISTORY_NOT_FOUND: 'HISTORY_NOT_FOUND',
+  /**
+   * El registro existe pero su ZPL original ya salió del bucket (lifecycle de
+   * `debug-zpl/`). Va aparte de HISTORY_NOT_FOUND porque la fila sigue ahí y el
+   * frontend debe seguir ofreciendo la descarga del PDF.
+   */
+  ZPL_NOT_AVAILABLE: 'ZPL_NOT_AVAILABLE',
 
   // Errores de estado (400)
   BATCH_PROCESSING: 'BATCH_PROCESSING',
@@ -80,9 +92,11 @@ export const ErrorHttpStatus: Record<ErrorCode, number> = {
   [ErrorCodes.BATCH_NOT_FOUND]: 404,
   [ErrorCodes.USER_NOT_FOUND]: 404,
   [ErrorCodes.DOWNLOAD_NOT_AVAILABLE]: 404,
+  [ErrorCodes.HISTORY_NOT_FOUND]: 404,
 
   // 410 Gone
   [ErrorCodes.JOB_EXPIRED]: 410,
+  [ErrorCodes.ZPL_NOT_AVAILABLE]: 410,
 
   // 413 Payload Too Large
   [ErrorCodes.FILE_TOO_LARGE]: 413,
@@ -123,6 +137,9 @@ export const ErrorMessagesEs: Record<ErrorCode, string> = {
   [ErrorCodes.USER_NOT_FOUND]: 'Usuario no encontrado',
   [ErrorCodes.DOWNLOAD_NOT_AVAILABLE]:
     'No hay archivos disponibles para descargar',
+  [ErrorCodes.HISTORY_NOT_FOUND]: 'Registro de historial no encontrado',
+  [ErrorCodes.ZPL_NOT_AVAILABLE]:
+    'El ZPL original de esta conversión ya no está disponible',
   [ErrorCodes.BATCH_PROCESSING]: 'El batch aún está procesándose',
   [ErrorCodes.JOB_NOT_COMPLETE]: 'La conversión no está completa',
   [ErrorCodes.SERVER_ERROR]: 'Error interno del servidor',
@@ -154,6 +171,9 @@ export const ErrorMessagesEn: Record<ErrorCode, string> = {
   [ErrorCodes.BATCH_NOT_FOUND]: 'Batch not found',
   [ErrorCodes.USER_NOT_FOUND]: 'User not found',
   [ErrorCodes.DOWNLOAD_NOT_AVAILABLE]: 'No files available for download',
+  [ErrorCodes.HISTORY_NOT_FOUND]: 'History record not found',
+  [ErrorCodes.ZPL_NOT_AVAILABLE]:
+    'The original ZPL for this conversion is no longer available',
   [ErrorCodes.BATCH_PROCESSING]: 'Batch is still processing',
   [ErrorCodes.JOB_NOT_COMPLETE]: 'Conversion is not complete',
   [ErrorCodes.SERVER_ERROR]: 'Internal server error',

@@ -1317,11 +1317,62 @@ export class FirestoreService {
         const data = doc.data();
         return {
           ...data,
+          id: doc.id,
           createdAt: data.createdAt?.toDate?.() || data.createdAt,
         } as ConversionHistory;
       });
     } catch (error) {
       this.logger.error(`Error al obtener historial: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Devuelve un registro de historial por su doc id, o `null` si no existe.
+   * No filtra por usuario: el ownership lo valida quien llama, que es también
+   * quien decide qué error presentar.
+   */
+  async getConversionHistoryById(
+    id: string,
+  ): Promise<ConversionHistory | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.historyCollection)
+        .doc(id)
+        .get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        ...data,
+        id: doc.id,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+      } as ConversionHistory;
+    } catch (error) {
+      this.logger.error(
+        `Error al obtener registro de historial ${id}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Borra un registro de historial. Borrado real: el historial es un registro
+   * de consulta del usuario, no la fuente de las métricas — esas viven
+   * agregadas en `daily_stats` y `global_totals`, y el consumo del período en
+   * `usage`. Ninguno de los tres se toca aquí.
+   */
+  async deleteConversionHistory(id: string): Promise<void> {
+    try {
+      await this.firestore.collection(this.historyCollection).doc(id).delete();
+      this.logger.log(`Registro de historial eliminado: ${id}`);
+    } catch (error) {
+      this.logger.error(
+        `Error al eliminar registro de historial ${id}: ${error.message}`,
+      );
       throw error;
     }
   }

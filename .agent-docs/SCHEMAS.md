@@ -109,6 +109,7 @@ Record of each conversion (successful or failed).
 ```typescript
 // Interface: src/common/interfaces/conversion-history.interface.ts
 interface ConversionHistory {
+  id?: string;              // Doc id; solo al leer. Es el :id de DELETE /users/history/:id
   userId: string;
   jobId: string;
   labelCount: number;
@@ -117,8 +118,17 @@ interface ConversionHistory {
   outputFormat: 'pdf' | 'png' | 'jpeg';
   fileUrl?: string | null;  // Signed URL for completed
   createdAt: Date;
+  canReconvert?: boolean;   // Derivado, no almacenado: edad < ZPL_RETENTION_DAYS
 }
 ```
+
+`DELETE /users/history/:id` hace **borrado real**. No toca `usage` (la cuota no puede
+depender de una tabla que el usuario puede vaciar) ni los agregados de `daily_stats` /
+`global_totals`, pero la fila sí desaparece de `/admin/conversions`, que lee de esta
+misma colección.
+
+`canReconvert` no se persiste: se calcula al leer comparando `createdAt` con
+`ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle del bucket sobre `debug-zpl/`).
 
 **Queries:**
 - User history: `firestore.collection('conversion_history').where('userId', '==', userId).orderBy('createdAt', 'desc').limit(50)`
@@ -135,7 +145,7 @@ interface ConversionStatus {
   userId?: string;
   resultUrl?: string;
   filename?: string;
-  zplContent?: string;
+  zplContent?: string;      // ⚠️ Declarado pero NUNCA escrito — ver nota
   labelSize?: string;
   outputFormat?: string;
   zplHash?: string;
@@ -149,6 +159,14 @@ interface ConversionStatus {
   chunksTotal?: number;
 }
 ```
+
+> **`zplContent` y `zplHash` no se escriben nunca.** Ninguna llamada a
+> `saveConversionStatus` / `updateConversionStatus` los informa, y un ZPL de varios MB
+> no cabría en un documento de Firestore (límite de 1 MiB). **La única copia del ZPL
+> original vive en Cloud Storage**, en `debug-zpl/{userId}/{YYYY-MM-DD}/{jobId}.zpl`,
+> indexada por jobId en `zpl_debug_files`. Ese prefijo se borra a los **15 días** por
+> lifecycle del bucket (`ZPL_RETENTION_DAYS`), que es lo que acota la ventana de
+> "reconvertir" en `GET /users/history/:id/zpl`.
 
 ### `daily_stats`
 
