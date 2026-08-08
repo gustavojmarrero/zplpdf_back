@@ -392,6 +392,7 @@ export class FirestoreService {
           data.subscriptionPeriodStart,
         subscriptionPeriodEnd:
           data.subscriptionPeriodEnd?.toDate?.() || data.subscriptionPeriodEnd,
+        lastActivityAt: data.lastActivityAt?.toDate?.() || data.lastActivityAt,
       } as User;
     } catch (error) {
       this.logger.error(`Error al obtener usuario: ${error.message}`);

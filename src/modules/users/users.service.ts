@@ -781,10 +781,28 @@ export class UsersService {
     // que un cliente recién activo pareciera inactivo desde su alta.
     try {
       const user = await this.firestoreService.getUserById(userId);
-      const lastActivityAt =
-        user?.lastActivityAt && user.lastActivityAt > record.createdAt
-          ? user.lastActivityAt
-          : record.createdAt;
+      // Aunque getUserById normaliza el Timestamp, esta defensa también cubre
+      // adaptadores y registros antiguos con fechas ISO. Comparar los valores
+      // crudos haría que JavaScript comparase strings según el día de la semana.
+      const toMilliseconds = (value: unknown): number | null => {
+        const normalized =
+          (value as { toDate?: () => Date })?.toDate?.() ?? value;
+        const date =
+          normalized instanceof Date
+            ? normalized
+            : new Date(normalized as string);
+        const milliseconds = date.getTime();
+        return Number.isNaN(milliseconds) ? null : milliseconds;
+      };
+      const activityDates = [record.createdAt, user?.lastActivityAt]
+        .map(toMilliseconds)
+        .filter((value): value is number => value !== null);
+
+      if (activityDates.length === 0) {
+        throw new Error('No valid activity date was found');
+      }
+
+      const lastActivityAt = new Date(Math.max(...activityDates));
       await this.firestoreService.updateUser(userId, { lastActivityAt });
     } catch (error) {
       // Preservar la señal de actividad es defensivo; un fallo aquí no debe

@@ -906,6 +906,29 @@ describe('UsersService — acciones sobre el historial', () => {
       );
     });
 
+    it('conserva la actividad más reciente cuando Firestore devuelve un Timestamp', async () => {
+      const createdAt = new Date('2026-08-05T12:00:00.000Z');
+      const lastActivityAt = new Date('2026-08-06T12:00:00.000Z');
+      const { service, firestoreService } = buildService({
+        user: {
+          id: UID,
+          plan: 'pro',
+          role: 'user',
+          lastActivityAt: { toDate: () => lastActivityAt },
+        },
+        record: registroDeHistorial({ createdAt }),
+      });
+
+      await service.deleteHistoryEntry(UID, HISTORY_ID);
+
+      expect(firestoreService.updateUser).toHaveBeenCalledWith(UID, {
+        lastActivityAt,
+      });
+      expect(firestoreService.updateUser).not.toHaveBeenCalledWith(UID, {
+        lastActivityAt: createdAt,
+      });
+    });
+
     it('no toca el uso mensual al borrar', async () => {
       // Si el borrado descontara PDFs del período, bastaría con vaciar el
       // historial para reiniciar la cuota del mes.
