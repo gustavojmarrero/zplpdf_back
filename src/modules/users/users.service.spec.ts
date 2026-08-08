@@ -782,6 +782,7 @@ describe('UsersService — acciones sobre el historial', () => {
     zplContent?: string | null;
     history?: Record<string, unknown>[];
     zplsGuardados?: Map<string, Date | null> | Error;
+    updateUserError?: Error;
   }) {
     const firestoreService = {
       getUserById: jest
@@ -799,13 +800,18 @@ describe('UsersService — acciones sobre el historial', () => {
             : overrides.record,
         ),
       deleteConversionHistory: jest.fn().mockResolvedValue(undefined),
-      getZplDebugFileByJobId: jest
-        .fn()
-        .mockResolvedValue(
-          overrides.debugFile === undefined
-            ? { userId: UID, storagePath: 'debug-zpl/uid/2026-08-08/job-1.zpl' }
-            : overrides.debugFile,
-        ),
+      updateUser: overrides.updateUserError
+        ? jest.fn().mockRejectedValue(overrides.updateUserError)
+        : jest.fn().mockResolvedValue(undefined),
+      getZplDebugFileByJobId: jest.fn().mockResolvedValue(
+        overrides.debugFile === undefined
+          ? {
+              userId: UID,
+              storagePath: 'debug-zpl/uid/2026-08-08/job-1.zpl',
+              createdAt: new Date(),
+            }
+          : overrides.debugFile,
+      ),
       scanUserConversionHistory: jest
         .fn()
         .mockResolvedValue(overrides.history ?? []),
@@ -861,6 +867,42 @@ describe('UsersService — acciones sobre el historial', () => {
       ).resolves.toEqual({ id: HISTORY_ID, deleted: true });
       expect(firestoreService.deleteConversionHistory).toHaveBeenCalledWith(
         HISTORY_ID,
+      );
+    });
+
+    it('preserva la actividad del registro antes de borrarlo y no bloquea el borrado si falla', async () => {
+      const createdAt = diasAtras(1);
+      const { service, firestoreService } = buildService({
+        user: {
+          id: UID,
+          plan: 'pro',
+          role: 'user',
+          lastActivityAt: diasAtras(30),
+        },
+        record: registroDeHistorial({ createdAt }),
+      });
+
+      await service.deleteHistoryEntry(UID, HISTORY_ID);
+
+      expect(firestoreService.updateUser).toHaveBeenCalledWith(UID, {
+        lastActivityAt: createdAt,
+      });
+      expect(
+        firestoreService.updateUser.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        firestoreService.deleteConversionHistory.mock.invocationCallOrder[0],
+      );
+
+      const fallo = buildService({
+        updateUserError: new Error('Firestore no disponible'),
+      });
+
+      await expect(
+        fallo.service.deleteHistoryEntry(UID, HISTORY_ID),
+      ).resolves.toEqual({ id: HISTORY_ID, deleted: true });
+      expect(fallo.firestoreService.deleteConversionHistory).toHaveBeenCalled();
+      expect(fallo.service.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to preserve lastActivityAt'),
       );
     });
 
@@ -980,6 +1022,23 @@ describe('UsersService — acciones sobre el historial', () => {
       await expect(
         service.getHistoryZpl(UID, HISTORY_ID),
       ).rejects.toBeInstanceOf(GoneException);
+    });
+
+    it('responde 410 sin leer GCS cuando el ZPL ya superó la retención', async () => {
+      // El lifecycle puede tardar en borrar el objeto; su existencia física no
+      // debe ampliar el plazo que el endpoint promete al usuario.
+      const { service, storageService } = buildService({
+        debugFile: {
+          userId: UID,
+          storagePath: 'debug-zpl/uid/2026-08-08/job-1.zpl',
+          createdAt: diasAtras(ZPL_RETENTION_DAYS + 1),
+        },
+      });
+
+      await expect(
+        service.getHistoryZpl(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(GoneException);
+      expect(storageService.readTextFile).not.toHaveBeenCalled();
     });
 
     it('responde 410 cuando nunca se guardó el ZPL del job', async () => {

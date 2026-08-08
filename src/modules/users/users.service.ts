@@ -774,7 +774,25 @@ export class UsersService {
     historyId: string,
   ): Promise<{ id: string; deleted: true }> {
     await this.assertCanViewHistory(userId);
-    await this.getOwnedHistoryRecord(userId, historyId);
+    const record = await this.getOwnedHistoryRecord(userId, historyId);
+
+    // La escritura de `lastActivityAt` al convertir es fire-and-forget. Si
+    // falló, borrar esta fila eliminaría la única fecha fiable y podría hacer
+    // que un cliente recién activo pareciera inactivo desde su alta.
+    try {
+      const user = await this.firestoreService.getUserById(userId);
+      const lastActivityAt =
+        user?.lastActivityAt && user.lastActivityAt > record.createdAt
+          ? user.lastActivityAt
+          : record.createdAt;
+      await this.firestoreService.updateUser(userId, { lastActivityAt });
+    } catch (error) {
+      // Preservar la señal de actividad es defensivo; un fallo aquí no debe
+      // convertir en imborrable una fila que el usuario ya decidió eliminar.
+      this.logger.warn(
+        `Failed to preserve lastActivityAt before deleting history ${historyId}: ${error.message}`,
+      );
+    }
 
     await this.firestoreService.deleteConversionHistory(historyId);
 
@@ -817,9 +835,13 @@ export class UsersService {
       record.jobId,
     );
 
-    // Sin metadata no hay path que leer: el guardado del ZPL es fire-and-forget
-    // y pudo fallar en su día.
-    if (!debugFile || debugFile.userId !== userId) {
+    // El lifecycle puede tardar hasta 24h en borrar el objeto. Respetar la edad
+    // de la metadata evita que ese retraso amplíe la ventana contractual.
+    if (
+      !debugFile ||
+      debugFile.userId !== userId ||
+      !this.isWithinZplRetention(debugFile.createdAt)
+    ) {
       throw zplNoLongerAvailable;
     }
 
