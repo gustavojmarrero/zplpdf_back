@@ -112,7 +112,7 @@ export class GetHistoryQueryDto {
     example: '2026-01-01',
   })
   @IsOptional()
-  @IsDateString()
+  @IsDateString({ strict: true })
   @Matches(ISO_DATE_PATTERN, { message: ISO_DATE_MESSAGE })
   dateFrom?: string;
 
@@ -123,7 +123,7 @@ export class GetHistoryQueryDto {
     example: '2026-01-31T23:59:59.999Z',
   })
   @IsOptional()
-  @IsDateString()
+  @IsDateString({ strict: true })
   @Matches(ISO_DATE_PATTERN, { message: ISO_DATE_MESSAGE })
   dateTo?: string;
 

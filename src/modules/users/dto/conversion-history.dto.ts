@@ -13,7 +13,9 @@ export class ConversionHistoryItemDto {
   @ApiProperty({ description: 'Number of labels in the conversion' })
   labelCount: number;
 
-  @ApiProperty({ description: 'Label size', enum: LabelSize })
+  @ApiProperty({
+    description: `Label size, e.g. ${Object.values(LabelSize).join(', ')}. Acepta cualquiera de los valores listados en facets.labelSizes`,
+  })
   labelSize: string;
 
   @ApiProperty({ description: 'Conversion status', enum: HistoryStatus })

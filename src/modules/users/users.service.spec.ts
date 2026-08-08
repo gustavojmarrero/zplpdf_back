@@ -659,6 +659,15 @@ describe('GetHistoryQueryDto', () => {
     );
   });
 
+  it('rechaza fechas de calendario inexistentes', async () => {
+    expect((await validateQuery({ dateFrom: '2026-02-30' })).failed).toContain(
+      'dateFrom',
+    );
+    expect((await validateQuery({ dateTo: '2026-04-31' })).failed).toContain(
+      'dateTo',
+    );
+  });
+
   it('rechaza el separador espacio, que Date.parse resuelve en zona local', async () => {
     const { failed } = await validateQuery({ dateFrom: '2026-01-20 12:00:00' });
 
