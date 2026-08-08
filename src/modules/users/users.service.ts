@@ -90,6 +90,12 @@ export class UsersService {
   /** Caché por instancia del escaneo de historial (ver `getScannedHistory`). */
   private readonly historyScanCache = new Map<string, HistoryScanCacheEntry>();
 
+  /**
+   * Contador de invalidaciones por usuario. Permite detectar que una conversión
+   * se registró mientras un escaneo estaba en vuelo y descartar su resultado.
+   */
+  private readonly historyScanGeneration = new Map<string, number>();
+
   constructor(
     private readonly firestoreService: FirestoreService,
     private readonly firebaseAdminService: FirebaseAdminService,
@@ -429,6 +435,12 @@ export class UsersService {
       return { records: cached.records, truncated: cached.truncated };
     }
 
+    // Generación del usuario antes de leer: si `recordConversion` invalida
+    // mientras el escaneo está en vuelo, al resolverse habría que descartarlo.
+    // Sin esta guarda se recachearía una instantánea previa a la conversión
+    // recién guardada y quedaría oculta durante todo el TTL.
+    const generation = this.historyScanGeneration.get(userId) ?? 0;
+
     // Se pide un documento de más: si llega, es que quedaron conversiones fuera.
     // Con `length >= MAX_HISTORY_SCAN` un usuario con exactamente ese número se
     // marcaría como truncado sin haberse omitido nada.
@@ -439,22 +451,28 @@ export class UsersService {
     const truncated = scanned.length > MAX_HISTORY_SCAN;
     const records = truncated ? scanned.slice(0, MAX_HISTORY_SCAN) : scanned;
 
-    // Evitar que la caché crezca sin límite en instancias longevas
-    if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
-      this.pruneHistoryScanCache();
-    }
+    if ((this.historyScanGeneration.get(userId) ?? 0) === generation) {
+      // Evitar que la caché crezca sin límite en instancias longevas
+      if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
+        this.pruneHistoryScanCache();
+      }
 
-    this.historyScanCache.set(userId, {
-      records,
-      truncated,
-      expiresAt: Date.now() + HISTORY_SCAN_CACHE_TTL_MS,
-    });
+      this.historyScanCache.set(userId, {
+        records,
+        truncated,
+        expiresAt: Date.now() + HISTORY_SCAN_CACHE_TTL_MS,
+      });
+    }
 
     return { records, truncated };
   }
 
   /** Invalida la caché del historial de un usuario (tras registrar una conversión). */
   private invalidateHistoryScanCache(userId: string): void {
+    this.historyScanGeneration.set(
+      userId,
+      (this.historyScanGeneration.get(userId) ?? 0) + 1,
+    );
     this.historyScanCache.delete(userId);
   }
 
@@ -468,6 +486,11 @@ export class UsersService {
     }
     if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
       this.historyScanCache.clear();
+    }
+    // Las generaciones se podan con la caché: perder una solo hace que un
+    // escaneo en vuelo no se cachee, nunca que se sirvan datos obsoletos.
+    if (this.historyScanGeneration.size >= MAX_HISTORY_CACHE_ENTRIES) {
+      this.historyScanGeneration.clear();
     }
   }
 
@@ -553,8 +576,24 @@ export class UsersService {
 
   private toTimestamp(value: Date | string | undefined): number | null {
     if (!value) return null;
-    const time = value instanceof Date ? value.getTime() : Date.parse(value);
+    const time =
+      value instanceof Date
+        ? value.getTime()
+        : Date.parse(this.assumeUtc(value));
     return Number.isNaN(time) ? null : time;
+  }
+
+  /**
+   * Fuerza a UTC las fechas-hora sin offset. `@IsDateString()` acepta
+   * `2026-01-20T12:00:00` y `Date.parse` lo resuelve en la zona local del
+   * proceso: el mismo filtro significaría las 12:00 UTC en Cloud Run y las 18:00
+   * desarrollando en Mérida (GMT-6). Una fecha suelta (`YYYY-MM-DD`) ya es UTC
+   * por especificación, así que se deja intacta.
+   */
+  private assumeUtc(value: string): string {
+    const hasTime = value.includes('T');
+    const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(value);
+    return hasTime && !hasZone ? `${value}Z` : value;
   }
 
   /**

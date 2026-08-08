@@ -194,8 +194,11 @@ export class UsersController {
   @ApiQuery({
     name: 'labelSize',
     required: false,
-    enum: LabelSize,
-    description: 'Filtra por tamaño de etiqueta',
+    type: String,
+    description:
+      `Filtra por tamaño de etiqueta. No es un enum cerrado: las conversiones batch ` +
+      `guardan el tamaño sin normalizar, así que además de ${Object.values(LabelSize).join(', ')} ` +
+      'acepta cualquier valor de facets.labelSizes',
   })
   @ApiQuery({
     name: 'dateFrom',

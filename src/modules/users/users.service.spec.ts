@@ -60,6 +60,7 @@ describe('UsersService — getUserHistory', () => {
     const service: any = Object.create(UsersService.prototype);
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.historyScanCache = new Map();
+    service.historyScanGeneration = new Map();
     service.firestoreService = {
       getUserById: jest.fn().mockResolvedValue(user),
       scanUserConversionHistory,
@@ -335,6 +336,35 @@ describe('UsersService — getUserHistory', () => {
       expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a']);
     });
 
+    it('interpreta en UTC las fechas-hora sin offset', async () => {
+      // `@IsDateString()` acepta `2026-01-20T12:00:00`; sin forzar UTC el corte
+      // se movería con la zona del proceso (GMT-6 en local, UTC en Cloud Run).
+      const { service } = buildService([
+        record({ id: 'a', createdAt: new Date('2026-01-20T11:00:00.000Z') }),
+        record({ id: 'b', createdAt: new Date('2026-01-20T13:00:00.000Z') }),
+      ]);
+
+      const result = await service.getUserHistory('uid-1', {
+        dateTo: '2026-01-20T12:00:00',
+      });
+
+      expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a']);
+    });
+
+    it('respeta un offset explícito distinto de UTC', async () => {
+      const { service } = buildService([
+        record({ id: 'a', createdAt: new Date('2026-01-20T17:00:00.000Z') }),
+        record({ id: 'b', createdAt: new Date('2026-01-20T19:00:00.000Z') }),
+      ]);
+
+      // 12:00 en GMT-6 son las 18:00 UTC.
+      const result = await service.getUserHistory('uid-1', {
+        dateTo: '2026-01-20T12:00:00-06:00',
+      });
+
+      expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a']);
+    });
+
     it('un dateTo con hora se respeta al instante exacto', async () => {
       const { service } = buildService([
         record({ id: 'a', createdAt: new Date('2026-01-20T10:00:00.000Z') }),
@@ -525,6 +555,32 @@ describe('UsersService — getUserHistory', () => {
       service.invalidateHistoryScanCache('uid-1');
       await service.getUserHistory('uid-1', {});
 
+      expect(scanUserConversionHistory).toHaveBeenCalledTimes(2);
+    });
+
+    it('no cachea un escaneo invalidado mientras estaba en vuelo', async () => {
+      // Si `recordConversion` invalida durante el await, cachear el resultado
+      // ocultaría la conversión recién guardada durante todo el TTL.
+      const { service, scanUserConversionHistory } = buildService([
+        record({ id: 'viejo' }),
+      ]);
+      scanUserConversionHistory.mockImplementationOnce(async () => {
+        service.invalidateHistoryScanCache('uid-1');
+        return [record({ id: 'viejo' })];
+      });
+
+      await service.getUserHistory('uid-1', {});
+
+      expect(service.historyScanCache.has('uid-1')).toBe(false);
+
+      // La siguiente request vuelve a leer y ve la conversión nueva.
+      scanUserConversionHistory.mockResolvedValue([
+        record({ id: 'nuevo' }),
+        record({ id: 'viejo' }),
+      ]);
+      const result = await service.getUserHistory('uid-1', {});
+
+      expect(result.data.map((r: { id: string }) => r.id)).toContain('nuevo');
       expect(scanUserConversionHistory).toHaveBeenCalledTimes(2);
     });
   });
