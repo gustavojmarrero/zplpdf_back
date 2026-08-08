@@ -937,6 +937,29 @@ describe('UsersService — acciones sobre el historial', () => {
       );
     });
 
+    it('normaliza el tamaño del batch al valor que acepta POST /zpl/convert', async () => {
+      // El batch guarda el tamaño como llegó (`large`), pero ConvertZplDto lo
+      // valida con @IsEnum(LabelSize): devolverlo crudo haría que reconvertir
+      // fallara con un 400 usando el tamaño con el que ya funcionó.
+      const { service } = buildService({
+        record: registroDeHistorial({ labelSize: 'large' }),
+      });
+
+      const { labelSize } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(labelSize).toBe('4x6');
+    });
+
+    it('devuelve 2x1 para un tamaño desconocido, que es con el que se convirtió', async () => {
+      const { service } = buildService({
+        record: registroDeHistorial({ labelSize: '4x4' }),
+      });
+
+      const { labelSize } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(labelSize).toBe('2x1');
+    });
+
     it('responde 404 ante un registro de otro usuario, sin leer el ZPL', async () => {
       const { service, storageService, firestoreService } = buildService({
         record: registroDeHistorial({ userId: OTRO_UID }),

@@ -1212,10 +1212,10 @@ describe('FirestoreService — la inactividad no depende del historial', () => {
     expect(resultado.users).toHaveLength(0);
   });
 
-  it('recurre al historial solo para quien todavía no tiene el campo', async () => {
+  it('no consulta el historial de quien el campo ya da por activo', async () => {
     const { service, historialConsultadoPara } = buildService([
       {
-        id: 'uid-con-campo',
+        id: 'uid-activo',
         data: {
           plan: 'pro',
           email: 'a@ejemplo.com',
@@ -1234,8 +1234,54 @@ describe('FirestoreService — la inactividad no depende del historial', () => {
       minDaysInactive: 30,
     });
 
-    // Una query menos por cada usuario que ya trae su actividad registrada.
+    // Una query menos por cada usuario que no es candidato a ninguna campaña.
     expect(historialConsultadoPara).toEqual(['uid-antiguo']);
     expect(resultado.users.map((u: any) => u.userId)).toEqual(['uid-antiguo']);
+  });
+
+  it('confirma contra el historial a quien el campo marca como inactivo', async () => {
+    // `lastActivityAt` se escribe fire-and-forget: si esa escritura falló, el
+    // campo se quedó viejo. Antes de mandarle un "te echamos de menos" a un
+    // cliente de pago conviene mirar la otra fuente.
+    const { service, historialConsultadoPara } = buildService([
+      {
+        id: 'uid-campo-desfasado',
+        data: {
+          plan: 'pro',
+          email: 'a@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(90),
+        },
+        ultimaConversion: hace(2).toISOString(),
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    expect(historialConsultadoPara).toEqual(['uid-campo-desfasado']);
+    expect(resultado.users).toHaveLength(0);
+  });
+
+  it('sigue dando por inactivo a quien lo está en las dos fuentes', async () => {
+    const { service } = buildService([
+      {
+        id: 'uid-inactivo',
+        data: {
+          plan: 'pro',
+          email: 'a@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(90),
+        },
+        ultimaConversion: hace(95).toISOString(),
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    expect(resultado.users.map((u: any) => u.userId)).toEqual(['uid-inactivo']);
   });
 });

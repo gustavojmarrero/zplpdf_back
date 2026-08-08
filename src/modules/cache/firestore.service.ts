@@ -6045,20 +6045,33 @@ export class FirestoreService {
       // tienen el campo (convirtieron por última vez antes de que existiera).
       // Eso además ahorra una query por usuario en el caso normal.
       const lastActiveAtMap = new Map<string, Date | null>();
-      const sinCampoDeActividad: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+      const porConfirmar: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+
+      // Umbral a partir del cual el usuario empieza a ser candidato a una
+      // campaña: por debajo de él no hay decisión que tomar, así que no hace
+      // falta confirmar nada. El 7 es el periodo más corto del summary.
+      const umbralDeCandidatura = Math.min(7, minDaysInactive);
+      const fechaDeCandidatura = new Date(
+        now.getTime() - umbralDeCandidatura * 24 * 60 * 60 * 1000,
+      );
 
       for (const doc of usersSnapshot.docs) {
         const registrada = doc.data().lastActivityAt;
         const fecha = registrada?.toDate?.() || registrada || null;
-        if (fecha) {
-          lastActiveAtMap.set(doc.id, fecha);
-        } else {
-          sinCampoDeActividad.push(doc);
+        lastActiveAtMap.set(doc.id, fecha);
+
+        // Solo se consulta el historial de quien el campo deja como candidato
+        // (o de quien no lo tiene). El campo se escribe fire-and-forget en
+        // recordConversion, así que puede haber fallado y estar desfasado: para
+        // quien va a recibir un email conviene confirmarlo contra el historial,
+        // que se escribe con await. Para el resto sería una query por cabeza.
+        if (!fecha || fecha <= fechaDeCandidatura) {
+          porConfirmar.push(doc);
         }
       }
 
       const historySnapshots = await Promise.all(
-        sinCampoDeActividad.map((doc) =>
+        porConfirmar.map((doc) =>
           this.firestore
             .collection(this.historyCollection)
             .where('userId', '==', doc.id)
@@ -6070,14 +6083,23 @@ export class FirestoreService {
       );
 
       historySnapshots.forEach((snapshot, index) => {
-        if (snapshot && !snapshot.empty) {
-          const historyData = snapshot.docs[0].data();
-          const lastActiveAt =
-            historyData.createdAt?.toDate?.() || historyData.createdAt || null;
-          lastActiveAtMap.set(sinCampoDeActividad[index].id, lastActiveAt);
-        } else {
-          lastActiveAtMap.set(sinCampoDeActividad[index].id, null);
-        }
+        if (!snapshot || snapshot.empty) return;
+
+        const historyData = snapshot.docs[0].data();
+        const delHistorial =
+          historyData.createdAt?.toDate?.() || historyData.createdAt || null;
+        if (!delHistorial) return;
+
+        // La más reciente de las dos fuentes. Ninguna es fiable por sí sola: el
+        // historial lo puede vaciar el usuario y el campo puede no haberse
+        // escrito. Quedarse con la mayor solo puede evitar un email de
+        // retención a alguien activo, nunca provocarlo.
+        const userId = porConfirmar[index].id;
+        const registrada = lastActiveAtMap.get(userId);
+        lastActiveAtMap.set(
+          userId,
+          !registrada || delHistorial > registrada ? delHistorial : registrada,
+        );
       });
 
       // PHASE 2: Calculate summary and collect filtered users

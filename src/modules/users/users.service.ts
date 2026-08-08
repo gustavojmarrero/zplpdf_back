@@ -46,6 +46,7 @@ import { isBlockedEmailDomain } from '../../common/constants/blocked-email-domai
 import { GeoService } from '../admin/services/geo.service.js';
 import { EmailService } from '../email/email.service.js';
 import { StorageService } from '../storage/storage.service.js';
+import { normalizeLabelSize } from '../zpl/enums/label-size.enum.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -835,7 +836,12 @@ export class UsersService {
 
     return {
       zplContent,
-      labelSize: record.labelSize,
+      // Normalizado, no crudo: el batch acepta el tamaño como string libre
+      // (`large`, `small`, o cualquier cosa) y así queda guardado en el
+      // historial, pero `POST /zpl/convert` lo valida con `@IsEnum(LabelSize)`.
+      // Devolverlo tal cual haría que reconvertir fallara con un 400 usando el
+      // mismo tamaño con el que la conversión original funcionó.
+      labelSize: normalizeLabelSize(record.labelSize),
       outputFormat: record.outputFormat,
     };
   }
