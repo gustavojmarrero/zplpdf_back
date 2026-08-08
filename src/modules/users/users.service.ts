@@ -22,10 +22,20 @@ import type {
   PlanType,
   PlanLimits,
 } from '../../common/interfaces/user.interface.js';
-import type { ConversionHistory } from '../../common/interfaces/conversion-history.interface.js';
+import type { ConversionHistoryRecord } from '../../common/interfaces/conversion-history.interface.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
+import {
+  GetHistoryQueryDto,
+  HistorySortBy,
+  HistorySortOrder,
+} from './dto/get-history-query.dto.js';
+import type {
+  ConversionHistoryFacetsDto,
+  ConversionHistoryItemDto,
+  ConversionHistoryResponseDto,
+} from './dto/conversion-history.dto.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { BATCH_LIMITS } from '../zpl/interfaces/batch.interface.js';
 import { isBlockedEmailDomain } from '../../common/constants/blocked-email-domains.js';
@@ -47,10 +57,36 @@ export interface CheckCanConvertResult {
   userEmail?: string | null;
 }
 
+/** Límite por defecto de ítems por página del historial. */
+export const DEFAULT_HISTORY_LIMIT = 25;
+
+/**
+ * Tope de documentos que se leen de Firestore por request de historial. Los
+ * filtros, la búsqueda y el orden se aplican sobre este bloque (el más reciente),
+ * de modo que un usuario con más conversiones ve `pagination.truncated: true`.
+ */
+export const MAX_HISTORY_SCAN = 1000;
+
+/** TTL de la caché en memoria del escaneo de historial. */
+const HISTORY_SCAN_CACHE_TTL_MS = 60_000;
+
+/** Tope de usuarios distintos cacheados a la vez por instancia. */
+const MAX_HISTORY_CACHE_ENTRIES = 200;
+
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+
+interface HistoryScanCacheEntry {
+  records: ConversionHistoryRecord[];
+  expiresAt: number;
+}
+
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
   private stripe: Stripe | null = null;
+
+  /** Caché por instancia del escaneo de historial (ver `getScannedHistory`). */
+  private readonly historyScanCache = new Map<string, HistoryScanCacheEntry>();
 
   constructor(
     private readonly firestoreService: FirestoreService,
@@ -314,9 +350,8 @@ export class UsersService {
 
   async getUserHistory(
     userId: string,
-    page: number = 1,
-    limit: number = 50,
-  ): Promise<ConversionHistory[]> {
+    query: GetHistoryQueryDto = {},
+  ): Promise<ConversionHistoryResponseDto> {
     const user = await this.firestoreService.getUserById(userId);
 
     if (!user) {
@@ -337,37 +372,234 @@ export class UsersService {
       );
     }
 
+    const page = query.page ?? 1;
+    const limit = query.limit ?? DEFAULT_HISTORY_LIMIT;
+
+    // Se lee un bloque acotado del historial y se filtra/ordena/pagina en memoria:
+    // así `search`, `sortBy=labelCount` y las combinaciones de filtros no exigen
+    // un índice compuesto por cada permutación (ver issue #89).
+    const scanned = await this.getScannedHistory(userId);
+    const truncated = scanned.length >= MAX_HISTORY_SCAN;
+
+    // Los facets salen del escaneo completo, no de la página: describen lo que
+    // el usuario tiene, para que el frontend pueble los selects sin hardcodear.
+    const facets = this.buildHistoryFacets(scanned);
+
+    const filtered = this.filterHistory(scanned, query);
+    this.sortHistory(filtered, query);
+
+    const total = filtered.length;
     const offset = (page - 1) * limit;
-    const history = await this.firestoreService.getUserConversionHistory(
-      userId,
-      limit,
-      offset,
+    const pageRecords = filtered.slice(offset, offset + limit);
+
+    // Firmar solo los registros que se devuelven, ya filtrados y paginados
+    const data = await Promise.all(
+      pageRecords.map((record) => this.toHistoryItem(record)),
     );
 
-    // Regenerar URLs firmadas frescas para cada registro completado
-    return Promise.all(
-      history.map(async (record) => {
-        if (record.fileUrl && record.status === 'completed') {
-          const { storagePath, downloadFilename } = this.extractStorageInfo(
-            record.fileUrl,
-          );
-          if (storagePath) {
-            try {
-              record.fileUrl =
-                await this.storageService.generateSignedUrlForPath(
-                  storagePath,
-                  downloadFilename,
-                );
-            } catch (error) {
-              this.logger.warn(
-                `Failed to regenerate URL for ${record.jobId}: ${error.message}`,
-              );
-            }
-          }
-        }
-        return record;
-      }),
+    return {
+      success: true,
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+        ...(truncated && { truncated: true }),
+      },
+      facets,
+    };
+  }
+
+  /**
+   * Escaneo del historial del usuario con caché corta en memoria.
+   *
+   * La caché absorbe el tecleo del buscador y los cambios de filtro/página, que
+   * de otro modo repetirían hasta `MAX_HISTORY_SCAN` lecturas de Firestore por
+   * pulsación. Es por instancia: en Cloud Run cada instancia mantiene la suya, y
+   * el TTL corto acota la ventana en la que una conversión nueva no aparece.
+   */
+  private async getScannedHistory(
+    userId: string,
+  ): Promise<ConversionHistoryRecord[]> {
+    const cached = this.historyScanCache.get(userId);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.records;
+    }
+
+    const records = await this.firestoreService.scanUserConversionHistory(
+      userId,
+      MAX_HISTORY_SCAN,
     );
+
+    // Evitar que la caché crezca sin límite en instancias longevas
+    if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
+      this.pruneHistoryScanCache();
+    }
+
+    this.historyScanCache.set(userId, {
+      records,
+      expiresAt: Date.now() + HISTORY_SCAN_CACHE_TTL_MS,
+    });
+
+    return records;
+  }
+
+  /** Invalida la caché del historial de un usuario (tras registrar una conversión). */
+  private invalidateHistoryScanCache(userId: string): void {
+    this.historyScanCache.delete(userId);
+  }
+
+  /** Elimina las entradas caducadas; si todas siguen vivas, vacía la caché entera. */
+  private pruneHistoryScanCache(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.historyScanCache) {
+      if (entry.expiresAt <= now) {
+        this.historyScanCache.delete(key);
+      }
+    }
+    if (this.historyScanCache.size >= MAX_HISTORY_CACHE_ENTRIES) {
+      this.historyScanCache.clear();
+    }
+  }
+
+  private buildHistoryFacets(
+    records: ConversionHistoryRecord[],
+  ): ConversionHistoryFacetsDto {
+    const labelSizes = new Set<string>();
+    const outputFormats = new Set<string>();
+    const statuses = new Set<string>();
+
+    for (const record of records) {
+      if (record.labelSize) labelSizes.add(record.labelSize);
+      if (record.outputFormat) outputFormats.add(record.outputFormat);
+      if (record.status) statuses.add(record.status);
+    }
+
+    return {
+      labelSizes: [...labelSizes].sort(),
+      outputFormats: [...outputFormats].sort(),
+      statuses: [...statuses].sort(),
+    };
+  }
+
+  private filterHistory(
+    records: ConversionHistoryRecord[],
+    query: GetHistoryQueryDto,
+  ): ConversionHistoryRecord[] {
+    const search = query.search?.trim().toLowerCase();
+    const dateFrom = this.toTimestamp(query.dateFrom);
+    const dateTo = this.toRangeEndTimestamp(query.dateTo);
+
+    return records.filter((record) => {
+      if (query.status && record.status !== query.status) return false;
+      if (query.outputFormat && record.outputFormat !== query.outputFormat) {
+        return false;
+      }
+      if (query.labelSize && record.labelSize !== query.labelSize) return false;
+
+      if (search && !record.jobId?.toLowerCase().startsWith(search)) {
+        return false;
+      }
+
+      if (dateFrom !== null || dateTo !== null) {
+        const createdAt = this.toTimestamp(record.createdAt);
+        if (createdAt === null) return false;
+        if (dateFrom !== null && createdAt < dateFrom) return false;
+        if (dateTo !== null && createdAt > dateTo) return false;
+      }
+
+      return true;
+    });
+  }
+
+  private sortHistory(
+    records: ConversionHistoryRecord[],
+    query: GetHistoryQueryDto,
+  ): void {
+    const sortBy = query.sortBy ?? HistorySortBy.CREATED_AT;
+    const direction = query.sortOrder === HistorySortOrder.ASC ? 1 : -1;
+
+    records.sort((a, b) => {
+      const aVal =
+        sortBy === HistorySortBy.LABEL_COUNT
+          ? (a.labelCount ?? 0)
+          : (this.toTimestamp(a.createdAt) ?? 0);
+      const bVal =
+        sortBy === HistorySortBy.LABEL_COUNT
+          ? (b.labelCount ?? 0)
+          : (this.toTimestamp(b.createdAt) ?? 0);
+
+      if (aVal === bVal) {
+        // Desempate estable por fecha para que el paginado no baraje filas
+        // con el mismo labelCount entre requests.
+        const aTime = this.toTimestamp(a.createdAt) ?? 0;
+        const bTime = this.toTimestamp(b.createdAt) ?? 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      }
+
+      return (aVal - bVal) * direction;
+    });
+  }
+
+  private toTimestamp(value: Date | string | undefined): number | null {
+    if (!value) return null;
+    const time = value instanceof Date ? value.getTime() : Date.parse(value);
+    return Number.isNaN(time) ? null : time;
+  }
+
+  /**
+   * Extremo superior de un rango de fechas. Un `dateTo` sin hora (`YYYY-MM-DD`,
+   * lo que envía un date-picker) se interpreta como el final de ese día: con la
+   * medianoche que devuelve `Date.parse` el usuario perdería las conversiones
+   * del propio día que acaba de seleccionar.
+   */
+  private toRangeEndTimestamp(value: string | undefined): number | null {
+    const time = this.toTimestamp(value);
+    if (time === null) return null;
+    return /^\d{4}-\d{2}-\d{2}$/.test(value) ? time + DAY_IN_MS - 1 : time;
+  }
+
+  /**
+   * Convierte un registro de Firestore al ítem de respuesta, regenerando la URL
+   * firmada solo si la conversión se completó con archivo.
+   */
+  private async toHistoryItem(
+    record: ConversionHistoryRecord,
+  ): Promise<ConversionHistoryItemDto> {
+    const createdAt = this.toTimestamp(record.createdAt);
+
+    const item: ConversionHistoryItemDto = {
+      id: record.id,
+      jobId: record.jobId,
+      labelCount: record.labelCount,
+      labelSize: record.labelSize,
+      status: record.status,
+      outputFormat: record.outputFormat,
+      createdAt: createdAt !== null ? new Date(createdAt).toISOString() : null,
+    };
+
+    if (record.fileUrl && record.status === 'completed') {
+      item.fileUrl = record.fileUrl;
+      const { storagePath, downloadFilename } = this.extractStorageInfo(
+        record.fileUrl,
+      );
+      if (storagePath) {
+        try {
+          item.fileUrl = await this.storageService.generateSignedUrlForPath(
+            storagePath,
+            downloadFilename,
+          );
+        } catch (error) {
+          this.logger.warn(
+            `Failed to regenerate URL for ${record.jobId}: ${error.message}`,
+          );
+        }
+      }
+    }
+
+    return item;
   }
 
   /**
@@ -515,6 +747,9 @@ export class UsersService {
       fileUrl: fileUrl || null,
       createdAt: new Date(),
     });
+
+    // La conversión recién guardada debe aparecer en el historial al instante
+    this.invalidateHistoryScanCache(userId);
 
     // Update lastActivityAt and reset inactive notification flags
     this.firestoreService

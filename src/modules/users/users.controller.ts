@@ -16,13 +16,26 @@ import {
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
-import { UsersService } from './users.service.js';
+import {
+  UsersService,
+  DEFAULT_HISTORY_LIMIT,
+  MAX_HISTORY_SCAN,
+} from './users.service.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
+import {
+  GetHistoryQueryDto,
+  HistorySortBy,
+  HistorySortOrder,
+  HistoryStatus,
+} from './dto/get-history-query.dto.js';
+import { ConversionHistoryResponseDto } from './dto/conversion-history.dto.js';
+import { LabelSize } from '../zpl/enums/label-size.enum.js';
+import { OutputFormat } from '../zpl/enums/output-format.enum.js';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -139,36 +152,95 @@ export class UsersController {
   }
 
   @Get('history')
-  @ApiOperation({ summary: 'Get conversion history (Pro/Enterprise only)' })
+  @ApiOperation({
+    summary: 'Get conversion history (Pro/Pro Max/Enterprise only)',
+    description:
+      'Devuelve el historial de conversiones con filtros, orden y paginación real. ' +
+      `Los filtros y el orden se aplican sobre las ${MAX_HISTORY_SCAN} conversiones más ` +
+      'recientes del usuario; si tiene más, la respuesta incluye `pagination.truncated: true`. ' +
+      '`facets` lista los valores presentes en ese bloque, para poblar los selects del frontend.',
+  })
   @ApiQuery({
     name: 'page',
     required: false,
     type: Number,
-    description: 'Page number (default: 1)',
+    description: 'Page number, min 1 (default: 1)',
   })
   @ApiQuery({
     name: 'limit',
     required: false,
     type: Number,
-    description: 'Items per page (default: 50)',
+    description: `Items per page, min 1 max 100 (default: ${DEFAULT_HISTORY_LIMIT})`,
+  })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description:
+      'Filtra por jobId (coincidencia por prefijo, case-insensitive)',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: HistoryStatus,
+    description: 'Filtra por estado de la conversión',
+  })
+  @ApiQuery({
+    name: 'outputFormat',
+    required: false,
+    enum: OutputFormat,
+    description: 'Filtra por formato de salida',
+  })
+  @ApiQuery({
+    name: 'labelSize',
+    required: false,
+    enum: LabelSize,
+    description: 'Filtra por tamaño de etiqueta',
+  })
+  @ApiQuery({
+    name: 'dateFrom',
+    required: false,
+    type: String,
+    description: 'createdAt >= dateFrom (ISO 8601)',
+  })
+  @ApiQuery({
+    name: 'dateTo',
+    required: false,
+    type: String,
+    description:
+      'createdAt <= dateTo (ISO 8601). Una fecha sin hora (YYYY-MM-DD) incluye ' +
+      'el día completo',
+  })
+  @ApiQuery({
+    name: 'sortBy',
+    required: false,
+    enum: HistorySortBy,
+    description: 'Campo de orden (default: createdAt)',
+  })
+  @ApiQuery({
+    name: 'sortOrder',
+    required: false,
+    enum: HistorySortOrder,
+    description: 'Dirección del orden (default: desc)',
   })
   @ApiResponse({
     status: 200,
     description: 'Conversion history',
+    type: ConversionHistoryResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Query parameters inválidos',
   })
   @ApiResponse({
     status: 403,
-    description: 'History is only available for Pro and Enterprise plans',
+    description:
+      'History is only available for Pro, Pro Max and Enterprise plans',
   })
   async getHistory(
     @CurrentUser() user: FirebaseUser,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
-    return this.usersService.getUserHistory(
-      user.uid,
-      page ? Number(page) : 1,
-      limit ? Number(limit) : 50,
-    );
+    @Query() query: GetHistoryQueryDto,
+  ): Promise<ConversionHistoryResponseDto> {
+    return this.usersService.getUserHistory(user.uid, query);
   }
 }
