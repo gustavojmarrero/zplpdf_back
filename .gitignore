@@ -14,6 +14,12 @@ yarn-error.log
 /build
 /out
 
+# Duplicados que crean los clientes de sincronización (iCloud, Dropbox):
+# copian "dist" como "dist 2" y el sufijo esquiva los patrones de arriba
+/dist [0-9]*
+/build [0-9]*
+/out [0-9]*
+
 # Archivos del sistema
 .DS_Store
 Thumbs.db
