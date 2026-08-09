@@ -118,7 +118,28 @@ interface ConversionHistory {
   fileUrl?: string | null;  // Signed URL for completed
   createdAt: Date;
 }
+
+// Al leer se añade el doc id: es el :id de DELETE /users/history/:id
+interface ConversionHistoryRecord extends ConversionHistory {
+  id: string;
+}
 ```
+
+`DELETE /users/history/:id` hace **borrado real**. No toca `usage` (la cuota no puede
+depender de una tabla que el usuario puede vaciar) ni los agregados de `daily_stats` /
+`global_totals`. Sí reduce los datos de los consumidores que leen
+`conversion_history` en crudo: `getTopUsers`, `getUserUsageHistory`,
+`getUsersWithHighUsage` y `getConversionsPaginated` (la lista de
+`/admin/conversions`).
+
+`canReconvert` no se persiste ni vive en esta interfaz: es un campo de
+`ConversionHistoryItemDto` que se calcula al responder, y exige que exista el doc de
+`zpl_debug_files` con ese jobId (el ZPL se llegó a guardar), que su `createdAt` esté
+dentro de `ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle del bucket sobre
+`debug-zpl/`) y que el `fileSize` conocido no supere
+`MAX_RECONVERTIBLE_ZPL_SIZE_BYTES`. Un tamaño ausente no bloquea las metadata antiguas.
+Las filas que el flujo batch creó antes de agosto de 2026 no tienen ZPL guardado y
+nunca son reconvertibles.
 
 **Queries:**
 - User history: `firestore.collection('conversion_history').where('userId', '==', userId).orderBy('createdAt', 'desc').limit(50)`
@@ -135,7 +156,7 @@ interface ConversionStatus {
   userId?: string;
   resultUrl?: string;
   filename?: string;
-  zplContent?: string;
+  zplContent?: string;      // ⚠️ Declarado pero NUNCA escrito — ver nota
   labelSize?: string;
   outputFormat?: string;
   zplHash?: string;
@@ -149,6 +170,14 @@ interface ConversionStatus {
   chunksTotal?: number;
 }
 ```
+
+> **`zplContent` y `zplHash` no se escriben nunca.** Ninguna llamada a
+> `saveConversionStatus` / `updateConversionStatus` los informa, y un ZPL de varios MB
+> no cabría en un documento de Firestore (límite de 1 MiB). **La única copia del ZPL
+> original vive en Cloud Storage**, en `debug-zpl/{userId}/{YYYY-MM-DD}/{jobId}.zpl`,
+> indexada por jobId en `zpl_debug_files`. Ese prefijo se borra a los **15 días** por
+> lifecycle del bucket (`ZPL_RETENTION_DAYS`), que es lo que acota la ventana de
+> "reconvertir" en `GET /users/history/:id/zpl`.
 
 ### `daily_stats`
 

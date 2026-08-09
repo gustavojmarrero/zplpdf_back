@@ -434,3 +434,124 @@ describe('ZplService — userEmail en rechazos de cuota/acceso', () => {
     );
   });
 });
+
+/**
+ * Cada archivo de un batch acaba como una fila propia en `conversion_history`,
+ * indistinguible de una conversión individual desde el historial. Si el batch
+ * no guarda su ZPL, esas filas quedan mudas: "reconvertir" devuelve 410 para
+ * siempre y el listado, que solo mira la edad del registro, las anuncia como
+ * reconvertibles durante los 15 días de retención.
+ */
+describe('ZplService — el batch deja el ZPL disponible para reconvertir', () => {
+  function buildBatchService() {
+    const saveZplForDebug = jest.fn().mockResolvedValue(undefined);
+    const recordConversion = jest.fn().mockResolvedValue(undefined);
+    const updateZplDebugResult = jest.fn().mockResolvedValue(undefined);
+
+    const service = Object.create(ZplService.prototype) as any;
+    Object.assign(service, {
+      logger: {
+        log: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      },
+      bucket: 'test-bucket',
+      storage: {
+        bucket: () => ({
+          file: () => ({ save: jest.fn().mockResolvedValue(undefined) }),
+        }),
+      },
+      firestoreService: {
+        getBatchJob: jest.fn().mockResolvedValue({ userId: 'uid-pro' }),
+        updateZplDebugResult,
+      },
+      usersService: {
+        getUserById: jest.fn().mockResolvedValue({
+          id: 'uid-pro',
+          plan: 'pro',
+          email: 'pro@ejemplo.com',
+        }),
+        recordConversion,
+      },
+      // Ruido del bucle que estos tests no ejercitan.
+      getLabelSize: jest.fn().mockReturnValue(LabelSize.FOUR_BY_SIX),
+      countLabels: jest.fn().mockResolvedValue({ data: { totalLabels: 7 } }),
+      convertZplToPdf: jest.fn().mockResolvedValue(Buffer.from('pdf')),
+      updateBatchJobProgress: jest.fn().mockResolvedValue(undefined),
+      finalizeBatch: jest.fn().mockResolvedValue(undefined),
+      saveZplForDebug,
+    });
+
+    return { service, saveZplForDebug, recordConversion, updateZplDebugResult };
+  }
+
+  const archivo = { id: 'f1', content: '^XA^FDhola^FS^XZ', fileName: 'a.zpl' };
+  const job = {
+    jobId: 'job-batch-1',
+    fileName: 'a.zpl',
+    status: 'pending',
+    progress: 0,
+  };
+
+  it('guarda el ZPL de cada archivo bajo el jobId con el que se registra en el historial', async () => {
+    const { service, saveZplForDebug, recordConversion } = buildBatchService();
+
+    await service.processBatchFiles('batch-1', [archivo], [job], '4x6', 'pdf');
+
+    expect(saveZplForDebug).toHaveBeenCalledWith(
+      archivo.content,
+      'job-batch-1',
+      'uid-pro',
+      'pro@ejemplo.com',
+      '4x6',
+      7,
+      'pdf',
+    );
+    // El mismo jobId en ambos lados: es lo que une la fila del historial con su ZPL.
+    expect(recordConversion).toHaveBeenCalledWith(
+      'uid-pro',
+      'job-batch-1',
+      7,
+      '4x6',
+      'completed',
+      'pdf',
+      undefined,
+      undefined,
+    );
+  });
+
+  it('marca el resultado del ZPL guardado en vez de dejarlo en pending', async () => {
+    const { service, updateZplDebugResult } = buildBatchService();
+
+    await service.processBatchFiles('batch-1', [archivo], [job], '4x6', 'pdf');
+
+    expect(updateZplDebugResult).toHaveBeenCalledWith('job-batch-1', 'success');
+  });
+
+  it('espera a que el ZPL esté guardado antes de marcar su resultado', async () => {
+    // updateZplDebugResult usa update() y se traga el fallo si el doc todavía no
+    // existe; el set() posterior del guardado dejaría el registro en `pending`
+    // para siempre. Con una subida más lenta que la conversión, el orden importa.
+    const { service, updateZplDebugResult } = buildBatchService();
+    let zplYaGuardado = false;
+    service.saveZplForDebug = jest.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) =>
+          setImmediate(() => {
+            zplYaGuardado = true;
+            resolve();
+          }),
+        ),
+    );
+    const observado: boolean[] = [];
+    updateZplDebugResult.mockImplementation(() => {
+      observado.push(zplYaGuardado);
+      return Promise.resolve();
+    });
+
+    await service.processBatchFiles('batch-1', [archivo], [job], '4x6', 'pdf');
+
+    expect(observado).toEqual([true]);
+  });
+});

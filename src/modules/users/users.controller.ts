@@ -1,6 +1,8 @@
 import {
   Controller,
+  Delete,
   Get,
+  Param,
   Post,
   Query,
   UseGuards,
@@ -14,6 +16,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiParam,
   ApiQuery,
 } from '@nestjs/swagger';
 import {
@@ -27,6 +30,7 @@ import type { FirebaseUser } from '../../common/decorators/current-user.decorato
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
+import { ZPL_RETENTION_DAYS } from '../../common/interfaces/conversion-history.interface.js';
 import {
   GetHistoryQueryDto,
   HistorySortBy,
@@ -228,7 +232,10 @@ export class UsersController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Conversion history',
+    description:
+      'Conversion history. Cada ítem trae `id` —la clave para borrarlo o ' +
+      'recuperar su ZPL— y `canReconvert`, que indica si el ZPL original sigue ' +
+      `disponible dentro de la ventana de retención de ${ZPL_RETENTION_DAYS} días.`,
     type: ConversionHistoryResponseDto,
   })
   @ApiResponse({
@@ -245,5 +252,88 @@ export class UsersController {
     @Query() query: GetHistoryQueryDto,
   ): Promise<ConversionHistoryResponseDto> {
     return this.usersService.getUserHistory(user.uid, query);
+  }
+
+  @Delete('history/:id')
+  @ApiOperation({
+    summary: 'Delete a conversion history record (Pro/Enterprise only)',
+    description:
+      'Borra el registro del historial del usuario autenticado. No modifica el uso ' +
+      'mensual (`usage`) ni las métricas agregadas, y no borra el PDF de Cloud Storage: ' +
+      'el historial es un registro de consulta, la cuota se lleva aparte.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Doc id del registro de `conversion_history`',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Record deleted',
+    schema: {
+      example: { success: true, data: { id: 'abc123', deleted: true } },
+    },
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'History is only available for Pro and Enterprise plans',
+  })
+  @ApiResponse({
+    status: 404,
+    description:
+      'El registro no existe o no pertenece al usuario autenticado (mismo código ' +
+      'en ambos casos: distinguirlos confirmaría que el id existe)',
+  })
+  async deleteHistoryEntry(
+    @CurrentUser() user: FirebaseUser,
+    @Param('id') id: string,
+  ) {
+    const data = await this.usersService.deleteHistoryEntry(user.uid, id);
+    return { success: true, data };
+  }
+
+  @Get('history/:id/zpl')
+  @ApiOperation({
+    summary: 'Get the original ZPL of a conversion (Pro/Enterprise only)',
+    description:
+      'Devuelve el ZPL original para precargarlo en el conversor. La reconversión ' +
+      'pasa después por el flujo normal (`POST /zpl/convert`), que es donde se ' +
+      `aplican los límites de plan. El ZPL solo se conserva ${ZPL_RETENTION_DAYS} días.`,
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Doc id del registro de `conversion_history`',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Original ZPL content',
+    schema: {
+      example: {
+        success: true,
+        data: {
+          zplContent: '^XA^FO50,50^ADN,36,20^FDHola^FS^XZ',
+          labelSize: '4x6',
+          outputFormat: 'pdf',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'History is only available for Pro and Enterprise plans',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'El registro no existe o no pertenece al usuario autenticado',
+  })
+  @ApiResponse({
+    status: 410,
+    description: `El ZPL original ya salió de la ventana de retención de ${ZPL_RETENTION_DAYS} días`,
+  })
+  async getHistoryZpl(
+    @CurrentUser() user: FirebaseUser,
+    @Param('id') id: string,
+  ) {
+    const data = await this.usersService.getHistoryZpl(user.uid, id);
+    return { success: true, data };
   }
 }

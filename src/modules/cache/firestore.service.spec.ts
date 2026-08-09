@@ -137,6 +137,58 @@ describe('FirestoreService — updateUserSubscriptionState', () => {
 });
 
 /**
+ * Borrar varias filas a la vez no puede hacer retroceder la actividad: la
+ * comparación y la escritura deben compartir la misma transacción para que
+ * Firestore reintente si otro borrado modifica el usuario entre ambas.
+ */
+describe('FirestoreService — preserveLastActivityAt', () => {
+  it('escribe el máximo dentro de una transacción aunque el candidato sea anterior', async () => {
+    const registrada = new Date('2026-08-06T12:00:00.000Z');
+    const posterior = new Date('2026-08-07T12:00:00.000Z');
+    const docData: { lastActivityAt: unknown } = {
+      lastActivityAt: { toDate: () => registrada },
+    };
+    const ref = { id: 'uid-1' };
+    const update = jest
+      .fn()
+      .mockImplementation((_ref: unknown, data: Record<string, unknown>) => {
+        docData.lastActivityAt = data.lastActivityAt;
+      });
+    const runTransaction = jest
+      .fn()
+      .mockImplementation((fn: (transaction: unknown) => Promise<void>) =>
+        fn({
+          get: async () => ({ data: () => docData }),
+          update,
+        }),
+      );
+
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.firestore = {
+      collection: () => ({ doc: () => ref }),
+      runTransaction,
+    };
+
+    await service.preserveLastActivityAt(
+      'uid-1',
+      new Date('2026-08-05T12:00:00.000Z'),
+    );
+    await service.preserveLastActivityAt('uid-1', posterior);
+
+    expect(runTransaction).toHaveBeenCalledTimes(2);
+    expect(update).toHaveBeenNthCalledWith(1, ref, {
+      lastActivityAt: registrada,
+      updatedAt: expect.any(Date),
+    });
+    expect(update).toHaveBeenNthCalledWith(2, ref, {
+      lastActivityAt: posterior,
+      updatedAt: expect.any(Date),
+    });
+  });
+});
+
+/**
  * La clave protege del doble cargo del MISMO upgrade, pero dos upgrades a
  * destinos DISTINTOS no pueden compartirla: si el segundo sobrescribe al
  * primero, Stripe procesa ambas mutaciones (issue #73).
@@ -1115,5 +1167,173 @@ describe('FirestoreService — la baja y su evento van en la misma transacción'
     );
 
     expect(set).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `getProInactiveUsers` decide a quién se le manda un email de "te echamos de
+ * menos". Derivaba la última actividad del historial de conversiones, que desde
+ * `DELETE /users/history/:id` el propio usuario puede vaciar: un cliente de pago
+ * que convierte a diario y limpia su historial pasaba a parecer inactivo desde
+ * su fecha de alta.
+ */
+describe('FirestoreService — la inactividad no depende del historial', () => {
+  function buildService(
+    usuarios: Array<{
+      id: string;
+      data: Record<string, unknown>;
+      ultimaConversion?: string;
+    }>,
+  ) {
+    const historialConsultadoPara: string[] = [];
+    const service: any = Object.create(FirestoreService.prototype);
+    service.usersCollection = 'users';
+    service.historyCollection = 'conversion_history';
+    service.usageCollection = 'usage';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    service.firestore = {
+      getAll: async (...refs: Array<{ id: string }>) =>
+        refs.map((r) => ({ id: r.id, exists: false, data: () => undefined })),
+      collection: (nombre: string) => {
+        let userIdFiltrado: string | undefined;
+        const q: any = {
+          doc: (id: string) => ({ id }),
+          where: (campo: string, _op: string, valor: any) => {
+            if (campo === 'userId') userIdFiltrado = valor;
+            return q;
+          },
+          select: () => q,
+          orderBy: () => q,
+          limit: () => q,
+          get: async () => {
+            if (nombre === 'users') {
+              return {
+                docs: usuarios.map((u) => ({
+                  id: u.id,
+                  exists: true,
+                  data: () => u.data,
+                })),
+                empty: usuarios.length === 0,
+              };
+            }
+            if (nombre === 'conversion_history') {
+              historialConsultadoPara.push(userIdFiltrado);
+              const u = usuarios.find((x) => x.id === userIdFiltrado);
+              const docs = u?.ultimaConversion
+                ? [
+                    {
+                      data: () => ({ createdAt: new Date(u.ultimaConversion) }),
+                    },
+                  ]
+                : [];
+              return { docs, empty: docs.length === 0 };
+            }
+            return { docs: [], empty: true };
+          },
+        };
+        return q;
+      },
+    };
+
+    return { service, historialConsultadoPara };
+  }
+
+  const hace = (dias: number) =>
+    new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+
+  it('no da por inactivo a quien convirtió hoy aunque haya vaciado su historial', async () => {
+    const { service } = buildService([
+      {
+        id: 'uid-activo',
+        // Convirtió hoy: el campo lo escribe recordConversion y el usuario no
+        // puede borrarlo. Su historial, en cambio, está vacío.
+        data: {
+          plan: 'pro',
+          email: 'pro@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(0),
+        },
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    expect(resultado.users).toHaveLength(0);
+  });
+
+  it('no consulta el historial de quien el campo ya da por activo', async () => {
+    const { service, historialConsultadoPara } = buildService([
+      {
+        id: 'uid-activo',
+        data: {
+          plan: 'pro',
+          email: 'a@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(1),
+        },
+      },
+      {
+        id: 'uid-antiguo',
+        data: { plan: 'pro', email: 'b@ejemplo.com', createdAt: hace(400) },
+        ultimaConversion: hace(50).toISOString(),
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    // Una query menos por cada usuario que no es candidato a ninguna campaña.
+    expect(historialConsultadoPara).toEqual(['uid-antiguo']);
+    expect(resultado.users.map((u: any) => u.userId)).toEqual(['uid-antiguo']);
+  });
+
+  it('confirma contra el historial a quien el campo marca como inactivo', async () => {
+    // `lastActivityAt` se escribe fire-and-forget: si esa escritura falló, el
+    // campo se quedó viejo. Antes de mandarle un "te echamos de menos" a un
+    // cliente de pago conviene mirar la otra fuente.
+    const { service, historialConsultadoPara } = buildService([
+      {
+        id: 'uid-campo-desfasado',
+        data: {
+          plan: 'pro',
+          email: 'a@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(90),
+        },
+        ultimaConversion: hace(2).toISOString(),
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    expect(historialConsultadoPara).toEqual(['uid-campo-desfasado']);
+    expect(resultado.users).toHaveLength(0);
+  });
+
+  it('sigue dando por inactivo a quien lo está en las dos fuentes', async () => {
+    const { service } = buildService([
+      {
+        id: 'uid-inactivo',
+        data: {
+          plan: 'pro',
+          email: 'a@ejemplo.com',
+          createdAt: hace(400),
+          lastActivityAt: hace(90),
+        },
+        ultimaConversion: hace(95).toISOString(),
+      },
+    ]);
+
+    const resultado = await service.getProInactiveUsers({
+      minDaysInactive: 30,
+    });
+
+    expect(resultado.users.map((u: any) => u.userId)).toEqual(['uid-inactivo']);
   });
 });

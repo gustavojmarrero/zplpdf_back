@@ -31,6 +31,16 @@ export class ConversionHistoryItemDto {
 
   @ApiProperty({ description: 'Conversion date (ISO 8601)', nullable: true })
   createdAt: string | null;
+
+  @ApiProperty({
+    description:
+      'True cuando el ZPL original sigue disponible y la fila admite ' +
+      '`GET /users/history/:id/zpl`. Exige que el ZPL se guardara —las ' +
+      'conversiones batch anteriores a agosto de 2026 no lo tienen— y que siga ' +
+      'dentro de la ventana de retención del bucket (15 días). Permite ' +
+      'deshabilitar el botón de reconvertir sin provocar un 410.',
+  })
+  canReconvert: boolean;
 }
 
 export class ConversionHistoryPaginationDto {

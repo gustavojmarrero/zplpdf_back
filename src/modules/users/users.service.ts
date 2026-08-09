@@ -2,6 +2,8 @@ import {
   Injectable,
   Logger,
   ForbiddenException,
+  GoneException,
+  NotFoundException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
@@ -22,7 +24,9 @@ import type {
   PlanType,
   PlanLimits,
 } from '../../common/interfaces/user.interface.js';
+import { ZPL_RETENTION_DAYS } from '../../common/interfaces/conversion-history.interface.js';
 import type { ConversionHistoryRecord } from '../../common/interfaces/conversion-history.interface.js';
+import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
@@ -42,6 +46,8 @@ import { isBlockedEmailDomain } from '../../common/constants/blocked-email-domai
 import { GeoService } from '../admin/services/geo.service.js';
 import { EmailService } from '../email/email.service.js';
 import { StorageService } from '../storage/storage.service.js';
+import { normalizeLabelSize } from '../zpl/enums/label-size.enum.js';
+import { normalizeOutputFormat } from '../zpl/enums/output-format.enum.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -66,6 +72,14 @@ export const DEFAULT_HISTORY_LIMIT = 25;
  * de modo que un usuario con más conversiones ve `pagination.truncated: true`.
  */
 export const MAX_HISTORY_SCAN = 1000;
+
+/**
+ * Máximo que se ofrece para reconversión. Aunque el parser admite 5 MiB, el
+ * ZPL vuelve dentro de JSON y sus saltos, barras y comillas se escapan; reservar
+ * 1 MiB deja margen para que esa sobrecarga no haga que `POST /zpl/convert`
+ * rechace el body.
+ */
+export const MAX_RECONVERTIBLE_ZPL_SIZE_BYTES = 4 * 1024 * 1024;
 
 /** TTL de la caché en memoria del escaneo de historial. */
 const HISTORY_SCAN_CACHE_TTL_MS = 60_000;
@@ -364,10 +378,12 @@ export class UsersService {
     };
   }
 
-  async getUserHistory(
-    userId: string,
-    query: GetHistoryQueryDto = {},
-  ): Promise<ConversionHistoryResponseDto> {
+  /**
+   * Gate de plan del historial, compartido por todos sus endpoints (listar,
+   * borrar, recuperar el ZPL). Vive aparte para que una acción nueva sobre el
+   * historial no pueda olvidarse de comprobarlo.
+   */
+  private async assertCanViewHistory(userId: string): Promise<void> {
     const user = await this.firestoreService.getUserById(userId);
 
     if (!user) {
@@ -387,6 +403,109 @@ export class UsersService {
         'History is only available for Pro, Pro Max and Enterprise plans',
       );
     }
+  }
+
+  /**
+   * Carga un registro de historial exigiendo que sea del usuario.
+   *
+   * Un registro ajeno se responde igual que uno inexistente (404): un 403
+   * delataría que el id existe, y el id es adivinable.
+   */
+  private async getOwnedHistoryRecord(
+    userId: string,
+    historyId: string,
+  ): Promise<ConversionHistoryRecord> {
+    const record =
+      await this.firestoreService.getConversionHistoryById(historyId);
+
+    if (!record || record.userId !== userId) {
+      throw new NotFoundException({
+        error: ErrorCodes.HISTORY_NOT_FOUND,
+        message: 'History record not found',
+      });
+    }
+
+    return record;
+  }
+
+  /**
+   * Indica si el registro sigue dentro de la ventana de retención del bucket.
+   * Se calcula por edad, sin tocar Storage: comprobar el objeto fila a fila
+   * costaría una llamada a GCS por cada una.
+   */
+  private isWithinZplRetention(createdAt: Date | undefined): boolean {
+    if (!createdAt) return false;
+
+    // Firestore devuelve Date, pero los registros antiguos pueden traer la
+    // fecha como string ISO: normalizar aquí evita un NaN silencioso.
+    const created =
+      createdAt instanceof Date ? createdAt : new Date(createdAt as string);
+    if (Number.isNaN(created.getTime())) return false;
+
+    const ageMs = Date.now() - created.getTime();
+    return ageMs < ZPL_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  }
+
+  /**
+   * Marca cada fila con si admite "reconvertir". Las condiciones deben cumplirse
+   * a la vez:
+   *
+   *  - que se guardara el ZPL (una sola consulta en lote para toda la página).
+   *    No todas las filas lo tienen: hasta este cambio, el flujo batch creaba
+   *    historial sin guardar ZPL, así que esas filas nunca podrán reconvertirse.
+   *  - que el ZPL siga dentro de la ventana de retención, porque el doc de
+   *    metadata sobrevive al archivo que el bucket ya borró.
+   *  - que el tamaño conocido quepa en el body JSON del conversor. La metadata
+   *    antigua sin `fileSize` no se bloquea porque podría ser perfectamente apta.
+   *
+   * La ventana se cuenta desde que se guardó el ZPL, no desde que se registró
+   * la conversión: el objeto se sube al empezar y la fila del historial nace al
+   * terminar, así que el lifecycle lleva ya un rato corriendo cuando aparece la
+   * fila. Solo se recurre a la fecha del historial si el doc de metadata es
+   * antiguo y no la trae.
+   *
+   * Si la consulta en lote falla, marca todo como no reconvertible: un botón de
+   * más deshabilitado es preferible a prometer algo que devolverá 410.
+   */
+  private async resolverReconvertibles(
+    records: ConversionHistoryRecord[],
+  ): Promise<Set<string>> {
+    let zplsGuardados = new Map<
+      string,
+      { createdAt: Date | null; fileSize: number | null }
+    >();
+    try {
+      zplsGuardados = await this.firestoreService.getSavedZplDatesByJobId(
+        records.map((record) => record.jobId),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to resolve canReconvert flags: ${error.message}`,
+      );
+    }
+
+    return new Set(
+      records
+        .filter((record) => {
+          const zplGuardado = zplsGuardados.get(record.jobId);
+          return (
+            zplGuardado !== undefined &&
+            this.isWithinZplRetention(
+              zplGuardado.createdAt ?? record.createdAt,
+            ) &&
+            (zplGuardado.fileSize === null ||
+              zplGuardado.fileSize <= MAX_RECONVERTIBLE_ZPL_SIZE_BYTES)
+          );
+        })
+        .map((record) => record.id),
+    );
+  }
+
+  async getUserHistory(
+    userId: string,
+    query: GetHistoryQueryDto = {},
+  ): Promise<ConversionHistoryResponseDto> {
+    await this.assertCanViewHistory(userId);
 
     const page = query.page ?? 1;
     const limit = query.limit ?? DEFAULT_HISTORY_LIMIT;
@@ -408,9 +527,16 @@ export class UsersService {
     const offset = (page - 1) * limit;
     const pageRecords = filtered.slice(offset, offset + limit);
 
+    // Solo para la página que se devuelve: el frontend deshabilita
+    // "reconvertir" con este flag en vez de descubrir la caducidad a base de
+    // 410s al pulsar el botón.
+    const reconvertibles = await this.resolverReconvertibles(pageRecords);
+
     // Firmar solo los registros que se devuelven, ya filtrados y paginados
     const data = await Promise.all(
-      pageRecords.map((record) => this.toHistoryItem(record)),
+      pageRecords.map((record) =>
+        this.toHistoryItem(record, reconvertibles.has(record.id)),
+      ),
     );
 
     return {
@@ -616,6 +742,7 @@ export class UsersService {
    */
   private async toHistoryItem(
     record: ConversionHistoryRecord,
+    canReconvert: boolean,
   ): Promise<ConversionHistoryItemDto> {
     const createdAt = this.toTimestamp(record.createdAt);
 
@@ -626,6 +753,7 @@ export class UsersService {
       labelSize: record.labelSize,
       status: record.status,
       outputFormat: record.outputFormat,
+      canReconvert,
       createdAt: createdAt !== null ? new Date(createdAt).toISOString() : null,
     };
 
@@ -649,6 +777,118 @@ export class UsersService {
     }
 
     return item;
+  }
+
+  /**
+   * Elimina un registro del historial del usuario.
+   *
+   * Deliberadamente NO toca `usage`: si borrar filas descontara PDFs del
+   * período, cualquiera podría reiniciar su cuota vaciando el historial. El
+   * historial es un registro de consulta; la cuota se lleva aparte. Tampoco
+   * borra el PDF de Cloud Storage, que tiene su propio ciclo de vida.
+   */
+  async deleteHistoryEntry(
+    userId: string,
+    historyId: string,
+  ): Promise<{ id: string; deleted: true }> {
+    await this.assertCanViewHistory(userId);
+    const record = await this.getOwnedHistoryRecord(userId, historyId);
+
+    // La escritura de `lastActivityAt` al convertir es fire-and-forget. Si
+    // falló, borrar esta fila eliminaría la única fecha fiable y podría hacer
+    // que un cliente recién activo pareciera inactivo desde su alta.
+    try {
+      // El máximo se calcula dentro de una transacción: dos borrados paralelos
+      // no pueden confirmar una fecha antigua después de otra más reciente.
+      await this.firestoreService.preserveLastActivityAt(
+        userId,
+        record.createdAt,
+      );
+    } catch (error) {
+      // Preservar la señal de actividad es defensivo; un fallo aquí no debe
+      // convertir en imborrable una fila que el usuario ya decidió eliminar.
+      this.logger.warn(
+        `Failed to preserve lastActivityAt before deleting history ${historyId}: ${error.message}`,
+      );
+    }
+
+    await this.firestoreService.deleteConversionHistory(historyId);
+
+    // El listado sirve de una caché de 60s: sin invalidarla, el usuario borra
+    // una fila, la tabla se recarga y la fila sigue ahí.
+    this.invalidateHistoryScanCache(userId);
+
+    return { id: historyId, deleted: true };
+  }
+
+  /**
+   * Devuelve el ZPL original de una conversión para que el frontend lo
+   * precargue en el conversor. La reconversión en sí pasa por el flujo normal
+   * (`POST /zpl/convert`), que es donde viven los límites de plan.
+   *
+   * El ZPL no está en Firestore — `ConversionStatus.zplContent` existe en el
+   * tipo pero nunca se escribe, y un ZPL de varios MB no cabría en un
+   * documento. La copia real está en el bucket, bajo `debug-zpl/`, indexada
+   * por jobId en `zpl_debug_files`. Ese prefijo caduca a los
+   * ZPL_RETENTION_DAYS días: pasado ese plazo la respuesta es 410, no 500.
+   */
+  async getHistoryZpl(
+    userId: string,
+    historyId: string,
+  ): Promise<{
+    zplContent: string;
+    labelSize: string;
+    outputFormat: 'pdf' | 'png' | 'jpeg';
+  }> {
+    await this.assertCanViewHistory(userId);
+    const record = await this.getOwnedHistoryRecord(userId, historyId);
+
+    const zplNoLongerAvailable = new GoneException({
+      error: ErrorCodes.ZPL_NOT_AVAILABLE,
+      message: `The original ZPL is only kept for ${ZPL_RETENTION_DAYS} days and is no longer available for this conversion`,
+      data: { retentionDays: ZPL_RETENTION_DAYS },
+    });
+
+    const debugFile = await this.firestoreService.getZplDebugFileByJobId(
+      record.jobId,
+    );
+
+    // El lifecycle puede tardar hasta 24h en borrar el objeto. Respetar la edad
+    // de la metadata evita que ese retraso amplíe la ventana contractual. Los
+    // docs antiguos sin fecha usan la misma fecha de respaldo que el listado,
+    // para que `canReconvert` y este endpoint no discrepen.
+    if (
+      !debugFile ||
+      debugFile.userId !== userId ||
+      !this.isWithinZplRetention(debugFile.createdAt ?? record.createdAt)
+    ) {
+      throw zplNoLongerAvailable;
+    }
+
+    // El doc de `zpl_debug_files` sobrevive al archivo — el lifecycle solo
+    // borra en GCS —, así que su presencia no garantiza nada: la única prueba
+    // de que el ZPL sigue ahí es leer el objeto.
+    const zplContent = await this.storageService.readTextFile(
+      debugFile.storagePath,
+    );
+
+    if (!zplContent) {
+      throw zplNoLongerAvailable;
+    }
+
+    return {
+      zplContent,
+      // Normalizado, no crudo: el batch acepta el tamaño como string libre
+      // (`large`, `small`, o cualquier cosa) y así queda guardado en el
+      // historial, pero `POST /zpl/convert` lo valida con `@IsEnum(LabelSize)`.
+      // Devolverlo tal cual haría que reconvertir fallara con un 400 usando el
+      // mismo tamaño con el que la conversión original funcionó.
+      labelSize: normalizeLabelSize(record.labelSize),
+      // El batch también guarda el formato sin validar. La normalización debe
+      // seguir su rama efectiva: solo `pdf` y `png` exactos son especiales;
+      // cualquier otro string generó JPEG.
+      outputFormat: normalizeOutputFormat(record.outputFormat),
+    };
   }
 
   /**

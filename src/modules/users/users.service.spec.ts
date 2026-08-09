@@ -6,7 +6,17 @@ jest.mock('stripe', () => jest.fn());
 
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { UsersService, MAX_HISTORY_SCAN } from './users.service.js';
+import {
+  ForbiddenException,
+  GoneException,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  UsersService,
+  MAX_HISTORY_SCAN,
+  MAX_RECONVERTIBLE_ZPL_SIZE_BYTES,
+} from './users.service.js';
+import { ZPL_RETENTION_DAYS } from '../../common/interfaces/conversion-history.interface.js';
 import {
   GetHistoryQueryDto,
   HistorySortBy,
@@ -64,6 +74,19 @@ describe('UsersService — getUserHistory', () => {
     service.firestoreService = {
       getUserById: jest.fn().mockResolvedValue(user),
       scanUserConversionHistory,
+      // Todos los registros tienen su ZPL guardado hoy salvo que un test diga
+      // lo contrario; `canReconvert` se prueba aparte.
+      getSavedZplDatesByJobId: jest
+        .fn()
+        .mockImplementation(
+          async (jobIds: string[]) =>
+            new Map(
+              jobIds.map((jobId) => [
+                jobId,
+                { createdAt: new Date(), fileSize: null },
+              ]),
+            ),
+        ),
     };
     service.storageService = { generateSignedUrlForPath };
 
@@ -724,5 +747,563 @@ describe('GetHistoryQueryDto', () => {
     });
 
     expect(failed).toEqual([]);
+  });
+});
+
+/**
+ * Acciones del historial: borrar una fila y recuperar el ZPL original para
+ * reconvertir.
+ *
+ * Dos riesgos concretos guían estos tests:
+ *
+ *  1. El id de `conversion_history` viaja en la URL. Sin comprobación de
+ *     ownership, cualquier usuario con plan de pago leería el ZPL de otro —
+ *     que es su dato de negocio (SKUs, direcciones, lotes).
+ *  2. El contador mensual no puede depender del historial. Si borrar filas
+ *     descontara PDFs, la cuota se reiniciaría vaciando la tabla.
+ */
+describe('UsersService — acciones sobre el historial', () => {
+  const UID = 'uid-propietario';
+  const OTRO_UID = 'uid-ajeno';
+  const HISTORY_ID = 'hist-1';
+
+  const diasAtras = (dias: number) =>
+    new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
+
+  function registroDeHistorial(overrides: Record<string, unknown> = {}) {
+    return {
+      id: HISTORY_ID,
+      userId: UID,
+      jobId: 'job-1',
+      labelCount: 3,
+      labelSize: '4x6',
+      status: 'completed',
+      outputFormat: 'pdf',
+      createdAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  function buildService(overrides: {
+    user?: Record<string, unknown> | null;
+    record?: Record<string, unknown> | null;
+    debugFile?: Record<string, unknown> | null;
+    zplContent?: string | null;
+    history?: Record<string, unknown>[];
+    zplsGuardados?:
+      | Map<string, { createdAt: Date | null; fileSize: number | null }>
+      | Error;
+    preserveLastActivityAtError?: Error;
+  }) {
+    const firestoreService = {
+      getUserById: jest
+        .fn()
+        .mockResolvedValue(
+          overrides.user === undefined
+            ? { id: UID, plan: 'pro', role: 'user' }
+            : overrides.user,
+        ),
+      getConversionHistoryById: jest
+        .fn()
+        .mockResolvedValue(
+          overrides.record === undefined
+            ? registroDeHistorial()
+            : overrides.record,
+        ),
+      deleteConversionHistory: jest.fn().mockResolvedValue(undefined),
+      preserveLastActivityAt: overrides.preserveLastActivityAtError
+        ? jest.fn().mockRejectedValue(overrides.preserveLastActivityAtError)
+        : jest.fn().mockResolvedValue(undefined),
+      getZplDebugFileByJobId: jest.fn().mockResolvedValue(
+        overrides.debugFile === undefined
+          ? {
+              userId: UID,
+              storagePath: 'debug-zpl/uid/2026-08-08/job-1.zpl',
+              createdAt: new Date(),
+            }
+          : overrides.debugFile,
+      ),
+      scanUserConversionHistory: jest
+        .fn()
+        .mockResolvedValue(overrides.history ?? []),
+      getSavedZplDatesByJobId: jest
+        .fn()
+        .mockImplementation((jobIds: string[]) => {
+          if (overrides.zplsGuardados instanceof Error) {
+            return Promise.reject(overrides.zplsGuardados);
+          }
+          // Por defecto, todos los jobs tienen su ZPL guardado hoy mismo.
+          return Promise.resolve(
+            overrides.zplsGuardados ??
+              new Map(
+                jobIds.map((jobId) => [
+                  jobId,
+                  { createdAt: new Date(), fileSize: null },
+                ]),
+              ),
+          );
+        }),
+      // Si algún camino intentara tocar la cuota, el test lo vería aquí.
+      incrementUsage: jest.fn(),
+      updateUsage: jest.fn(),
+      resetUsage: jest.fn(),
+    };
+
+    const storageService = {
+      readTextFile: jest
+        .fn()
+        .mockResolvedValue(
+          overrides.zplContent === undefined
+            ? '^XA^FDhola^FS^XZ'
+            : overrides.zplContent,
+        ),
+      generateSignedUrlForPath: jest
+        .fn()
+        .mockResolvedValue('https://signed.example/file.pdf'),
+    };
+
+    const service = Object.create(UsersService.prototype) as any;
+    Object.assign(service, {
+      logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      historyScanCache: new Map(),
+      historyCacheGeneration: 0,
+      firestoreService,
+      storageService,
+    });
+
+    return { service, firestoreService, storageService };
+  }
+
+  describe('deleteHistoryEntry', () => {
+    it('borra el registro y devuelve el id', async () => {
+      const { service, firestoreService } = buildService({});
+
+      await expect(
+        service.deleteHistoryEntry(UID, HISTORY_ID),
+      ).resolves.toEqual({ id: HISTORY_ID, deleted: true });
+      expect(firestoreService.deleteConversionHistory).toHaveBeenCalledWith(
+        HISTORY_ID,
+      );
+    });
+
+    it('preserva la actividad del registro antes de borrarlo y no bloquea el borrado si falla', async () => {
+      const createdAt = diasAtras(1);
+      const { service, firestoreService } = buildService({
+        user: {
+          id: UID,
+          plan: 'pro',
+          role: 'user',
+          lastActivityAt: diasAtras(30),
+        },
+        record: registroDeHistorial({ createdAt }),
+      });
+
+      await service.deleteHistoryEntry(UID, HISTORY_ID);
+
+      expect(firestoreService.preserveLastActivityAt).toHaveBeenCalledWith(
+        UID,
+        createdAt,
+      );
+      expect(
+        firestoreService.preserveLastActivityAt.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        firestoreService.deleteConversionHistory.mock.invocationCallOrder[0],
+      );
+
+      const fallo = buildService({
+        preserveLastActivityAtError: new Error('Firestore no disponible'),
+      });
+
+      await expect(
+        fallo.service.deleteHistoryEntry(UID, HISTORY_ID),
+      ).resolves.toEqual({ id: HISTORY_ID, deleted: true });
+      expect(fallo.firestoreService.deleteConversionHistory).toHaveBeenCalled();
+      expect(fallo.service.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to preserve lastActivityAt'),
+      );
+    });
+
+    it('no toca el uso mensual al borrar', async () => {
+      // Si el borrado descontara PDFs del período, bastaría con vaciar el
+      // historial para reiniciar la cuota del mes.
+      const { service, firestoreService } = buildService({});
+
+      await service.deleteHistoryEntry(UID, HISTORY_ID);
+
+      expect(firestoreService.incrementUsage).not.toHaveBeenCalled();
+      expect(firestoreService.updateUsage).not.toHaveBeenCalled();
+      expect(firestoreService.resetUsage).not.toHaveBeenCalled();
+    });
+
+    it('invalida la caché del listado para que la fila no reaparezca', async () => {
+      // El listado sirve de una caché de 60s: sin invalidarla, el usuario borra
+      // una fila, la tabla se recarga y la fila sigue ahí.
+      const { service } = buildService({
+        history: [registroDeHistorial()],
+      });
+      await service.getUserHistory(UID, {});
+      expect(service.historyScanCache.has(UID)).toBe(true);
+
+      await service.deleteHistoryEntry(UID, HISTORY_ID);
+
+      expect(service.historyScanCache.has(UID)).toBe(false);
+    });
+
+    it('responde 404 —no 403— ante un registro de otro usuario, y no lo borra', async () => {
+      // Un 403 confirmaría que el id existe; el id va en la URL y es adivinable.
+      const { service, firestoreService } = buildService({
+        record: registroDeHistorial({ userId: OTRO_UID }),
+      });
+
+      await expect(
+        service.deleteHistoryEntry(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(firestoreService.deleteConversionHistory).not.toHaveBeenCalled();
+    });
+
+    it('responde 404 cuando el registro no existe', async () => {
+      const { service } = buildService({ record: null });
+
+      await expect(
+        service.deleteHistoryEntry(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('rechaza a los planes sin historial antes de leer nada', async () => {
+      const { service, firestoreService } = buildService({
+        user: { id: UID, plan: 'lite', role: 'user' },
+      });
+
+      await expect(
+        service.deleteHistoryEntry(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(firestoreService.getConversionHistoryById).not.toHaveBeenCalled();
+      expect(firestoreService.deleteConversionHistory).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getHistoryZpl', () => {
+    it('devuelve el ZPL con el tamaño y el formato del registro', async () => {
+      const { service, storageService } = buildService({});
+
+      await expect(service.getHistoryZpl(UID, HISTORY_ID)).resolves.toEqual({
+        zplContent: '^XA^FDhola^FS^XZ',
+        labelSize: '4x6',
+        outputFormat: 'pdf',
+      });
+      expect(storageService.readTextFile).toHaveBeenCalledWith(
+        'debug-zpl/uid/2026-08-08/job-1.zpl',
+      );
+    });
+
+    it('normaliza el tamaño del batch al valor que acepta POST /zpl/convert', async () => {
+      // El batch guarda el tamaño como llegó (`large`), pero ConvertZplDto lo
+      // valida con @IsEnum(LabelSize): devolverlo crudo haría que reconvertir
+      // fallara con un 400 usando el tamaño con el que ya funcionó.
+      const { service } = buildService({
+        record: registroDeHistorial({ labelSize: 'large' }),
+      });
+
+      const { labelSize } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(labelSize).toBe('4x6');
+    });
+
+    it('devuelve 2x1 para un tamaño desconocido, que es con el que se convirtió', async () => {
+      const { service } = buildService({
+        record: registroDeHistorial({ labelSize: '4x4' }),
+      });
+
+      const { labelSize } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(labelSize).toBe('2x1');
+    });
+
+    it('normaliza el alias jpg al valor JPEG que acepta la reconversión', async () => {
+      const { service } = buildService({
+        record: registroDeHistorial({ outputFormat: 'jpg' }),
+      });
+
+      const { outputFormat } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(outputFormat).toBe('jpeg');
+    });
+
+    it('devuelve JPEG para PDF porque el batch lo procesó como imagen', async () => {
+      // `processBatchFiles` compara con `pdf` antes de elegir la rama de
+      // imagen; `PDF` cae en JPEG aunque parezca un alias natural de PDF.
+      const { service } = buildService({
+        record: registroDeHistorial({ outputFormat: 'PDF' }),
+      });
+
+      const { outputFormat } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(outputFormat).toBe('jpeg');
+    });
+
+    it('devuelve JPEG para un formato desconocido, igual que el batch', async () => {
+      const { service } = buildService({
+        record: registroDeHistorial({ outputFormat: 'webp' }),
+      });
+
+      const { outputFormat } = await service.getHistoryZpl(UID, HISTORY_ID);
+
+      expect(outputFormat).toBe('jpeg');
+    });
+
+    it('responde 404 ante un registro de otro usuario, sin leer el ZPL', async () => {
+      const { service, storageService, firestoreService } = buildService({
+        record: registroDeHistorial({ userId: OTRO_UID }),
+      });
+
+      await expect(
+        service.getHistoryZpl(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(firestoreService.getZplDebugFileByJobId).not.toHaveBeenCalled();
+      expect(storageService.readTextFile).not.toHaveBeenCalled();
+    });
+
+    it('responde 410 —no 500— cuando el archivo ya salió del bucket', async () => {
+      // El lifecycle de `debug-zpl/` borra en GCS pero deja el doc de
+      // `zpl_debug_files`: la ausencia solo se ve al leer el objeto.
+      const { service } = buildService({ zplContent: null });
+
+      await expect(
+        service.getHistoryZpl(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(GoneException);
+    });
+
+    it('responde 410 sin leer GCS cuando el ZPL ya superó la retención', async () => {
+      // El lifecycle puede tardar en borrar el objeto; su existencia física no
+      // debe ampliar el plazo que el endpoint promete al usuario.
+      const { service, storageService } = buildService({
+        debugFile: {
+          userId: UID,
+          storagePath: 'debug-zpl/uid/2026-08-08/job-1.zpl',
+          createdAt: diasAtras(ZPL_RETENTION_DAYS + 1),
+        },
+      });
+
+      await expect(
+        service.getHistoryZpl(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(GoneException);
+      expect(storageService.readTextFile).not.toHaveBeenCalled();
+    });
+
+    it('usa la fecha reciente del historial cuando la metadata no trae createdAt', async () => {
+      const { service, storageService } = buildService({
+        record: registroDeHistorial({ createdAt: diasAtras(1) }),
+        debugFile: {
+          userId: UID,
+          storagePath: 'debug-zpl/uid/2026-08-08/job-1.zpl',
+        },
+      });
+
+      await expect(service.getHistoryZpl(UID, HISTORY_ID)).resolves.toEqual({
+        zplContent: '^XA^FDhola^FS^XZ',
+        labelSize: '4x6',
+        outputFormat: 'pdf',
+      });
+      expect(storageService.readTextFile).toHaveBeenCalledWith(
+        'debug-zpl/uid/2026-08-08/job-1.zpl',
+      );
+    });
+
+    it('responde 410 cuando nunca se guardó el ZPL del job', async () => {
+      // saveZplForDebug es fire-and-forget: puede haber fallado.
+      const { service } = buildService({ debugFile: null });
+
+      await expect(
+        service.getHistoryZpl(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(GoneException);
+    });
+
+    it('rechaza a los planes sin historial', async () => {
+      const { service } = buildService({
+        user: { id: UID, plan: 'free', role: 'user' },
+      });
+
+      await expect(
+        service.getHistoryZpl(UID, HISTORY_ID),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
+  describe('getUserHistory — flag canReconvert', () => {
+    it('marca reconvertible lo que sigue dentro de la ventana de retención', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(true);
+    });
+
+    it('marca no reconvertible lo que ya la superó', async () => {
+      // El frontend deshabilita el botón con esto en vez de descubrirlo con un 410.
+      const { service } = buildService({
+        history: [
+          registroDeHistorial({ createdAt: diasAtras(ZPL_RETENTION_DAYS + 1) }),
+        ],
+        zplsGuardados: new Map([
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(ZPL_RETENTION_DAYS + 1),
+              fileSize: null,
+            },
+          ],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(false);
+    });
+
+    it('cuenta la ventana desde que se guardó el ZPL, no desde la fila del historial', async () => {
+      // El objeto se sube al empezar la conversión y la fila nace al terminarla:
+      // en el borde de la ventana, fecharlo por el historial promete de más.
+      const { service } = buildService({
+        history: [
+          registroDeHistorial({
+            createdAt: diasAtras(ZPL_RETENTION_DAYS - 0.5),
+          }),
+        ],
+        zplsGuardados: new Map([
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(ZPL_RETENTION_DAYS + 0.5),
+              fileSize: null,
+            },
+          ],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(false);
+    });
+
+    it('recurre a la fecha del historial si el doc de metadata no la trae', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([
+          ['job-1', { createdAt: null, fileSize: null }],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(true);
+    });
+
+    it('no promete reconvertir un ZPL cuyo tamaño conocido supera el tope del body', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(1),
+              fileSize: MAX_RECONVERTIBLE_ZPL_SIZE_BYTES + 1,
+            },
+          ],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(false);
+    });
+
+    it('permite reconvertir un ZPL cuyo tamaño conocido queda bajo el tope', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(1),
+              fileSize: MAX_RECONVERTIBLE_ZPL_SIZE_BYTES - 1,
+            },
+          ],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(true);
+    });
+
+    it('no bloquea la reconversión cuando la metadata antigua no trae tamaño', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([
+          ['job-1', { createdAt: diasAtras(1), fileSize: null }],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(true);
+    });
+
+    it('no promete reconvertir una fila cuyo ZPL nunca se guardó', async () => {
+      // Las filas que el flujo batch creó antes de que guardara el ZPL son
+      // recientes pero irrecuperables: por edad saldrían como reconvertibles y
+      // el botón devolvería 410 al pulsarlo.
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map<
+          string,
+          { createdAt: Date | null; fileSize: number | null }
+        >(),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(false);
+    });
+
+    it('degrada a no reconvertible si la consulta de ZPLs falla', async () => {
+      // Un botón de más deshabilitado es preferible a prometer un 410, y a que
+      // el listado entero reviente por un flag.
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Error('firestore caído'),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(false);
+    });
+
+    it('solo consulta los ZPLs de la página, no los del escaneo entero', async () => {
+      // El escaneo llega hasta MAX_HISTORY_SCAN registros; resolver el flag para
+      // todos costaría cientos de lecturas por request.
+      //
+      // Cada registro lleva su propia fecha, decreciente: con la fecha por
+      // defecto los 40 `new Date()` caen en el mismo milisegundo casi siempre,
+      // pero si el bucle cruza uno el orden cambia y con él la página.
+      const { service, firestoreService } = buildService({
+        history: Array.from({ length: 40 }, (_, i) =>
+          registroDeHistorial({
+            id: `hist-${i}`,
+            jobId: `job-${i}`,
+            createdAt: new Date(Date.now() - i * 60_000),
+          }),
+        ),
+      });
+
+      await service.getUserHistory(UID, { limit: 10 });
+
+      // Los diez más recientes, en orden: nada del resto del escaneo.
+      expect(firestoreService.getSavedZplDatesByJobId).toHaveBeenCalledWith(
+        Array.from({ length: 10 }, (_, i) => `job-${i}`),
+      );
+    });
   });
 });

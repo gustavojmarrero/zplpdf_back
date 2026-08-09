@@ -14,7 +14,13 @@ export class StorageService {
     private configService: ConfigService,
     @Inject('GOOGLE_AUTH_OPTIONS') private googleAuthOptions: any,
   ) {
-    this.bucketName = this.configService.get<string>('GCP_STORAGE_BUCKET');
+    // Mismo fallback que ZplService, AdminService y app.config: sin él, este
+    // servicio resolvía `undefined` y leía de un bucket distinto al que escribe
+    // quien guarda los archivos. Un ZPL guardado por ZplService no se podría
+    // recuperar, y el fallo sería un 500 opaco en `.bucket(undefined)`.
+    this.bucketName =
+      this.configService.get<string>('GCP_STORAGE_BUCKET') ||
+      'zplpdf-app-files';
     this.storage = new Storage(this.googleAuthOptions);
   }
 
@@ -89,6 +95,35 @@ export class StorageService {
       .bucket(this.bucketName)
       .file(filePath)
       .save(content, { metadata: { contentType } });
+  }
+
+  /**
+   * Lee un archivo de texto del bucket.
+   *
+   * Devuelve `null` cuando el objeto ya no existe (404 de GCS) en vez de
+   * lanzar: los archivos con ciclo de vida — el ZPL original de una conversión
+   * caduca a los 15 días — desaparecen por diseño, y quien llama traduce esa
+   * ausencia a un 410, no a un 500.
+   *
+   * @param filePath Path del archivo en el bucket (ej: debug-zpl/uid/2026-08-08/job.zpl)
+   */
+  async readTextFile(filePath: string): Promise<string | null> {
+    try {
+      const [contents] = await this.storage
+        .bucket(this.bucketName)
+        .file(filePath)
+        .download();
+
+      return contents.toString('utf-8');
+    } catch (error) {
+      if (error?.code === 404) {
+        return null;
+      }
+      this.logger.error(
+        `Error al leer el archivo ${filePath}: ${error.message}`,
+      );
+      throw error;
+    }
   }
 
   /**

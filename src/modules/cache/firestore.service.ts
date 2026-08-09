@@ -392,6 +392,7 @@ export class FirestoreService {
           data.subscriptionPeriodStart,
         subscriptionPeriodEnd:
           data.subscriptionPeriodEnd?.toDate?.() || data.subscriptionPeriodEnd,
+        lastActivityAt: data.lastActivityAt?.toDate?.() || data.lastActivityAt,
       } as User;
     } catch (error) {
       this.logger.error(`Error al obtener usuario: ${error.message}`);
@@ -601,6 +602,45 @@ export class FirestoreService {
       this.logger.error(`Error al actualizar usuario: ${error.message}`);
       throw error;
     }
+  }
+
+  /**
+   * Conserva atómicamente la actividad más reciente conocida del usuario.
+   *
+   * La comparación vive dentro de la transacción porque dos borrados de
+   * historial pueden llegar en paralelo. Firestore reintenta la operación si
+   * cambia el documento leído, evitando que una fecha antigua se confirme
+   * después de una más reciente y haga retroceder `lastActivityAt`.
+   */
+  async preserveLastActivityAt(userId: string, candidate: Date): Promise<void> {
+    const ref = this.firestore.collection(this.usersCollection).doc(userId);
+
+    const toMilliseconds = (value: unknown): number | null => {
+      const normalized =
+        (value as { toDate?: () => Date })?.toDate?.() ?? value;
+      const date =
+        normalized instanceof Date
+          ? normalized
+          : new Date(normalized as string);
+      const milliseconds = date.getTime();
+      return Number.isNaN(milliseconds) ? null : milliseconds;
+    };
+
+    await this.firestore.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      const activityDates = [candidate, snapshot.data()?.lastActivityAt]
+        .map(toMilliseconds)
+        .filter((value): value is number => value !== null);
+
+      if (activityDates.length === 0) {
+        throw new Error('No valid activity date was found');
+      }
+
+      transaction.update(ref, {
+        lastActivityAt: new Date(Math.max(...activityDates)),
+        updatedAt: new Date(),
+      });
+    });
   }
 
   /**
@@ -1358,6 +1398,58 @@ export class FirestoreService {
       });
     } catch (error) {
       this.logger.error(`Error al escanear historial: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Devuelve un registro de historial por su doc id, o `null` si no existe.
+   * No filtra por usuario: el ownership lo valida quien llama, que es también
+   * quien decide qué error presentar.
+   */
+  async getConversionHistoryById(
+    id: string,
+  ): Promise<ConversionHistoryRecord | null> {
+    try {
+      const doc = await this.firestore
+        .collection(this.historyCollection)
+        .doc(id)
+        .get();
+
+      if (!doc.exists) {
+        return null;
+      }
+
+      const data = doc.data();
+      return {
+        ...data,
+        id: doc.id,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt,
+      } as ConversionHistoryRecord;
+    } catch (error) {
+      this.logger.error(
+        `Error al obtener registro de historial ${id}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Borra un registro de historial. El borrado no revierte `daily_stats`,
+   * `global_totals` ni `usage`, pero sí reduce los datos que leen directamente
+   * de `conversion_history`: `getTopUsers`, `getUserUsageHistory`,
+   * `getUsersWithHighUsage` y `getConversionsPaginated` (la lista de
+   * `/admin/conversions`). Ese efecto es deliberado porque el producto exige
+   * borrado físico, no soft delete.
+   */
+  async deleteConversionHistory(id: string): Promise<void> {
+    try {
+      await this.firestore.collection(this.historyCollection).doc(id).delete();
+      this.logger.log(`Registro de historial eliminado: ${id}`);
+    } catch (error) {
+      this.logger.error(
+        `Error al eliminar registro de historial ${id}: ${error.message}`,
+      );
       throw error;
     }
   }
@@ -5984,31 +6076,72 @@ export class FirestoreService {
         plan: string;
       }> = [];
 
-      // PHASE 1: Get lastActiveAt from conversion history for all users (parallel queries)
-      // lastActiveAt is NOT stored in user document - it must be calculated from conversions history
-      const historyPromises = usersSnapshot.docs.map(
-        (doc) =>
+      // PHASE 1: la última actividad sale de `users.lastActivityAt`, que
+      // recordConversion escribe en cada conversión. Es la fuente correcta
+      // porque el usuario no puede borrarla: derivarla del historial hacía que
+      // quien vacía su historial —ahora puede, con DELETE /users/history/:id—
+      // pareciera inactivo desde su alta y recibiera emails de retención el día
+      // después de convertir.
+      //
+      // El historial sigue como respaldo, y solo para los usuarios que aún no
+      // tienen el campo (convirtieron por última vez antes de que existiera).
+      // Eso además ahorra una query por usuario en el caso normal.
+      const lastActiveAtMap = new Map<string, Date | null>();
+      const porConfirmar: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+
+      // Umbral a partir del cual el usuario empieza a ser candidato a una
+      // campaña: por debajo de él no hay decisión que tomar, así que no hace
+      // falta confirmar nada. El 7 es el periodo más corto del summary.
+      const umbralDeCandidatura = Math.min(7, minDaysInactive);
+      const fechaDeCandidatura = new Date(
+        now.getTime() - umbralDeCandidatura * 24 * 60 * 60 * 1000,
+      );
+
+      for (const doc of usersSnapshot.docs) {
+        const registrada = doc.data().lastActivityAt;
+        const fecha = registrada?.toDate?.() || registrada || null;
+        lastActiveAtMap.set(doc.id, fecha);
+
+        // Solo se consulta el historial de quien el campo deja como candidato
+        // (o de quien no lo tiene). El campo se escribe fire-and-forget en
+        // recordConversion, así que puede haber fallado y estar desfasado: para
+        // quien va a recibir un email conviene confirmarlo contra el historial,
+        // que se escribe con await. Para el resto sería una query por cabeza.
+        if (!fecha || fecha <= fechaDeCandidatura) {
+          porConfirmar.push(doc);
+        }
+      }
+
+      const historySnapshots = await Promise.all(
+        porConfirmar.map((doc) =>
           this.firestore
             .collection(this.historyCollection)
             .where('userId', '==', doc.id)
             .orderBy('createdAt', 'desc')
             .limit(1)
             .get()
-            .catch(() => null), // Ignore errors (e.g., no index)
+            .catch(() => null),
+        ), // Ignore errors (e.g., no index)
       );
-      const historySnapshots = await Promise.all(historyPromises);
 
-      // Create Map of userId -> lastActiveAt
-      const lastActiveAtMap = new Map<string, Date | null>();
       historySnapshots.forEach((snapshot, index) => {
-        if (snapshot && !snapshot.empty) {
-          const historyData = snapshot.docs[0].data();
-          const lastActiveAt =
-            historyData.createdAt?.toDate?.() || historyData.createdAt || null;
-          lastActiveAtMap.set(usersSnapshot.docs[index].id, lastActiveAt);
-        } else {
-          lastActiveAtMap.set(usersSnapshot.docs[index].id, null);
-        }
+        if (!snapshot || snapshot.empty) return;
+
+        const historyData = snapshot.docs[0].data();
+        const delHistorial =
+          historyData.createdAt?.toDate?.() || historyData.createdAt || null;
+        if (!delHistorial) return;
+
+        // La más reciente de las dos fuentes. Ninguna es fiable por sí sola: el
+        // historial lo puede vaciar el usuario y el campo puede no haberse
+        // escrito. Quedarse con la mayor solo puede evitar un email de
+        // retención a alguien activo, nunca provocarlo.
+        const userId = porConfirmar[index].id;
+        const registrada = lastActiveAtMap.get(userId);
+        lastActiveAtMap.set(
+          userId,
+          !registrada || delHistorial > registrada ? delHistorial : registrada,
+        );
       });
 
       // PHASE 2: Calculate summary and collect filtered users
@@ -7136,6 +7269,59 @@ export class FirestoreService {
       };
     } catch (error) {
       this.logger.error(`Error getting ZPL debug files: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * De una lista de jobIds, devuelve los que tienen ZPL guardado, **cuándo** se
+   * guardó y su tamaño. Los que no aparecen en el mapa no tienen copia.
+   *
+   * Una sola llamada para toda la página del historial: los docs de
+   * `zpl_debug_files` usan el jobId como id, así que se resuelven con un
+   * `getAll` en vez de una query por fila.
+   *
+   * La fecha importa: el lifecycle del bucket cuenta desde que se subió el
+   * objeto, y eso ocurre al empezar la conversión, no al terminarla — la fila
+   * del historial nace después. Fechar la caducidad con el historial haría
+   * parecer al ZPL más joven de lo que es, y el flag prometería de más justo en
+   * el borde de la ventana.
+   *
+   * Responde a "¿se llegó a guardar el ZPL?", no a "¿sigue en el bucket?" — el
+   * doc sobrevive al archivo que el lifecycle ya borró.
+   */
+  async getSavedZplDatesByJobId(
+    jobIds: string[],
+  ): Promise<Map<string, { createdAt: Date | null; fileSize: number | null }>> {
+    const unicos = [...new Set(jobIds.filter(Boolean))];
+    if (unicos.length === 0) {
+      return new Map();
+    }
+
+    try {
+      const refs = unicos.map((jobId) =>
+        this.firestore.collection(this.zplDebugCollection).doc(jobId),
+      );
+      const docs = await this.firestore.getAll(...refs);
+
+      return new Map(
+        docs
+          .filter((doc) => doc.exists)
+          .map((doc) => {
+            const data = doc.data();
+            const createdAt = data?.createdAt;
+            return [
+              doc.id,
+              {
+                createdAt: createdAt?.toDate?.() || createdAt || null,
+                fileSize:
+                  typeof data?.fileSize === 'number' ? data.fileSize : null,
+              },
+            ];
+          }),
+      );
+    } catch (error) {
+      this.logger.error(`Error comprobando ZPLs guardados: ${error.message}`);
       throw error;
     }
   }

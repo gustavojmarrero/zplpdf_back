@@ -39,13 +39,12 @@ import {
   PLAN_FEATURES,
 } from '../../common/interfaces/user.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
+import { LabelSize, normalizeLabelSize } from './enums/label-size.enum.js';
 
-export enum LabelSize {
-  TWO_BY_ONE = '2x1',
-  TWO_BY_FOUR = '2x4',
-  FOUR_BY_TWO = '4x2',
-  FOUR_BY_SIX = '4x6',
-}
+// El enum vivía duplicado aquí y en `enums/label-size.enum.ts`, con los mismos
+// valores pero como dos tipos distintos para TypeScript. Se reexporta el
+// canónico para no romper a quien lo importa desde este módulo.
+export { LabelSize };
 
 // Interfaz para el estado de conversión
 interface ConversionJob {
@@ -110,15 +109,6 @@ export class ZplService {
     '4x2': '4x2',
     large: '4x6',
     '4x6': '4x6',
-  };
-
-  private readonly LABEL_SIZE_ENUM_MAP: Record<string, LabelSize> = {
-    small: LabelSize.TWO_BY_ONE,
-    '2x1': LabelSize.TWO_BY_ONE,
-    '2x4': LabelSize.TWO_BY_FOUR,
-    '4x2': LabelSize.FOUR_BY_TWO,
-    large: LabelSize.FOUR_BY_SIX,
-    '4x6': LabelSize.FOUR_BY_SIX,
   };
 
   constructor(
@@ -1701,9 +1691,7 @@ export class ZplService {
    * @returns LabelSize enum value
    */
   private getLabelSize(labelSize: string): LabelSize {
-    return (
-      this.LABEL_SIZE_ENUM_MAP[labelSize.toLowerCase()] ?? LabelSize.TWO_BY_ONE
-    );
+    return normalizeLabelSize(labelSize);
   }
 
   /**
@@ -2156,10 +2144,12 @@ export class ZplService {
 
     // Obtener el plan del usuario (batch solo disponible para pro/enterprise)
     let userPlan: UserPlan = 'pro';
+    let userEmail = 'unknown';
     if (userId) {
       try {
         const user = await this.usersService.getUserById(userId);
         userPlan = (user?.plan as UserPlan) || 'pro';
+        userEmail = user?.email || 'unknown';
       } catch {
         userPlan = 'pro'; // Default para batch
       }
@@ -2177,6 +2167,30 @@ export class ZplService {
       } catch (error) {
         this.logger.warn(
           `Error contando labels en ${file.fileName}: ${error.message}`,
+        );
+      }
+
+      // Cada archivo del batch acaba como una fila propia en el historial (ver
+      // recordConversion más abajo), así que tiene que dejar su ZPL guardado
+      // igual que una conversión individual: si no, esas filas nunca podrían
+      // reconvertirse y GET /users/history/:id/zpl devolvería siempre 410.
+      //
+      // Se lanza en paralelo con la conversión, pero la promesa se conserva: hay
+      // que esperarla antes de marcar el resultado. `updateZplDebugResult` usa
+      // update() y se traga el fallo si el doc aún no existe, de modo que un
+      // set() posterior dejaría el registro en `pending` para siempre.
+      let zplGuardado: Promise<void> = Promise.resolve();
+      if (userId) {
+        zplGuardado = this.saveZplForDebug(
+          file.content,
+          job.jobId,
+          userId,
+          userEmail,
+          labelSize,
+          labelCount,
+          outputFormat as OutputFormat,
+        ).catch((err) =>
+          this.logger.warn(`Failed to save ZPL for debug: ${err.message}`),
         );
       }
 
@@ -2244,6 +2258,15 @@ export class ZplService {
             undefined,
             periodInfo,
           );
+          // Update ZPL debug result
+          await zplGuardado;
+          this.firestoreService
+            .updateZplDebugResult(job.jobId, 'success')
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to update ZPL debug result: ${err.message}`,
+              ),
+            );
         }
 
         this.logger.log(
@@ -2275,6 +2298,15 @@ export class ZplService {
               `Error registrando conversión fallida: ${recordError.message}`,
             );
           }
+          // Update ZPL debug result
+          await zplGuardado;
+          this.firestoreService
+            .updateZplDebugResult(job.jobId, 'error', error.message)
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to update ZPL debug result: ${err.message}`,
+              ),
+            );
         }
       }
 
