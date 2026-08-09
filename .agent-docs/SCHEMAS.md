@@ -127,15 +127,19 @@ interface ConversionHistoryRecord extends ConversionHistory {
 
 `DELETE /users/history/:id` hace **borrado real**. No toca `usage` (la cuota no puede
 depender de una tabla que el usuario puede vaciar) ni los agregados de `daily_stats` /
-`global_totals`, pero la fila sí desaparece de `/admin/conversions`, que lee de esta
-misma colección.
+`global_totals`. Sí reduce los datos de los consumidores que leen
+`conversion_history` en crudo: `getTopUsers`, `getUserUsageHistory`,
+`getUsersWithHighUsage` y `getConversionsPaginated` (la lista de
+`/admin/conversions`).
 
 `canReconvert` no se persiste ni vive en esta interfaz: es un campo de
-`ConversionHistoryItemDto` que se calcula al responder, y exige las dos condiciones —
-que exista el doc de `zpl_debug_files` con ese jobId (el ZPL se llegó a guardar) y que
-su `createdAt` esté dentro de `ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle
-del bucket sobre `debug-zpl/`). Las filas que el flujo batch creó antes de agosto de 2026
-no tienen ZPL guardado y nunca son reconvertibles.
+`ConversionHistoryItemDto` que se calcula al responder, y exige que exista el doc de
+`zpl_debug_files` con ese jobId (el ZPL se llegó a guardar), que su `createdAt` esté
+dentro de `ZPL_RETENTION_DAYS` (15 días, impuestos por el lifecycle del bucket sobre
+`debug-zpl/`) y que el `fileSize` conocido no supere
+`MAX_RECONVERTIBLE_ZPL_SIZE_BYTES`. Un tamaño ausente no bloquea las metadata antiguas.
+Las filas que el flujo batch creó antes de agosto de 2026 no tienen ZPL guardado y
+nunca son reconvertibles.
 
 **Queries:**
 - User history: `firestore.collection('conversion_history').where('userId', '==', userId).orderBy('createdAt', 'desc').limit(50)`

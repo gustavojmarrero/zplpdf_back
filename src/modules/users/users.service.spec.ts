@@ -11,7 +11,11 @@ import {
   GoneException,
   NotFoundException,
 } from '@nestjs/common';
-import { UsersService, MAX_HISTORY_SCAN } from './users.service.js';
+import {
+  UsersService,
+  MAX_HISTORY_SCAN,
+  MAX_RECONVERTIBLE_ZPL_SIZE_BYTES,
+} from './users.service.js';
 import { ZPL_RETENTION_DAYS } from '../../common/interfaces/conversion-history.interface.js';
 import {
   GetHistoryQueryDto,
@@ -76,7 +80,12 @@ describe('UsersService — getUserHistory', () => {
         .fn()
         .mockImplementation(
           async (jobIds: string[]) =>
-            new Map(jobIds.map((jobId) => [jobId, new Date()])),
+            new Map(
+              jobIds.map((jobId) => [
+                jobId,
+                { createdAt: new Date(), fileSize: null },
+              ]),
+            ),
         ),
     };
     service.storageService = { generateSignedUrlForPath };
@@ -781,7 +790,9 @@ describe('UsersService — acciones sobre el historial', () => {
     debugFile?: Record<string, unknown> | null;
     zplContent?: string | null;
     history?: Record<string, unknown>[];
-    zplsGuardados?: Map<string, Date | null> | Error;
+    zplsGuardados?:
+      | Map<string, { createdAt: Date | null; fileSize: number | null }>
+      | Error;
     preserveLastActivityAtError?: Error;
   }) {
     const firestoreService = {
@@ -824,7 +835,12 @@ describe('UsersService — acciones sobre el historial', () => {
           // Por defecto, todos los jobs tienen su ZPL guardado hoy mismo.
           return Promise.resolve(
             overrides.zplsGuardados ??
-              new Map(jobIds.map((jobId) => [jobId, new Date()])),
+              new Map(
+                jobIds.map((jobId) => [
+                  jobId,
+                  { createdAt: new Date(), fileSize: null },
+                ]),
+              ),
           );
         }),
       // Si algún camino intentara tocar la cuota, el test lo vería aquí.
@@ -1074,6 +1090,25 @@ describe('UsersService — acciones sobre el historial', () => {
       expect(storageService.readTextFile).not.toHaveBeenCalled();
     });
 
+    it('usa la fecha reciente del historial cuando la metadata no trae createdAt', async () => {
+      const { service, storageService } = buildService({
+        record: registroDeHistorial({ createdAt: diasAtras(1) }),
+        debugFile: {
+          userId: UID,
+          storagePath: 'debug-zpl/uid/2026-08-08/job-1.zpl',
+        },
+      });
+
+      await expect(service.getHistoryZpl(UID, HISTORY_ID)).resolves.toEqual({
+        zplContent: '^XA^FDhola^FS^XZ',
+        labelSize: '4x6',
+        outputFormat: 'pdf',
+      });
+      expect(storageService.readTextFile).toHaveBeenCalledWith(
+        'debug-zpl/uid/2026-08-08/job-1.zpl',
+      );
+    });
+
     it('responde 410 cuando nunca se guardó el ZPL del job', async () => {
       // saveZplForDebug es fire-and-forget: puede haber fallado.
       const { service } = buildService({ debugFile: null });
@@ -1111,7 +1146,15 @@ describe('UsersService — acciones sobre el historial', () => {
         history: [
           registroDeHistorial({ createdAt: diasAtras(ZPL_RETENTION_DAYS + 1) }),
         ],
-        zplsGuardados: new Map([['job-1', diasAtras(ZPL_RETENTION_DAYS + 1)]]),
+        zplsGuardados: new Map([
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(ZPL_RETENTION_DAYS + 1),
+              fileSize: null,
+            },
+          ],
+        ]),
       });
 
       const { data } = await service.getUserHistory(UID, {});
@@ -1129,7 +1172,13 @@ describe('UsersService — acciones sobre el historial', () => {
           }),
         ],
         zplsGuardados: new Map([
-          ['job-1', diasAtras(ZPL_RETENTION_DAYS + 0.5)],
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(ZPL_RETENTION_DAYS + 0.5),
+              fileSize: null,
+            },
+          ],
         ]),
       });
 
@@ -1141,7 +1190,60 @@ describe('UsersService — acciones sobre el historial', () => {
     it('recurre a la fecha del historial si el doc de metadata no la trae', async () => {
       const { service } = buildService({
         history: [registroDeHistorial({ createdAt: diasAtras(1) })],
-        zplsGuardados: new Map([['job-1', null]]),
+        zplsGuardados: new Map([
+          ['job-1', { createdAt: null, fileSize: null }],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(true);
+    });
+
+    it('no promete reconvertir un ZPL cuyo tamaño conocido supera el tope del body', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(1),
+              fileSize: MAX_RECONVERTIBLE_ZPL_SIZE_BYTES + 1,
+            },
+          ],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(false);
+    });
+
+    it('permite reconvertir un ZPL cuyo tamaño conocido queda bajo el tope', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([
+          [
+            'job-1',
+            {
+              createdAt: diasAtras(1),
+              fileSize: MAX_RECONVERTIBLE_ZPL_SIZE_BYTES - 1,
+            },
+          ],
+        ]),
+      });
+
+      const { data } = await service.getUserHistory(UID, {});
+
+      expect(data[0].canReconvert).toBe(true);
+    });
+
+    it('no bloquea la reconversión cuando la metadata antigua no trae tamaño', async () => {
+      const { service } = buildService({
+        history: [registroDeHistorial({ createdAt: diasAtras(1) })],
+        zplsGuardados: new Map([
+          ['job-1', { createdAt: diasAtras(1), fileSize: null }],
+        ]),
       });
 
       const { data } = await service.getUserHistory(UID, {});
@@ -1155,7 +1257,10 @@ describe('UsersService — acciones sobre el historial', () => {
       // el botón devolvería 410 al pulsarlo.
       const { service } = buildService({
         history: [registroDeHistorial({ createdAt: diasAtras(1) })],
-        zplsGuardados: new Map<string, Date | null>(),
+        zplsGuardados: new Map<
+          string,
+          { createdAt: Date | null; fileSize: number | null }
+        >(),
       });
 
       const { data } = await service.getUserHistory(UID, {});

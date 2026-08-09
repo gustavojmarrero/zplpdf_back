@@ -48,19 +48,21 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
   inexistente. Un `403` confirmaría que el id existe.
 - **Borrado real**, y no toca `usage`: si borrar filas descontara PDFs del período,
   cualquiera reiniciaría su cuota vaciando el historial. Las métricas viven agregadas
-  en `daily_stats` / `global_totals`, así que tampoco se ven afectadas. El PDF de
-  Cloud Storage se queda donde está.
+  en `daily_stats` / `global_totals`, así que tampoco se ven afectadas. Sí pierden la
+  fila los consumidores que leen `conversion_history` en crudo: `getTopUsers`,
+  `getUserUsageHistory`, `getUsersWithHighUsage` y `getConversionsPaginated` (la
+  lista de `/admin/conversions`). El PDF de Cloud Storage se queda donde está.
 - **Retención del ZPL: 15 días** (`ZPL_RETENTION_DAYS`). No la decide la aplicación:
   la impone una regla de lifecycle del bucket `zplpdf-app-files` que borra el prefijo
   `debug-zpl/` a los 15 días (`gsutil lifecycle get gs://zplpdf-app-files`). Si se
   cambia esa regla hay que actualizar la constante.
 - Pasada esa ventana, `GET /users/history/:id/zpl` responde `410 ZPL_NOT_AVAILABLE`.
   Para no descubrirlo a base de errores, cada ítem de `GET /users/history` trae
-  `canReconvert: boolean`. Son **dos** condiciones y hacen falta las dos: que el ZPL
-  se llegara a guardar (una consulta en lote a `zpl_debug_files`, solo con los jobIds
-  de la página; los docs usan el jobId como id) y que siga dentro de la ventana,
-  contada desde que se guardó el ZPL —no desde la fila del historial, que nace al
-  terminar la conversión mientras el objeto se sube al empezarla—.
+  `canReconvert: boolean`. Exige que el ZPL se llegara a guardar (una consulta en lote
+  a `zpl_debug_files`, solo con los jobIds de la página; los docs usan el jobId como
+  id), que siga dentro de la ventana —contada desde que se guardó el ZPL, no desde la
+  fila del historial— y que su `fileSize` conocido no supere
+  `MAX_RECONVERTIBLE_ZPL_SIZE_BYTES`. Un tamaño ausente no bloquea metadata antigua.
   Las filas creadas por batch **antes** de agosto de 2026 no tienen ZPL: el flujo
   batch registraba historial sin llamar a `saveZplForDebug`. Salen con
   `canReconvert: false` para siempre.

@@ -1435,10 +1435,12 @@ export class FirestoreService {
   }
 
   /**
-   * Borra un registro de historial. Borrado real: el historial es un registro
-   * de consulta del usuario, no la fuente de las métricas — esas viven
-   * agregadas en `daily_stats` y `global_totals`, y el consumo del período en
-   * `usage`. Ninguno de los tres se toca aquí.
+   * Borra un registro de historial. El borrado no revierte `daily_stats`,
+   * `global_totals` ni `usage`, pero sí reduce los datos que leen directamente
+   * de `conversion_history`: `getTopUsers`, `getUserUsageHistory`,
+   * `getUsersWithHighUsage` y `getConversionsPaginated` (la lista de
+   * `/admin/conversions`). Ese efecto es deliberado porque el producto exige
+   * borrado físico, no soft delete.
    */
   async deleteConversionHistory(id: string): Promise<void> {
     try {
@@ -7272,8 +7274,8 @@ export class FirestoreService {
   }
 
   /**
-   * De una lista de jobIds, devuelve los que tienen ZPL guardado y **cuándo** se
-   * guardó. Los que no aparecen en el mapa no tienen copia.
+   * De una lista de jobIds, devuelve los que tienen ZPL guardado, **cuándo** se
+   * guardó y su tamaño. Los que no aparecen en el mapa no tienen copia.
    *
    * Una sola llamada para toda la página del historial: los docs de
    * `zpl_debug_files` usan el jobId como id, así que se resuelven con un
@@ -7290,7 +7292,7 @@ export class FirestoreService {
    */
   async getSavedZplDatesByJobId(
     jobIds: string[],
-  ): Promise<Map<string, Date | null>> {
+  ): Promise<Map<string, { createdAt: Date | null; fileSize: number | null }>> {
     const unicos = [...new Set(jobIds.filter(Boolean))];
     if (unicos.length === 0) {
       return new Map();
@@ -7306,8 +7308,16 @@ export class FirestoreService {
         docs
           .filter((doc) => doc.exists)
           .map((doc) => {
-            const createdAt = doc.data()?.createdAt;
-            return [doc.id, createdAt?.toDate?.() || createdAt || null];
+            const data = doc.data();
+            const createdAt = data?.createdAt;
+            return [
+              doc.id,
+              {
+                createdAt: createdAt?.toDate?.() || createdAt || null,
+                fileSize:
+                  typeof data?.fileSize === 'number' ? data.fileSize : null,
+              },
+            ];
           }),
       );
     } catch (error) {

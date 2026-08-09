@@ -73,6 +73,14 @@ export const DEFAULT_HISTORY_LIMIT = 25;
  */
 export const MAX_HISTORY_SCAN = 1000;
 
+/**
+ * Máximo que se ofrece para reconversión. Aunque el parser admite 5 MiB, el
+ * ZPL vuelve dentro de JSON y sus saltos, barras y comillas se escapan; reservar
+ * 1 MiB deja margen para que esa sobrecarga no haga que `POST /zpl/convert`
+ * rechace el body.
+ */
+export const MAX_RECONVERTIBLE_ZPL_SIZE_BYTES = 4 * 1024 * 1024;
+
 /** TTL de la caché en memoria del escaneo de historial. */
 const HISTORY_SCAN_CACHE_TTL_MS = 60_000;
 
@@ -439,14 +447,16 @@ export class UsersService {
   }
 
   /**
-   * Marca cada fila con si admite "reconvertir". Son dos condiciones y hacen
-   * falta las dos:
+   * Marca cada fila con si admite "reconvertir". Las condiciones deben cumplirse
+   * a la vez:
    *
    *  - que se guardara el ZPL (una sola consulta en lote para toda la página).
    *    No todas las filas lo tienen: hasta este cambio, el flujo batch creaba
    *    historial sin guardar ZPL, así que esas filas nunca podrán reconvertirse.
    *  - que el ZPL siga dentro de la ventana de retención, porque el doc de
    *    metadata sobrevive al archivo que el bucket ya borró.
+   *  - que el tamaño conocido quepa en el body JSON del conversor. La metadata
+   *    antigua sin `fileSize` no se bloquea porque podría ser perfectamente apta.
    *
    * La ventana se cuenta desde que se guardó el ZPL, no desde que se registró
    * la conversión: el objeto se sube al empezar y la fila del historial nace al
@@ -460,7 +470,10 @@ export class UsersService {
   private async resolverReconvertibles(
     records: ConversionHistoryRecord[],
   ): Promise<Set<string>> {
-    let zplsGuardados = new Map<string, Date | null>();
+    let zplsGuardados = new Map<
+      string,
+      { createdAt: Date | null; fileSize: number | null }
+    >();
     try {
       zplsGuardados = await this.firestoreService.getSavedZplDatesByJobId(
         records.map((record) => record.jobId),
@@ -473,13 +486,17 @@ export class UsersService {
 
     return new Set(
       records
-        .filter(
-          (record) =>
-            zplsGuardados.has(record.jobId) &&
+        .filter((record) => {
+          const zplGuardado = zplsGuardados.get(record.jobId);
+          return (
+            zplGuardado !== undefined &&
             this.isWithinZplRetention(
-              zplsGuardados.get(record.jobId) ?? record.createdAt,
-            ),
-        )
+              zplGuardado.createdAt ?? record.createdAt,
+            ) &&
+            (zplGuardado.fileSize === null ||
+              zplGuardado.fileSize <= MAX_RECONVERTIBLE_ZPL_SIZE_BYTES)
+          );
+        })
         .map((record) => record.id),
     );
   }
@@ -837,11 +854,13 @@ export class UsersService {
     );
 
     // El lifecycle puede tardar hasta 24h en borrar el objeto. Respetar la edad
-    // de la metadata evita que ese retraso amplíe la ventana contractual.
+    // de la metadata evita que ese retraso amplíe la ventana contractual. Los
+    // docs antiguos sin fecha usan la misma fecha de respaldo que el listado,
+    // para que `canReconvert` y este endpoint no discrepen.
     if (
       !debugFile ||
       debugFile.userId !== userId ||
-      !this.isWithinZplRetention(debugFile.createdAt)
+      !this.isWithinZplRetention(debugFile.createdAt ?? record.createdAt)
     ) {
       throw zplNoLongerAvailable;
     }
