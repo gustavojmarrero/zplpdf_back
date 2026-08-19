@@ -138,6 +138,187 @@ describe('ZplService — bloques de configuración sin contenido', () => {
     it('mapea 4x6 al enum correcto', () => {
       expect((service as any).getLabelSize('4x6')).toBe(LabelSize.FOUR_BY_SIX);
     });
+
+    it('mapea 50x80mm (Phomemo M110) al enum correcto (issue #101)', () => {
+      expect((service as any).getLabelSize('50x80mm')).toBe(
+        LabelSize.FIFTY_BY_EIGHTY_MM,
+      );
+    });
+  });
+});
+
+/**
+ * issue #100: el nombre de descarga para free/lite (`zplpdf_size_timestamp`)
+ * salía con la hora cortada a la mitad y en UTC. `generateFilenames` arma
+ * ahora el timestamp explícitamente en GMT-6 en vez de recortar un ISO a
+ * ciegas.
+ */
+describe('ZplService — generateFilenames (issue #100: timestamp truncado)', () => {
+  function buildService(): ZplService {
+    const configService: any = { get: jest.fn(() => 'test-bucket') };
+    return new ZplService(configService, {} as any, {} as any, {}, {} as any);
+  }
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('genera fecha y hora completas en GMT-6 (minutos incluidos), no un ISO recortado', () => {
+    // 21:42:16.123Z UTC = 15:42 GMT-6 (Mérida)
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-19T21:42:16.123Z'));
+    const service = buildService();
+
+    const { downloadFilename } = (service as any).generateFilenames(
+      'job-1',
+      '4x2',
+    );
+
+    expect(downloadFilename).toBe('zplpdf_4x2_20260819T1542.pdf');
+  });
+
+  it('dos conversiones separadas por menos de 10 minutos producen nombres distintos', () => {
+    const service = buildService();
+
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-19T21:40:00.000Z'));
+    const first = (service as any).generateFilenames('job-1', '4x2');
+
+    jest.setSystemTime(new Date('2026-08-19T21:45:00.000Z'));
+    const second = (service as any).generateFilenames('job-2', '4x2');
+
+    expect(first.downloadFilename).not.toBe(second.downloadFilename);
+  });
+
+  it('usa GMT-6 y no UTC: una conversión nocturna en México no salta al día siguiente', () => {
+    // 19:00 hora local (Mérida) = 01:00 UTC del día siguiente
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-20T01:00:00.000Z'));
+    const service = buildService();
+
+    const { downloadFilename } = (service as any).generateFilenames(
+      'job-1',
+      '4x2',
+    );
+
+    expect(downloadFilename).toBe('zplpdf_4x2_20260819T1900.pdf');
+  });
+
+  it('sigue traduciendo los alias (large -> 4x6) igual que antes de unificar los mapas de tamaño', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-19T21:42:00.000Z'));
+    const service = buildService();
+
+    const { downloadFilename } = (service as any).generateFilenames(
+      'job-1',
+      'large',
+    );
+
+    expect(downloadFilename).toBe('zplpdf_4x6_20260819T1542.pdf');
+  });
+
+  it('el tamaño nuevo (50x80mm) sale legible en el nombre de descarga', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-19T21:42:00.000Z'));
+    const service = buildService();
+
+    const { downloadFilename } = (service as any).generateFilenames(
+      'job-1',
+      '50x80mm',
+    );
+
+    expect(downloadFilename).toBe('zplpdf_50x80mm_20260819T1542.pdf');
+  });
+});
+
+/**
+ * issue #101, riesgo 2: el batch no tiene `@IsEnum` (acepta string libre a
+ * propósito para no romper el historial), así que un tamaño no reconocido
+ * debe rechazarse explícitamente en vez de convertirse en 2x1 en silencio.
+ */
+describe('ZplService — validación de labelSize en el batch (issue #101)', () => {
+  const SIMPLE_ZPL = '^XA^FO50,50^A0,30^FDtest^FS^XZ';
+
+  function buildBatchService(saveErrorLog: jest.Mock) {
+    const configService: any = { get: jest.fn(() => 'test-bucket') };
+    const usersService: any = {
+      getUserById: jest.fn().mockResolvedValue({
+        id: 'uid-b',
+        email: 'batch@ejemplo.com',
+        plan: 'pro',
+      }),
+      getEffectivePlan: jest.fn().mockReturnValue('pro'),
+      checkCanConvert: jest
+        .fn()
+        .mockResolvedValue({ allowed: true, userEmail: 'batch@ejemplo.com' }),
+    };
+    return new ZplService(
+      configService,
+      { saveErrorLog } as any,
+      usersService,
+      {} as any,
+      {} as any,
+    );
+  }
+
+  it('rechaza un tamaño no reconocido con INVALID_LABEL_SIZE en vez de convertirlo en 2x1', async () => {
+    const saveErrorLog = jest
+      .fn()
+      .mockResolvedValue({ id: 'x', errorId: 'ERR-7' });
+    const service = buildBatchService(saveErrorLog);
+
+    await expect(
+      service.startBatchConversion(
+        'uid-b',
+        [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
+        'tamano-inventado',
+      ),
+    ).rejects.toThrow();
+
+    expect(saveErrorLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'INVALID_LABEL_SIZE',
+        userId: 'uid-b',
+        userEmail: 'batch@ejemplo.com',
+      }),
+    );
+  });
+
+  it('acepta 50x80mm: pasa el gate de labelSize y llega hasta guardar el batch', async () => {
+    const saveErrorLog = jest
+      .fn()
+      .mockResolvedValue({ id: 'x', errorId: 'ERR-8' });
+    const configService: any = { get: jest.fn(() => 'test-bucket') };
+    const usersService: any = {
+      getUserById: jest.fn().mockResolvedValue({
+        id: 'uid-b',
+        email: 'batch@ejemplo.com',
+        plan: 'pro',
+      }),
+      getEffectivePlan: jest.fn().mockReturnValue('pro'),
+      checkCanConvert: jest
+        .fn()
+        .mockResolvedValue({ allowed: true, userEmail: 'batch@ejemplo.com' }),
+    };
+    // saveBatchJob corta el flujo justo después del gate de labelSize, sin
+    // necesidad de simular processBatchFiles (que sigue en segundo plano sin
+    // await) al completo.
+    const saveBatchJob = jest.fn().mockRejectedValue(new Error('stop-here'));
+    const service = new ZplService(
+      configService,
+      { saveErrorLog, saveBatchJob } as any,
+      usersService,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(
+      service.startBatchConversion(
+        'uid-b',
+        [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
+        '50x80mm',
+      ),
+    ).rejects.toThrow();
+
+    expect(saveBatchJob).toHaveBeenCalled();
+    expect(saveErrorLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'INVALID_LABEL_SIZE' }),
+    );
   });
 });
 
