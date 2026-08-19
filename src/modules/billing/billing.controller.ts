@@ -45,17 +45,33 @@ export class BillingController {
     type: Number,
     description: 'Max invoices to return (default: 10)',
   })
+  @ApiQuery({
+    name: 'starting_after',
+    required: false,
+    type: String,
+    description:
+      'Cursor de paginación: ID de la última factura de la página anterior. Debe pertenecer al customer del usuario autenticado.',
+  })
   @ApiResponse({
     status: 200,
     description: 'List of invoices',
     type: InvoicesResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'El cursor `starting_after` no pertenece a este usuario',
+  })
   async getInvoices(
     @CurrentUser() user: FirebaseUser,
     @Query('limit') limit?: string,
+    @Query('starting_after') startingAfter?: string,
   ): Promise<InvoicesResponseDto> {
     const parsedLimit = limit ? parseInt(limit, 10) : 10;
-    return this.billingService.getInvoices(user.uid, parsedLimit);
+    return this.billingService.getInvoices(
+      user.uid,
+      parsedLimit,
+      startingAfter,
+    );
   }
 
   @Get('payment-methods')
