@@ -39,7 +39,15 @@ export class BatchConvertDto {
   @Type(() => BatchFileDto)
   files: BatchFileDto[];
 
-  @ApiProperty({ description: 'Label size (e.g., 4x6, 4x4)' })
+  // NOTA: este DTO documenta la forma del endpoint en Swagger, pero
+  // `POST /zpl/batch` no lo usa como `@Body()` (recibe multipart/form-data vía
+  // `@UploadedFiles()` + un tipo ad-hoc en el controller, no esta clase), así
+  // que `class-validator` nunca corre sobre este campo. La validación real de
+  // labelSize (incluida contra valores no reconocidos, issue #101) vive en
+  // `ZplService.startBatchConversion`, que sigue aceptando string libre a
+  // propósito: el batch históricamente guarda el tamaño sin normalizar
+  // (`large`, `small`, …) en conversion_history.
+  @ApiProperty({ description: 'Label size (e.g., 4x6, 50x80mm)' })
   @IsString()
   @IsNotEmpty()
   labelSize: string;

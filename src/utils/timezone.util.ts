@@ -71,6 +71,20 @@ export function getDateStringInTimezone(date: Date = new Date()): string {
 }
 
 /**
+ * Convierte una fecha UTC a hora compacta en GMT-6 (HHmm), para timestamps
+ * legibles de nombre de archivo. El offset de Mérida es de horas completas,
+ * así que los minutos no cambian entre UTC y GMT-6: solo se recalcula la hora
+ * (con acarreo circular; a diferencia de `getDateStringInTimezone` no importa
+ * si el acarreo cruza de día, porque este resultado no incluye la fecha).
+ */
+export function getTimeStringInTimezone(date: Date = new Date()): string {
+  const localHours = (date.getUTCHours() - GMT_OFFSET_HOURS + 24) % 24;
+  const hoursStr = String(localHours).padStart(2, '0');
+  const minutesStr = String(date.getUTCMinutes()).padStart(2, '0');
+  return `${hoursStr}${minutesStr}`;
+}
+
+/**
  * Convierte un string de fecha (YYYY-MM-DD, o ISO con hora) al instante de
  * inicio de ese día en GMT-6.
  * Ej: "2026-06-11" → 2026-06-11T06:00:00.000Z (= 00:00:00 GMT-6)

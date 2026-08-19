@@ -655,7 +655,7 @@ export class UsersService {
       }
       if (query.labelSize && record.labelSize !== query.labelSize) return false;
 
-      if (search && !record.jobId?.toLowerCase().startsWith(search)) {
+      if (search && !this.matchesSearch(record, search)) {
         return false;
       }
 
@@ -668,6 +668,43 @@ export class UsersService {
 
       return true;
     });
+  }
+
+  /**
+   * issue #94: `search` era prefix-match solo sobre `jobId`, justo el único
+   * campo visible en el historial que el buscador no cubría — `labelSize`,
+   * `outputFormat` y `status` ya tienen filtros dedicados. Pasa a subcadena
+   * (no prefijo: un usuario que pega el tramo final de un jobId copiado de una
+   * URL de descarga antes no encontraba nada) y a multi-campo, para que un
+   * único cuadro de búsqueda vuelva a cubrir lo que el filtrado en cliente
+   * ofrecía antes de que el historial se paginara en servidor.
+   *
+   * Sigue siendo en memoria sobre el bloque ya escaneado (`getScannedHistory`),
+   * así que no exige índices nuevos en Firestore.
+   *
+   * `search` ya llega en minúsculas (recortado en `filterHistory`).
+   */
+  private matchesSearch(
+    record: ConversionHistoryRecord,
+    search: string,
+  ): boolean {
+    if (record.jobId?.toLowerCase().includes(search)) return true;
+    if (record.labelSize?.toLowerCase().includes(search)) return true;
+    if (record.outputFormat?.toLowerCase().includes(search)) return true;
+
+    // labelCount es numérico: compararlo como subcadena de texto contra un
+    // término no numérico ("png", "4x6"...) no podría dar falso positivo —
+    // ninguna cifra contiene letras—, pero limitar la comparación a términos
+    // numéricos deja explícito que este campo solo entra en juego cuando el
+    // usuario busca por cantidad de etiquetas.
+    if (
+      /^\d+$/.test(search) &&
+      String(record.labelCount ?? '').includes(search)
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   private sortHistory(

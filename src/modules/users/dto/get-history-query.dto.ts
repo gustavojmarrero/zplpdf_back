@@ -72,7 +72,10 @@ export class GetHistoryQueryDto {
   limit?: number = 25;
 
   @ApiPropertyOptional({
-    description: 'Free text over jobId (prefix match, case-insensitive)',
+    description:
+      'Free text, case-insensitive substring match over jobId, labelSize ' +
+      'and outputFormat; also matched against labelCount when the term is ' +
+      'numeric',
     maxLength: 100,
   })
   @IsOptional()
