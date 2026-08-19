@@ -103,17 +103,20 @@ export class BillingService {
       return { invoices: [], hasMore: false };
     }
 
-    // El cursor es un ID de factura que llega tal cual desde el cliente. Fuera
-    // del try: si no es de este customer, queremos el 403 propio, no que el
-    // catch de abajo lo tape con un 400 genérico de "Failed to fetch invoices".
-    if (startingAfter) {
-      await this.assertInvoiceBelongsToCustomer(
-        startingAfter,
-        user.stripeCustomerId,
-      );
-    }
-
     try {
+      // El cursor es un ID de factura que llega tal cual desde el cliente:
+      // se valida contra el customer antes de reenviarlo a Stripe. Dentro del
+      // try para que un fallo de Stripe al validar (rate limit, red, etc.)
+      // caiga en el mismo 400 genérico que un fallo al listar, en vez de
+      // escapar sin manejar como 500 — el catch de abajo relanza el 403
+      // propio y no lo tapa.
+      if (startingAfter) {
+        await this.assertInvoiceBelongsToCustomer(
+          startingAfter,
+          user.stripeCustomerId,
+        );
+      }
+
       const invoices = await this.stripe.invoices.list({
         customer: user.stripeCustomerId,
         limit,
@@ -141,6 +144,12 @@ export class BillingService {
         hasMore: invoices.has_more,
       };
     } catch (error) {
+      // El cursor ajeno o inexistente ya trae su propio 403: no lo tapamos
+      // con el 400 genérico de abajo.
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
+
       this.logger.error(
         `Error fetching invoices for user ${userId}: ${error.message}`,
       );
@@ -155,10 +164,10 @@ export class BillingService {
    * `stripe.invoices.list` ya filtra por `customer`, pero eso no es motivo
    * para confiar en su combinación con `starting_after` como control de
    * acceso: es un ID que pone el cliente, y sin esta comprobación serviría
-   * como oráculo para sondear si una factura ajena existe. Se valida aparte,
-   * no dentro del try de `getInvoices`, para que un cursor inválido salga
-   * como 403 y no se enmascare con el 400 genérico de "Failed to fetch
-   * invoices".
+   * como oráculo para sondear si una factura ajena existe. Solo lanza
+   * `ForbiddenException` (cursor ajeno o inexistente); cualquier otro fallo
+   * de Stripe (rate limit, red) se relanza tal cual para que el catch de
+   * `getInvoices` lo trate igual que un fallo al listar.
    */
   private async assertInvoiceBelongsToCustomer(
     invoiceId: string,

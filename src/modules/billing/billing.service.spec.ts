@@ -1231,6 +1231,23 @@ describe('BillingService — perfil fiscal', () => {
         ).rejects.toBeInstanceOf(ForbiddenException);
         expect(list).not.toHaveBeenCalled();
       });
+
+      it('convierte en 400, no en 500, un fallo de Stripe al validar el cursor que no es "no existe"', async () => {
+        // Rate limit, red, credenciales: cualquier fallo de Stripe que no sea
+        // resource_missing debe caer en el mismo 400 genérico que un fallo al
+        // listar, no escapar sin manejar hacia un 500.
+        const list = jest.fn();
+        const retrieve = jest.fn().mockRejectedValue({
+          code: 'rate_limit_error',
+          message: 'Too many requests',
+        });
+        const service = buildInvoicesService({ list, retrieve });
+
+        await expect(
+          service.getInvoices('uid-1', 10, 'in_0'),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(list).not.toHaveBeenCalled();
+      });
     });
   });
 });
