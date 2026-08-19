@@ -81,6 +81,8 @@
     "typescript": "^5.1.3"
   },
   "jest": {
+    "maxWorkers": 2,
+    "workerIdleMemoryLimit": "1500MB",
     "moduleFileExtensions": [
       "js",
       "json",
