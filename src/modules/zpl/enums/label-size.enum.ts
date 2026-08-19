@@ -66,6 +66,30 @@ export const LABEL_SIZE_DIMENSIONS: Record<LabelSize, string> = {
 };
 
 /**
+ * Lookup seguro en `LABEL_SIZE_ALIASES`. `constructor` y `__proto__` ya están
+ * en minúsculas, así que `.toLowerCase()` no los cambia, y un acceso directo
+ * por corchete (`LABEL_SIZE_ALIASES['constructor']`) encuentra la propiedad
+ * HEREDADA de `Object.prototype` en vez de `undefined` — cualquiera de los
+ * dos "cuela" como tamaño reconocido y `normalizeLabelSize` acabaría
+ * devolviendo, en tiempo de ejecución, el constructor `Object` en vez de un
+ * `LabelSize`. `Object.prototype.hasOwnProperty.call` descarta esa herencia
+ * (no se usa `Object.hasOwn`: el `target` de tsconfig es ES2021, anterior a
+ * su tipado). Hallazgo del review de Codex en el PR #104.
+ *
+ * Exportado para que cualquier otro lookup directo sobre `LABEL_SIZE_ALIASES`
+ * (p. ej. el segmento de tamaño del nombre de descarga en `zpl.service.ts`)
+ * pase por el mismo guard en vez de reintroducir el bug con un acceso crudo.
+ */
+export function resolveLabelSizeAlias(
+  labelSize: string | undefined,
+): LabelSize | undefined {
+  const key = labelSize?.toLowerCase() ?? '';
+  return Object.prototype.hasOwnProperty.call(LABEL_SIZE_ALIASES, key)
+    ? LABEL_SIZE_ALIASES[key]
+    : undefined;
+}
+
+/**
  * true si el valor (case-insensitive) es un tamaño o alias reconocido, es
  * decir si `normalizeLabelSize` lo resolvería sin caer en el fallback.
  *
@@ -74,7 +98,7 @@ export const LABEL_SIZE_DIMENSIONS: Record<LabelSize, string> = {
  * no registra nada: quien lo llama decide cómo rechazar el valor inválido.
  */
 export function isKnownLabelSize(labelSize: string | undefined): boolean {
-  return LABEL_SIZE_ALIASES[labelSize?.toLowerCase() ?? ''] !== undefined;
+  return resolveLabelSizeAlias(labelSize) !== undefined;
 }
 
 /**
@@ -96,7 +120,7 @@ export function isKnownLabelSize(labelSize: string | undefined): boolean {
  * lugar de confiar en este fallback.
  */
 export function normalizeLabelSize(labelSize: string | undefined): LabelSize {
-  const resolved = LABEL_SIZE_ALIASES[labelSize?.toLowerCase() ?? ''];
+  const resolved = resolveLabelSizeAlias(labelSize);
   if (resolved === undefined) {
     logger.warn(
       `Tamaño de etiqueta no reconocido ("${labelSize}"), usando 2x1 por defecto`,

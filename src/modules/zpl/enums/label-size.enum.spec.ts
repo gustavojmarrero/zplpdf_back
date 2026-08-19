@@ -4,6 +4,7 @@ import {
   LABEL_SIZE_DIMENSIONS,
   isKnownLabelSize,
   normalizeLabelSize,
+  resolveLabelSizeAlias,
 } from './label-size.enum.js';
 
 /**
@@ -67,6 +68,22 @@ describe('label-size.enum — isKnownLabelSize', () => {
       expect(isKnownLabelSize(value)).toBe(false);
     },
   );
+
+  /**
+   * Regresión (review de Codex, PR #104): `constructor` y `__proto__` ya
+   * están en minúsculas, así que `.toLowerCase()` no los cambia, y un lookup
+   * ingenuo (`LABEL_SIZE_ALIASES[key]`) encuentra la propiedad HEREDADA de
+   * Object.prototype en vez de `undefined`. Antes de este fix, ambos valores
+   * "colaban" como tamaño reconocido y `normalizeLabelSize` devolvía, en
+   * tiempo de ejecución, el constructor `Object` en vez de un `LabelSize`
+   * real — la URL de Labelary terminaba con dimensiones `undefined`.
+   */
+  it.each(['constructor', 'CONSTRUCTOR', '__proto__'])(
+    'no confunde la propiedad heredada "%s" con un tamaño válido',
+    (value) => {
+      expect(isKnownLabelSize(value)).toBe(false);
+    },
+  );
 });
 
 describe('label-size.enum — normalizeLabelSize', () => {
@@ -95,10 +112,33 @@ describe('label-size.enum — normalizeLabelSize', () => {
     expect(normalizeLabelSize('4x4')).toBe(LabelSize.TWO_BY_ONE);
     expect(normalizeLabelSize(undefined)).toBe(LabelSize.TWO_BY_ONE);
   });
+
+  // Misma regresión que en isKnownLabelSize: sin el guard de propiedad propia,
+  // esto devolvía en runtime el constructor `Object`, no un `LabelSize`.
+  it.each(['constructor', '__proto__'])(
+    'cae en 2x1 para la propiedad heredada "%s" en vez de devolverla',
+    (value) => {
+      expect(normalizeLabelSize(value)).toBe(LabelSize.TWO_BY_ONE);
+    },
+  );
 });
 
 describe('label-size.enum — LABEL_SIZE_ALIASES', () => {
   it('incluye el alias del tamaño nuevo, para no mantener un segundo mapa duplicado en zpl.service.ts', () => {
     expect(LABEL_SIZE_ALIASES['50x80mm']).toBe(LabelSize.FIFTY_BY_EIGHTY_MM);
   });
+});
+
+describe('label-size.enum — resolveLabelSizeAlias (lookup seguro, sin herencia de Object.prototype)', () => {
+  it('resuelve alias válidos igual que un acceso directo', () => {
+    expect(resolveLabelSizeAlias('4x6')).toBe(LabelSize.FOUR_BY_SIX);
+    expect(resolveLabelSizeAlias('large')).toBe(LabelSize.FOUR_BY_SIX);
+  });
+
+  it.each(['constructor', '__proto__', '4x4', undefined])(
+    'devuelve undefined (no una propiedad heredada) para "%s"',
+    (value) => {
+      expect(resolveLabelSizeAlias(value)).toBeUndefined();
+    },
+  );
 });

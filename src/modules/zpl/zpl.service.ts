@@ -41,7 +41,7 @@ import {
 import type { PlanType } from '../../common/interfaces/user.interface.js';
 import {
   LabelSize,
-  LABEL_SIZE_ALIASES,
+  resolveLabelSizeAlias,
   normalizeLabelSize,
   isKnownLabelSize,
 } from './enums/label-size.enum.js';
@@ -1638,7 +1638,7 @@ export class ZplService {
     }
 
     // Para usuarios Free, usar formato estándar zplpdf_size_timestamp
-    const size = LABEL_SIZE_ALIASES[labelSize.toLowerCase()] ?? labelSize;
+    const size = resolveLabelSizeAlias(labelSize) ?? labelSize;
     // Timestamp compacto y explícito en GMT-6 (Mérida), no un slice() a ciegas
     // sobre un ISO en UTC: ese slice(0, 14) se comía la hora a la mitad porque
     // el replace solo quitaba ":" y "." pero dejaba los "-" de la fecha

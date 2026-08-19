@@ -279,6 +279,32 @@ describe('ZplService — validación de labelSize en el batch (issue #101)', () 
     );
   });
 
+  /**
+   * Regresión (review de Codex, PR #104): `constructor` ya está en minúsculas,
+   * así que un lookup ingenuo sobre el mapa de alias encuentra la propiedad
+   * heredada de Object.prototype en vez de `undefined` y el gate lo deja pasar
+   * como si fuera un tamaño válido. Cubre el camino completo, no solo el
+   * helper del enum.
+   */
+  it('rechaza "constructor" en vez de dejarlo colar como propiedad heredada del mapa de alias', async () => {
+    const saveErrorLog = jest
+      .fn()
+      .mockResolvedValue({ id: 'x', errorId: 'ERR-9' });
+    const service = buildBatchService(saveErrorLog);
+
+    await expect(
+      service.startBatchConversion(
+        'uid-b',
+        [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
+        'constructor',
+      ),
+    ).rejects.toThrow();
+
+    expect(saveErrorLog).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'INVALID_LABEL_SIZE' }),
+    );
+  });
+
   it('acepta 50x80mm: pasa el gate de labelSize y llega hasta guardar el batch', async () => {
     const saveErrorLog = jest
       .fn()
