@@ -39,7 +39,16 @@ import {
   PLAN_FEATURES,
 } from '../../common/interfaces/user.interface.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
-import { LabelSize, normalizeLabelSize } from './enums/label-size.enum.js';
+import {
+  LabelSize,
+  resolveLabelSizeAlias,
+  normalizeLabelSize,
+  isKnownLabelSize,
+} from './enums/label-size.enum.js';
+import {
+  getDateStringInTimezone,
+  getTimeStringInTimezone,
+} from '../../utils/timezone.util.js';
 
 // El enum vivía duplicado aquí y en `enums/label-size.enum.ts`, con los mismos
 // valores pero como dos tipos distintos para TypeScript. Se reexporta el
@@ -100,16 +109,6 @@ export class ZplService {
   private readonly bucket: string;
   private readonly storageBasePath: string;
   private readonly URL_EXPIRATION_TIME = 15 * 60 * 1000; // 15 minutos en milisegundos
-
-  // Mapas de conversión para tamaños de etiqueta
-  private readonly LABEL_SIZE_NORMALIZE_MAP: Record<string, string> = {
-    small: '2x1',
-    '2x1': '2x1',
-    '2x4': '2x4',
-    '4x2': '4x2',
-    large: '4x6',
-    '4x6': '4x6',
-  };
 
   constructor(
     private configService: ConfigService,
@@ -1639,12 +1638,14 @@ export class ZplService {
     }
 
     // Para usuarios Free, usar formato estándar zplpdf_size_timestamp
-    const size =
-      this.LABEL_SIZE_NORMALIZE_MAP[labelSize.toLowerCase()] ?? labelSize;
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[:.]/g, '')
-      .slice(0, 14);
+    const size = resolveLabelSizeAlias(labelSize) ?? labelSize;
+    // Timestamp compacto y explícito en GMT-6 (Mérida), no un slice() a ciegas
+    // sobre un ISO en UTC: ese slice(0, 14) se comía la hora a la mitad porque
+    // el replace solo quitaba ":" y "." pero dejaba los "-" de la fecha
+    // (issue #100). Se construye a partir de un único `now` para que fecha y
+    // hora salgan siempre del mismo instante.
+    const now = new Date();
+    const timestamp = `${getDateStringInTimezone(now).replace(/-/g, '')}T${getTimeStringInTimezone(now)}`;
     const formatSuffix =
       outputFormat !== OutputFormat.PDF ? `_${outputFormat}` : '';
     return {
@@ -1983,6 +1984,28 @@ export class ZplService {
           },
           HttpStatus.FORBIDDEN,
           { plan: effectivePlan, fileCount: files.length },
+        );
+      }
+
+      // El batch no tiene `@IsEnum` en su DTO (acepta string libre a propósito,
+      // ver `batch.dto.ts`): sin este gate, un tamaño no reconocido llegaba
+      // silencioso hasta `processBatchFiles` → `getLabelSize` →
+      // `normalizeLabelSize`, que lo convertía en 2x1 sin avisar a nadie
+      // (issue #101, riesgo 2). Se rechaza aquí, antes de gastar cuota o
+      // contar labels, en vez de dejar que la conversión "funcione" con un
+      // tamaño distinto al pedido.
+      if (!isKnownLabelSize(labelSize)) {
+        throw await this.batchRejection(
+          userId,
+          userEmail,
+          ErrorCodes.INVALID_LABEL_SIZE,
+          {
+            error: ErrorCodes.INVALID_LABEL_SIZE,
+            message: 'El tamaño de etiqueta no es válido',
+            data: { labelSize },
+          },
+          HttpStatus.BAD_REQUEST,
+          { plan: effectivePlan },
         );
       }
 

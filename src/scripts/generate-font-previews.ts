@@ -11,6 +11,10 @@ import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 import sharp from 'sharp';
+import {
+  LabelSize,
+  LABEL_SIZE_DIMENSIONS,
+} from '../modules/zpl/enums/label-size.enum.js';
 
 dotenv.config({ path: ['.env.local', '.env'] });
 
@@ -39,7 +43,9 @@ const ZPL_FONTS = [
   'V',
 ] as const;
 
-const LABEL_SIZE = '4x2';
+// Id de LabelSize, no la dimensión cruda: se traduce vía LABEL_SIZE_DIMENSIONS
+// para no duplicar el mapeo id -> dimensión de Labelary (issue #101).
+const LABEL_SIZE = LabelSize.FOUR_BY_TWO;
 const SAMPLE_TEXT = 'ABCDabcd 12345';
 const GCS_BUCKET_OVERRIDE = 'zplpdf-public-assets';
 const GCS_FOLDER = 'font-previews';
@@ -119,7 +125,7 @@ async function main() {
       console.log(`Processing font ${fontCode}...`);
 
       // Call Labelary API for PNG
-      const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${LABEL_SIZE}/0/`;
+      const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${LABEL_SIZE_DIMENSIONS[LABEL_SIZE]}/0/`;
       const response = await axios.post(url, zpl, {
         headers: {
           Accept: 'image/png',

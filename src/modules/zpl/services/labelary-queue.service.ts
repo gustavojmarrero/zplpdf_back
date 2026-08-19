@@ -10,7 +10,7 @@ import {
   QUEUE_CONFIG,
 } from '../interfaces/queue.interface.js';
 import { LabelaryAnalyticsService } from './labelary-analytics.service.js';
-import { LabelSize } from '../enums/label-size.enum.js';
+import { LabelSize, LABEL_SIZE_DIMENSIONS } from '../enums/label-size.enum.js';
 import { PLAN_FEATURES } from '../../../common/interfaces/user.interface.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -315,7 +315,10 @@ export class LabelaryQueueService {
    * Llamada HTTP a Labelary API
    */
   private async callLabelaryInternal(item: QueueItem): Promise<Buffer> {
-    const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${item.labelSize}`;
+    // El id de LabelSize (p. ej. `50x80mm`) no es lo que Labelary entiende en
+    // la URL: hay que traducirlo a sus dimensiones (issue #101, opción B).
+    const dimensions = LABEL_SIZE_DIMENSIONS[item.labelSize];
+    const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${dimensions}`;
 
     const response = await axios.post(url, item.zplBatch, {
       headers: {
@@ -433,7 +436,8 @@ export class LabelaryQueueService {
       // Respetar rate limit global
       await this.waitForRateLimit();
 
-      const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${labelSize}/0/`;
+      const dimensions = LABEL_SIZE_DIMENSIONS[labelSize];
+      const url = `http://api.labelary.com/v1/printers/8dpmm/labels/${dimensions}/0/`;
 
       const response = await axios.post(url, zplContent, {
         headers: {
