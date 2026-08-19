@@ -401,7 +401,12 @@ describe('UsersService — getUserHistory', () => {
       expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a']);
     });
 
-    it('busca por prefijo de jobId sin distinguir mayúsculas', async () => {
+    /**
+     * issue #94: antes era prefix-match, así que un jobId copiado a medias (el
+     * tramo final de una URL de descarga, por ejemplo) no encontraba nada. 'c'
+     * TERMINA en "abc" — con prefijo se quedaba fuera; con subcadena, no.
+     */
+    it('busca por subcadena de jobId, no solo por prefijo, sin distinguir mayúsculas', async () => {
       const { service } = buildService([
         record({ id: 'a', jobId: 'ABC-123' }),
         record({ id: 'b', jobId: 'abd-999' }),
@@ -410,7 +415,68 @@ describe('UsersService — getUserHistory', () => {
 
       const result = await service.getUserHistory('uid-1', { search: 'abc' });
 
-      expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a']);
+      expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a', 'c']);
+    });
+
+    /**
+     * issue #94: `search` vuelve a ser multi-campo — labelSize y outputFormat
+     * ya tenían filtros dedicados, pero el cuadro de búsqueda único debe seguir
+     * cubriéndolos sin que el usuario tenga que saber en qué desplegable vive
+     * cada cosa.
+     */
+    it('busca también por labelSize y por outputFormat', async () => {
+      const { service } = buildService([
+        record({
+          id: 'a',
+          labelSize: LabelSize.FOUR_BY_SIX,
+          outputFormat: OutputFormat.PDF,
+        }),
+        record({
+          id: 'b',
+          labelSize: LabelSize.TWO_BY_ONE,
+          outputFormat: OutputFormat.PNG,
+        }),
+      ]);
+
+      const porLabelSize = await service.getUserHistory('uid-1', {
+        search: '4x6',
+      });
+      expect(porLabelSize.data.map((r: { id: string }) => r.id)).toEqual(['a']);
+
+      const porOutputFormat = await service.getUserHistory('uid-1', {
+        search: 'png',
+      });
+      expect(porOutputFormat.data.map((r: { id: string }) => r.id)).toEqual([
+        'b',
+      ]);
+    });
+
+    /**
+     * issue #94: labelCount entra en el barrido solo cuando el término es
+     * numérico, para que "50" encuentre tanto un jobId que lo contenga como
+     * una fila con 50 o 150 etiquetas.
+     */
+    it('busca por labelCount cuando el término es numérico', async () => {
+      const { service } = buildService([
+        record({ id: 'a', labelCount: 50, jobId: 'job-a' }),
+        record({ id: 'b', labelCount: 150, jobId: 'job-b' }),
+        record({ id: 'c', labelCount: 7, jobId: 'job-c' }),
+      ]);
+
+      const result = await service.getUserHistory('uid-1', { search: '50' });
+
+      expect(result.data.map((r: { id: string }) => r.id)).toEqual(['a', 'b']);
+    });
+
+    it('un término que no aparece en ningún campo cubierto no devuelve nada', async () => {
+      const { service } = buildService(mixed);
+
+      const result = await service.getUserHistory('uid-1', {
+        search: 'no-existe-en-nada',
+      });
+
+      expect(result.data).toHaveLength(0);
+      expect(result.pagination.total).toBe(0);
     });
 
     it('total refleja los filtros, no el total absoluto', async () => {

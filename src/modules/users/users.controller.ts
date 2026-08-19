@@ -181,7 +181,9 @@ export class UsersController {
     required: false,
     type: String,
     description:
-      'Filtra por jobId (coincidencia por prefijo, case-insensitive)',
+      'Búsqueda por subcadena, case-insensitive, sobre jobId, labelSize y ' +
+      'outputFormat; también compara contra labelCount cuando el término es ' +
+      'numérico',
   })
   @ApiQuery({
     name: 'status',

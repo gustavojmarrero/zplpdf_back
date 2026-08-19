@@ -1,12 +1,15 @@
 // Evitar la conexión real a Stripe al cargar el módulo.
 jest.mock('stripe', () => jest.fn());
 
+import type { ArgumentsHost } from '@nestjs/common';
 import {
   BadRequestException,
   ConflictException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { PaymentsService } from './payments.service.js';
+import { HttpExceptionFilter } from '../../common/filters/http-exception.filter.js';
 
 /**
  * Un fallo de permisos de la API key de Stripe (restricted key sin el scope
@@ -233,6 +236,35 @@ describe('PaymentsService — upgradeSubscription', () => {
 
   function claveUsada(update: jest.Mock, llamada = 0) {
     return update.mock.calls[llamada]?.[2]?.idempotencyKey;
+  }
+
+  /**
+   * Pasa una excepción por el HttpExceptionFilter global real, tal cual lo
+   * hace `main.ts` (`app.useGlobalFilters`). El filtro descarta cualquier
+   * clave suelta que no sea `data`/`errors`/`summary` (issue #97), así que
+   * comprobar solo `error.getResponse()` no basta para validar el issue #96:
+   * hay que leer lo que de verdad recibe `response.json(...)`.
+   */
+  function runThroughHttpExceptionFilter(exception: unknown) {
+    const filter = new HttpExceptionFilter();
+    const json = jest.fn();
+    const status = jest.fn().mockReturnValue({ json });
+    const response = { status, setHeader: jest.fn() } as unknown as Response;
+    const request = {
+      headers: {},
+      method: 'POST',
+      url: '/api/payments/upgrade',
+    } as unknown as Request;
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => response,
+        getRequest: () => request,
+      }),
+    } as unknown as ArgumentsHost;
+
+    filter.catch(exception, host);
+
+    return { status, body: json.mock.calls[0]?.[0] };
   }
 
   // Con precio: el upgrade falla cerrado si no puede resolver de qué plan parte,
@@ -999,6 +1031,78 @@ describe('PaymentsService — upgradeSubscription', () => {
 
     expect(error.message).toContain('has not been changed');
     expect(error.message).toContain('account settings');
+  });
+
+  /**
+   * issue #96: el frontend necesita `code`/`requiresAction`/`paymentUrl` como
+   * campos estructurados, sin dejar de poder parsear `message` (todavía lo
+   * hace en producción). Se verifica el cuerpo HTTP real DESPUÉS del
+   * HttpExceptionFilter global, no solo la excepción lanzada — es la capa
+   * donde el issue #97 documenta que estos campos se pierden si no van
+   * anidados en `data`.
+   */
+  it('#96: expone code/requiresAction/paymentUrl en el 400, sobreviviendo al HttpExceptionFilter', async () => {
+    const { service } = buildService({
+      subscription: activeSubscription,
+      updateResult: {
+        status: 'active',
+        id: 'sub_123',
+        pending_update: { expires_at: 1234567890 },
+        latest_invoice: {
+          id: 'in_123',
+          hosted_invoice_url: 'https://invoice.stripe.com/i/test',
+        },
+      },
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+
+    const { status, body } = runThroughHttpExceptionFilter(error);
+
+    expect(status).toHaveBeenCalledWith(400);
+    // Aditivo: el message de siempre se conserva íntegro tras el filtro.
+    expect(body.message).toContain('has not been changed');
+    expect(body.message).toContain('https://invoice.stripe.com/i/test');
+    // Campos nuevos, estructurados y estables para que el frontend los
+    // traduzca en vez de mostrar el `message` en inglés tal cual.
+    expect(body.data).toEqual({
+      code: 'UPGRADE_PAYMENT_PENDING',
+      requiresAction: true,
+      paymentUrl: 'https://invoice.stripe.com/i/test',
+    });
+  });
+
+  it('#96: paymentUrl es null (no undefined) cuando Stripe no da la factura, tras el filtro', async () => {
+    const { service } = buildService({
+      subscription: activeSubscription,
+      updateResult: {
+        status: 'active',
+        id: 'sub_123',
+        pending_update: { expires_at: 1234567890 },
+        latest_invoice: null,
+      },
+    });
+
+    const error = await service
+      .upgradeSubscription('uid-1', 'promax')
+      .catch((e: Error) => e);
+
+    const { body } = runThroughHttpExceptionFilter(error);
+
+    expect(body.data).toEqual({
+      code: 'UPGRADE_PAYMENT_PENDING',
+      requiresAction: true,
+      paymentUrl: null,
+    });
+    // JSON no distingue `undefined` de ausente, pero sí de `null`: sin el
+    // `?? null` explícito, un cliente estricto (p. ej. TS con
+    // `exactOptionalPropertyTypes`) vería la clave desaparecer en vez de ir a
+    // `null`, que es el contrato que promete el issue.
+    expect(body.data).toHaveProperty('paymentUrl', null);
   });
 
   /**

@@ -752,12 +752,32 @@ export class PaymentsService {
         `Plan sin cambiar. Factura: ${invoice?.id ?? 'desconocida'}.`,
     );
 
-    throw new BadRequestException(
+    const message =
       `Your plan has not been changed yet: the payment needs to be completed or authenticated. ` +
-        (payUrl
-          ? `Complete it here and the change will apply automatically: ${payUrl}`
-          : `Please check your payment method from your account settings and try again.`),
-    );
+      (payUrl
+        ? `Complete it here and the change will apply automatically: ${payUrl}`
+        : `Please check your payment method from your account settings and try again.`);
+
+    // issue #96: campos estructurados ADITIVOS junto al `message` de siempre —
+    // el frontend en producción todavía lo parsea con regex, así que no se
+    // toca. `code`/`requiresAction`/`paymentUrl` van anidados bajo `data`
+    // porque HttpExceptionFilter (común a toda la API) descarta cualquier
+    // clave suelta en el nivel superior del cuerpo de la excepción y solo
+    // copia `data` (o `errors`/`summary`) al JSON que de verdad sale por el
+    // cable — es el mismo fallo que describe el issue #97. `statusCode` y
+    // `error` replican el body que Nest arma por defecto para un
+    // BadRequestException con mensaje string, para no cambiar nada de lo que
+    // ya dependía de esa forma.
+    throw new BadRequestException({
+      statusCode: 400,
+      error: 'Bad Request',
+      message,
+      data: {
+        code: 'UPGRADE_PAYMENT_PENDING',
+        requiresAction: true,
+        paymentUrl: payUrl ?? null,
+      },
+    });
   }
 
   /**
