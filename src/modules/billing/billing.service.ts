@@ -88,7 +88,11 @@ export class BillingService {
     this.stripe = new Stripe(stripeSecretKey);
   }
 
-  async getInvoices(userId: string, limit = 10): Promise<InvoicesResponseDto> {
+  async getInvoices(
+    userId: string,
+    limit = 10,
+    startingAfter?: string,
+  ): Promise<InvoicesResponseDto> {
     if (!this.stripe) {
       throw new BadRequestException('Billing system not configured');
     }
@@ -100,9 +104,23 @@ export class BillingService {
     }
 
     try {
+      // El cursor es un ID de factura que llega tal cual desde el cliente:
+      // se valida contra el customer antes de reenviarlo a Stripe. Dentro del
+      // try para que un fallo de Stripe al validar (rate limit, red, etc.)
+      // caiga en el mismo 400 genérico que un fallo al listar, en vez de
+      // escapar sin manejar como 500 — el catch de abajo relanza el 403
+      // propio y no lo tapa.
+      if (startingAfter) {
+        await this.assertInvoiceBelongsToCustomer(
+          startingAfter,
+          user.stripeCustomerId,
+        );
+      }
+
       const invoices = await this.stripe.invoices.list({
         customer: user.stripeCustomerId,
         limit,
+        ...(startingAfter && { starting_after: startingAfter }),
       });
 
       const cfdis = await this.resolveCfdis(user, invoices.data);
@@ -126,10 +144,51 @@ export class BillingService {
         hasMore: invoices.has_more,
       };
     } catch (error) {
+      // El cursor ajeno o inexistente ya trae su propio 403: no lo tapamos
+      // con el 400 genérico de abajo.
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
+
       this.logger.error(
         `Error fetching invoices for user ${userId}: ${error.message}`,
       );
       throw new BadRequestException('Failed to fetch invoices');
+    }
+  }
+
+  /**
+   * Comprueba que el cursor de paginación (`starting_after`) sea una factura
+   * de este customer antes de reenviarlo a Stripe.
+   *
+   * `stripe.invoices.list` ya filtra por `customer`, pero eso no es motivo
+   * para confiar en su combinación con `starting_after` como control de
+   * acceso: es un ID que pone el cliente, y sin esta comprobación serviría
+   * como oráculo para sondear si una factura ajena existe. Solo lanza
+   * `ForbiddenException` (cursor ajeno o inexistente); cualquier otro fallo
+   * de Stripe (rate limit, red) se relanza tal cual para que el catch de
+   * `getInvoices` lo trate igual que un fallo al listar.
+   */
+  private async assertInvoiceBelongsToCustomer(
+    invoiceId: string,
+    customerId: string,
+  ): Promise<void> {
+    let invoice: Stripe.Invoice;
+    try {
+      invoice = await this.stripe.invoices.retrieve(invoiceId);
+    } catch (error) {
+      if (error?.code === 'resource_missing') {
+        throw new ForbiddenException(
+          'Invoice cursor does not belong to this user',
+        );
+      }
+      throw error;
+    }
+
+    if ((invoice.customer as string) !== customerId) {
+      throw new ForbiddenException(
+        'Invoice cursor does not belong to this user',
+      );
     }
   }
 
@@ -259,9 +318,15 @@ export class BillingService {
       throw new BadRequestException({
         error: ErrorCodes.INVALID_INPUT,
         message: `Invoice is not payable for CFDI (status: ${invoice.status}, amount_paid: ${invoice.amount_paid ?? 0})`,
-        cfdiError: {
-          code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
-          message: 'La factura no corresponde a un cobro efectivo',
+        // Anidado en `data`: es la única clave que el HttpExceptionFilter
+        // copia al body de respuesta (ver `catch()` del filtro). En el nivel
+        // superior del objeto de la excepción, el filtro nunca lo lee y el
+        // frontend se queda sin el código estable para traducir.
+        data: {
+          cfdiError: {
+            code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+            message: 'La factura no corresponde a un cobro efectivo',
+          },
         },
       });
     }
@@ -275,9 +340,12 @@ export class BillingService {
       throw new BadRequestException({
         error: ErrorCodes.INVALID_INPUT,
         message: 'Tax profile is incomplete',
-        cfdiError: {
-          code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
-          message: 'Tax profile is incomplete',
+        // Mismo motivo que arriba: sin `data`, el filtro descarta cfdiError.
+        data: {
+          cfdiError: {
+            code: CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+            message: 'Tax profile is incomplete',
+          },
         },
       });
     }
@@ -319,9 +387,12 @@ export class BillingService {
       throw new UnprocessableEntityException({
         error: ErrorCodes.INVALID_INPUT,
         message: error?.message ?? 'CFDI stamping failed',
-        cfdiError: {
-          code,
-          message: error?.message ?? 'CFDI stamping failed',
+        // Mismo motivo que arriba: sin `data`, el filtro descarta cfdiError.
+        data: {
+          cfdiError: {
+            code,
+            message: error?.message ?? 'CFDI stamping failed',
+          },
         },
       });
     }

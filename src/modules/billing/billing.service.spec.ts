@@ -6,11 +6,14 @@ import {
   ForbiddenException,
   NotFoundException,
   UnprocessableEntityException,
+  type ArgumentsHost,
+  type HttpException,
 } from '@nestjs/common';
 import { BillingService } from './billing.service.js';
 import type { UpdateTaxProfileDto } from './dto/tax-profile.dto.js';
 import { CfdiErrorCodes } from '../facturama/facturama.constants.js';
 import { FacturamaError } from '../facturama/interfaces/facturama.interface.js';
+import { HttpExceptionFilter } from '../../common/filters/http-exception.filter.js';
 
 /**
  * El perfil fiscal es la entrada de datos que después se timbra ante el SAT.
@@ -756,18 +759,29 @@ describe('BillingService — perfil fiscal', () => {
       );
     });
 
-    it('400, no 422, si el perfil fiscal está incompleto', async () => {
+    it('400, no 422, si el perfil fiscal está incompleto, con el cfdiError anidado en data', async () => {
       const service = buildRetryService({
         cfdi: { status: 'failed' },
         profile: null,
       });
 
-      // Es una precondición que el usuario no ha cumplido, no un rechazo del
-      // PAC: un 422 le diría que su RFC está mal cuando lo que falta es
-      // cargarlo.
-      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      try {
+        // Es una precondición que el usuario no ha cumplido, no un rechazo del
+        // PAC: un 422 le diría que su RFC está mal cuando lo que falta es
+        // cargarlo.
+        await service.retryCfdi('uid-1', 'in_123');
+        throw new Error('Se esperaba un BadRequestException');
+      } catch (error) {
+        expect(error).toBeInstanceOf(BadRequestException);
+        const body = (error as BadRequestException).getResponse() as {
+          data: { cfdiError: { code: string } };
+        };
+        // Anidado en `data`: es la única clave que el HttpExceptionFilter
+        // copia al body de respuesta.
+        expect(body.data.cfdiError.code).toBe(
+          CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+        );
+      }
     });
 
     it('422 con el mismo código estable cuando el PAC vuelve a rechazar', async () => {
@@ -786,11 +800,11 @@ describe('BillingService — perfil fiscal', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(UnprocessableEntityException);
         const body = (error as UnprocessableEntityException).getResponse() as {
-          cfdiError: { code: string };
+          data: { cfdiError: { code: string } };
         };
         // El reintento fallido se explica con el mismo diccionario que el fallo
-        // original.
-        expect(body.cfdiError.code).toBe(CfdiErrorCodes.RFC_NOT_FOUND);
+        // original. Anidado en `data`: ver comentario del test anterior.
+        expect(body.data.cfdiError.code).toBe(CfdiErrorCodes.RFC_NOT_FOUND);
       }
     });
 
@@ -817,7 +831,7 @@ describe('BillingService — perfil fiscal', () => {
       );
     });
 
-    it('rechaza una factura que no está pagada', async () => {
+    it('rechaza una factura que no está pagada, con el cfdiError anidado en data', async () => {
       const claim = jest.fn();
       const service = buildRetryService({
         invoice: {
@@ -829,11 +843,20 @@ describe('BillingService — perfil fiscal', () => {
         claim,
       });
 
-      // La factura la elige el cliente: sin esta comprobación podría mandar al
-      // PAC una factura suya abierta y timbrar un ingreso que no existió.
-      await expect(service.retryCfdi('uid-1', 'in_123')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      try {
+        // La factura la elige el cliente: sin esta comprobación podría mandar
+        // al PAC una factura suya abierta y timbrar un ingreso que no existió.
+        await service.retryCfdi('uid-1', 'in_123');
+        throw new Error('Se esperaba un BadRequestException');
+      } catch (error) {
+        expect(error).toBeInstanceOf(BadRequestException);
+        const body = (error as BadRequestException).getResponse() as {
+          data: { cfdiError: { code: string } };
+        };
+        expect(body.data.cfdiError.code).toBe(
+          CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+        );
+      }
       expect(claim).not.toHaveBeenCalled();
     });
 
@@ -912,6 +935,89 @@ describe('BillingService — perfil fiscal', () => {
       // legítimo.
       expect(claim).not.toHaveBeenCalled();
     });
+
+    /**
+     * Los tests de arriba comprueban `cfdiError` en la capa donde el servicio
+     * lanza la excepción — que es donde el dato todavía existe, pero no es lo
+     * que recibe el frontend. El `HttpExceptionFilter` global reconstruye el
+     * body de la respuesta HTTP copiando solo `responseObj.data` (ver
+     * `common/filters/http-exception.filter.ts`): un `cfdiError` en el nivel
+     * superior del objeto de la excepción se pierde ahí, aunque el test de
+     * arriba siguiera en verde. Este test pasa la excepción real por el
+     * filtro real y comprueba el JSON que de verdad sale por el cable.
+     */
+    it('el cfdiError sobrevive al HttpExceptionFilter en los tres rechazos', async () => {
+      const filter = new HttpExceptionFilter();
+
+      // Simula el ciclo request/response de Express que consume el filtro,
+      // y devuelve el objeto exacto que se habría serializado con res.json().
+      function bodyAfterFilter(exception: HttpException) {
+        const json = jest.fn();
+        const response = {
+          status: jest.fn().mockReturnValue({ json }),
+          setHeader: jest.fn(),
+        };
+        const request = {
+          headers: {},
+          method: 'POST',
+          url: '/api/billing/invoices/in_123/cfdi/retry',
+          ip: '127.0.0.1',
+        };
+        const host = {
+          switchToHttp: () => ({
+            getResponse: () => response,
+            getRequest: () => request,
+          }),
+        } as unknown as ArgumentsHost;
+
+        filter.catch(exception, host);
+        return json.mock.calls[0][0];
+      }
+
+      // 1. Cobro no efectivo (400).
+      const notPayableService = buildRetryService({
+        invoice: {
+          id: 'in_123',
+          customer: 'cus_123',
+          status: 'open',
+          amount_paid: 0,
+        },
+      });
+      const notPayableError = await notPayableService
+        .retryCfdi('uid-1', 'in_123')
+        .catch((error) => error);
+      expect(bodyAfterFilter(notPayableError).data.cfdiError.code).toBe(
+        CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+      );
+
+      // 2. Perfil fiscal incompleto (400).
+      const incompleteProfileService = buildRetryService({
+        cfdi: { status: 'failed' },
+        profile: null,
+      });
+      const incompleteProfileError = await incompleteProfileService
+        .retryCfdi('uid-1', 'in_123')
+        .catch((error) => error);
+      expect(bodyAfterFilter(incompleteProfileError).data.cfdiError.code).toBe(
+        CfdiErrorCodes.INVOICE_NOT_STAMPABLE,
+      );
+
+      // 3. Rechazo del PAC (422).
+      const pacRejectedService = buildRetryService({
+        cfdi: { status: 'failed' },
+        retry: jest
+          .fn()
+          .mockRejectedValue(
+            new FacturamaError(CfdiErrorCodes.RFC_NOT_FOUND, 'RFC no inscrito'),
+          ),
+      });
+      const pacRejectedError = await pacRejectedService
+        .retryCfdi('uid-1', 'in_123')
+        .catch((error) => error);
+      expect(bodyAfterFilter(pacRejectedError).data.cfdiError.code).toBe(
+        CfdiErrorCodes.RFC_NOT_FOUND,
+      );
+    });
   });
 
   /**
@@ -919,20 +1025,28 @@ describe('BillingService — perfil fiscal', () => {
    * factura o no, así que el estado que devuelve tiene que distinguir «no te
    * toca» de «falló».
    */
-  describe('getInvoices — bloque cfdi', () => {
+  describe('getInvoices', () => {
     function buildInvoicesService(overrides: {
       country?: string;
       cfdis?: Map<string, unknown>;
+      list?: jest.Mock;
+      retrieve?: jest.Mock;
     }) {
       const service = Object.create(BillingService.prototype) as BillingService;
       Object.assign(service, {
         logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
         stripe: {
           invoices: {
-            list: jest.fn().mockResolvedValue({
-              data: [{ id: 'in_1' }, { id: 'in_2' }],
-              has_more: false,
-            }),
+            list:
+              overrides.list ??
+              jest.fn().mockResolvedValue({
+                data: [{ id: 'in_1' }, { id: 'in_2' }],
+                has_more: false,
+              }),
+            // Usado solo cuando se valida un cursor `starting_after`.
+            retrieve:
+              overrides.retrieve ??
+              jest.fn().mockResolvedValue({ id: 'in_0', customer: 'cus_123' }),
           },
         },
         firestoreService: {
@@ -955,102 +1069,184 @@ describe('BillingService — perfil fiscal', () => {
       return service;
     }
 
-    it('devuelve cfdi null para un usuario no mexicano', async () => {
-      const service = buildInvoicesService({ country: 'ES' });
+    describe('bloque cfdi', () => {
+      it('devuelve cfdi null para un usuario no mexicano', async () => {
+        const service = buildInvoicesService({ country: 'ES' });
 
-      const { invoices } = await service.getInvoices('uid-1');
+        const { invoices } = await service.getInvoices('uid-1');
 
-      // Es como el frontend sabe que no debe pintar la columna.
-      expect(invoices.every((invoice) => invoice.cfdi === null)).toBe(true);
+        // Es como el frontend sabe que no debe pintar la columna.
+        expect(invoices.every((invoice) => invoice.cfdi === null)).toBe(true);
+      });
+
+      it('conserva los CFDI emitidos aunque el usuario cambie de país', async () => {
+        const service = buildInvoicesService({
+          country: 'ES',
+          cfdis: new Map([
+            [
+              'in_1',
+              {
+                status: 'stamped',
+                uuid: 'UUID-1',
+                pdfPath: 'cfdis/uid-1/in_1.pdf',
+              },
+            ],
+          ]),
+        });
+
+        const { invoices } = await service.getInvoices('uid-1');
+
+        // Un comprobante fiscal se conserva cinco años y esta es la única vía de
+        // descarga: mudarse de país no puede dejar al usuario sin sus facturas.
+        expect(invoices[0].cfdi).toMatchObject({
+          status: 'stamped',
+          uuid: 'UUID-1',
+          pdfUrl: 'https://signed.example/file',
+        });
+        // Las facturas sin CFDI sí siguen el país actual.
+        expect(invoices[1].cfdi).toBeNull();
+      });
+
+      it('marca not_applicable una factura mexicana sin registro', async () => {
+        const service = buildInvoicesService({ country: 'MX' });
+
+        const { invoices } = await service.getInvoices('uid-1');
+
+        // Típicamente una factura anterior a que cargara su perfil fiscal.
+        expect(invoices[0].cfdi.status).toBe('not_applicable');
+        expect(invoices[0].cfdi.uuid).toBeNull();
+      });
+
+      it('expone el estado real y las descargas de un CFDI timbrado', async () => {
+        const service = buildInvoicesService({
+          country: 'MX',
+          cfdis: new Map([
+            [
+              'in_1',
+              {
+                status: 'stamped',
+                uuid: 'UUID-1',
+                stampedAt: new Date('2026-08-04T12:00:00.000Z'),
+                pdfPath: 'cfdis/uid-1/in_1.pdf',
+                xmlPath: 'cfdis/uid-1/in_1.xml',
+              },
+            ],
+          ]),
+        });
+
+        const { invoices } = await service.getInvoices('uid-1');
+
+        expect(invoices[0].cfdi).toMatchObject({
+          status: 'stamped',
+          uuid: 'UUID-1',
+          stampedAt: '2026-08-04T12:00:00.000Z',
+          pdfUrl: 'https://signed.example/file',
+        });
+        // La segunda factura no tiene CFDI y no debe heredar el de la primera.
+        expect(invoices[1].cfdi.status).toBe('not_applicable');
+      });
+
+      it('expone el código de error de un CFDI fallido', async () => {
+        const service = buildInvoicesService({
+          country: 'MX',
+          cfdis: new Map([
+            [
+              'in_1',
+              {
+                status: 'failed',
+                error: { code: 'rfc_not_found', message: 'RFC no inscrito' },
+              },
+            ],
+          ]),
+        });
+
+        const { invoices } = await service.getInvoices('uid-1');
+
+        expect(invoices[0].cfdi).toMatchObject({
+          status: 'failed',
+          error: { code: 'rfc_not_found' },
+          pdfUrl: null,
+        });
+      });
     });
 
-    it('conserva los CFDI emitidos aunque el usuario cambie de país', async () => {
-      const service = buildInvoicesService({
-        country: 'ES',
-        cfdis: new Map([
-          [
-            'in_1',
-            {
-              status: 'stamped',
-              uuid: 'UUID-1',
-              pdfPath: 'cfdis/uid-1/in_1.pdf',
-            },
-          ],
-        ]),
+    /**
+     * `starting_after` es el cursor que usa "Cargar más" del historial: sin
+     * pasarlo a Stripe, el frontend recibe otra vez la primera página y nunca
+     * avanza. Se valida contra el customer del usuario antes de reenviarlo:
+     * es un ID que pone el cliente, y `customer` + `starting_after`
+     * combinados en Stripe no son, por sí solos, un control de acceso en el
+     * que convenga confiar.
+     */
+    describe('paginación (starting_after)', () => {
+      it('no manda starting_after a Stripe cuando no hay cursor', async () => {
+        const list = jest.fn().mockResolvedValue({ data: [], has_more: false });
+        const service = buildInvoicesService({ list });
+
+        await service.getInvoices('uid-1');
+
+        const params = list.mock.calls[0][0];
+        expect(params).not.toHaveProperty('starting_after');
       });
 
-      const { invoices } = await service.getInvoices('uid-1');
+      it('pasa starting_after a Stripe cuando el cursor es del propio customer', async () => {
+        const list = jest.fn().mockResolvedValue({ data: [], has_more: false });
+        const retrieve = jest
+          .fn()
+          .mockResolvedValue({ id: 'in_0', customer: 'cus_123' });
+        const service = buildInvoicesService({ list, retrieve });
 
-      // Un comprobante fiscal se conserva cinco años y esta es la única vía de
-      // descarga: mudarse de país no puede dejar al usuario sin sus facturas.
-      expect(invoices[0].cfdi).toMatchObject({
-        status: 'stamped',
-        uuid: 'UUID-1',
-        pdfUrl: 'https://signed.example/file',
-      });
-      // Las facturas sin CFDI sí siguen el país actual.
-      expect(invoices[1].cfdi).toBeNull();
-    });
+        await service.getInvoices('uid-1', 10, 'in_0');
 
-    it('marca not_applicable una factura mexicana sin registro', async () => {
-      const service = buildInvoicesService({ country: 'MX' });
-
-      const { invoices } = await service.getInvoices('uid-1');
-
-      // Típicamente una factura anterior a que cargara su perfil fiscal.
-      expect(invoices[0].cfdi.status).toBe('not_applicable');
-      expect(invoices[0].cfdi.uuid).toBeNull();
-    });
-
-    it('expone el estado real y las descargas de un CFDI timbrado', async () => {
-      const service = buildInvoicesService({
-        country: 'MX',
-        cfdis: new Map([
-          [
-            'in_1',
-            {
-              status: 'stamped',
-              uuid: 'UUID-1',
-              stampedAt: new Date('2026-08-04T12:00:00.000Z'),
-              pdfPath: 'cfdis/uid-1/in_1.pdf',
-              xmlPath: 'cfdis/uid-1/in_1.xml',
-            },
-          ],
-        ]),
+        expect(retrieve).toHaveBeenCalledWith('in_0');
+        expect(list).toHaveBeenCalledWith(
+          expect.objectContaining({ starting_after: 'in_0', limit: 10 }),
+        );
       });
 
-      const { invoices } = await service.getInvoices('uid-1');
+      it('rechaza con 403 un cursor que pertenece a otro customer', async () => {
+        const list = jest.fn();
+        const retrieve = jest
+          .fn()
+          .mockResolvedValue({ id: 'in_ajena', customer: 'cus_de_otro' });
+        const service = buildInvoicesService({ list, retrieve });
 
-      expect(invoices[0].cfdi).toMatchObject({
-        status: 'stamped',
-        uuid: 'UUID-1',
-        stampedAt: '2026-08-04T12:00:00.000Z',
-        pdfUrl: 'https://signed.example/file',
-      });
-      // La segunda factura no tiene CFDI y no debe heredar el de la primera.
-      expect(invoices[1].cfdi.status).toBe('not_applicable');
-    });
-
-    it('expone el código de error de un CFDI fallido', async () => {
-      const service = buildInvoicesService({
-        country: 'MX',
-        cfdis: new Map([
-          [
-            'in_1',
-            {
-              status: 'failed',
-              error: { code: 'rfc_not_found', message: 'RFC no inscrito' },
-            },
-          ],
-        ]),
+        await expect(
+          service.getInvoices('uid-1', 10, 'in_ajena'),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        // No debe alcanzar a Stripe con un cursor ajeno: la validación va
+        // antes del listado.
+        expect(list).not.toHaveBeenCalled();
       });
 
-      const { invoices } = await service.getInvoices('uid-1');
+      it('rechaza con 403 un cursor que no existe en Stripe', async () => {
+        const list = jest.fn();
+        const retrieve = jest
+          .fn()
+          .mockRejectedValue({ code: 'resource_missing' });
+        const service = buildInvoicesService({ list, retrieve });
 
-      expect(invoices[0].cfdi).toMatchObject({
-        status: 'failed',
-        error: { code: 'rfc_not_found' },
-        pdfUrl: null,
+        await expect(
+          service.getInvoices('uid-1', 10, 'in_fantasma'),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(list).not.toHaveBeenCalled();
+      });
+
+      it('convierte en 400, no en 500, un fallo de Stripe al validar el cursor que no es "no existe"', async () => {
+        // Rate limit, red, credenciales: cualquier fallo de Stripe que no sea
+        // resource_missing debe caer en el mismo 400 genérico que un fallo al
+        // listar, no escapar sin manejar hacia un 500.
+        const list = jest.fn();
+        const retrieve = jest.fn().mockRejectedValue({
+          code: 'rate_limit_error',
+          message: 'Too many requests',
+        });
+        const service = buildInvoicesService({ list, retrieve });
+
+        await expect(
+          service.getInvoices('uid-1', 10, 'in_0'),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(list).not.toHaveBeenCalled();
       });
     });
   });
