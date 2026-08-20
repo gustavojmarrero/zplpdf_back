@@ -44,14 +44,53 @@ describe('PublicPreviewThrottlerGuard', () => {
     jest.useRealTimers();
   });
 
-  it('evalúa primero las ventanas que no se pueden falsificar', async () => {
+  // El guard incrementa el contador de cada throttler que evalúa y lanza en el
+  // primero que se pasa, así que lo que va delante consume cupo aunque la
+  // petición acabe rechazada. El visitante va primero para que sus 429 no
+  // gasten el cubo que comparte con todos los demás.
+  it('evalúa primero las ventanas del visitante y solo después las agregadas', async () => {
     const { guard, storage } = buildGuard();
 
     await guard.onModuleInit();
 
     const nombres = (guard as any).throttlers.map((t: any) => t.name);
-    expect(nombres[0]).toContain('Peer');
-    expect(nombres[1]).toContain('Peer');
+    expect(nombres).toEqual([
+      'publicPreviewClientMinute',
+      'publicPreviewClientHourly',
+      'publicPreviewPeerMinute',
+      'publicPreviewPeerHourly',
+    ]);
+    storage.onApplicationShutdown();
+  });
+
+  it('las peticiones que rechaza el tope del visitante no gastan cupo agregado', async () => {
+    jest.useFakeTimers();
+    const { guard, storage } = buildGuard();
+    await guard.onModuleInit();
+    const peer = '198.51.100.7';
+    const abusivo = buildContext(`203.0.113.10, ${peer}`);
+
+    for (let i = 0; i < PUBLIC_PREVIEW_THROTTLERS.clientMinute.limit; i++) {
+      await expect(guard.canActivate(abusivo)).resolves.toBe(true);
+    }
+
+    // Justo las que agotarían el cubo agregado si los rechazos contaran: 6
+    // aceptadas + 9 rechazadas = las 15 del tope por origen.
+    const rechazadas =
+      PUBLIC_PREVIEW_THROTTLERS.peerMinute.limit -
+      PUBLIC_PREVIEW_THROTTLERS.clientMinute.limit;
+    for (let i = 0; i < rechazadas; i++) {
+      await expect(guard.canActivate(abusivo)).rejects.toBeInstanceOf(
+        ThrottlerException,
+      );
+    }
+
+    // Otro visitante del mismo salto sigue teniendo su cuota entera: el
+    // abusivo solo se ha gastado sus 6 peticiones buenas del agregado.
+    const otroVisitante = buildContext(`203.0.113.11, ${peer}`);
+    for (let i = 0; i < PUBLIC_PREVIEW_THROTTLERS.clientMinute.limit; i++) {
+      await expect(guard.canActivate(otroVisitante)).resolves.toBe(true);
+    }
     storage.onApplicationShutdown();
   });
 
@@ -108,9 +147,11 @@ describe('PublicPreviewThrottlerGuard', () => {
       ThrottlerException,
     );
 
-    // La peticion bloqueada se corta en el tracker de origen, antes de crear
-    // los dos contadores correspondientes a la nueva IP declarada.
-    expect(storage.storage.size).toBe(32);
+    // 15 IPs declaradas x 2 ventanas de visitante + las 2 agregadas, mas las 2
+    // que estrena la IP de la peticion bloqueada: el visitante se evalua antes,
+    // asi que su contador se crea aunque el corte lo acabe dando el agregado.
+    // Ese crecimiento lo acota el storage, no el orden (ver BoundedThrottlerStorage).
+    expect(storage.storage.size).toBe(34);
     storage.onApplicationShutdown();
   });
 });

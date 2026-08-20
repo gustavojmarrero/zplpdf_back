@@ -87,11 +87,21 @@ export const publicPreviewThrottlerOptions: ThrottlerModuleOptions = {
  * borra keys del Map (ver `CustomThrottlerGuard`). Con storage propio, el coste
  * se queda en las IPs que usan esta ruta.
  *
- * El orden de evaluacion tambien importa: `ThrottlerGuard` recorre los
- * throttlers y lanza en el primero que se pase, asi que las ventanas por
- * identidad NO falsificable van delante. Quien rote el `X-Forwarded-For` recibe
- * su 429 antes de que la identidad que se acaba de inventar llegue a ocupar
- * sitio en el storage.
+ * El orden de evaluacion importa, y va al reves de lo que parece: `ThrottlerGuard`
+ * recorre los throttlers, incrementa el contador de cada uno y lanza en el
+ * primero que se pase, asi que TODO lo que se evalue antes del que rechaza ya ha
+ * consumido cupo. Por eso las ventanas por visitante van primero: si fuera al
+ * reves, las peticiones que se rechazan por el tope del visitante seguirian
+ * gastando el cubo agregado, y a un solo visitante le bastarian 6 peticiones
+ * buenas mas 9 rechazadas para agotar el minuto compartido y dejar sin vista
+ * previa a TODOS los que comparten salto — un DoS de 15 peticiones contra la
+ * pagina que este endpoint venia a abrir.
+ *
+ * Evaluar primero al visitante tiene una contrapartida conocida: quien rote el
+ * `X-Forwarded-For` estrena clave en cada peticion antes de que el tope
+ * agregado le corte. Eso lo acota `BoundedThrottlerStorage` con su expulsion
+ * LRU, que es donde ese problema se resuelve de verdad; el orden de evaluacion
+ * nunca fue la herramienta adecuada para ello.
  *
  * Los `@Inject` explicitos NO son decorativos: `ThrottlerGuard` decora sus dos
  * primeros parametros con los tokens del modulo global, y esa metadata se
@@ -112,17 +122,30 @@ export class PublicPreviewThrottlerGuard extends ThrottlerGuard {
   async onModuleInit(): Promise<void> {
     await super.onModuleInit();
 
-    // super ordena por ttl y deja el criterio sin definir entre ventanas con el
-    // mismo ttl. Las que cuentan sobre la identidad no falsificable van
-    // primero: ver el comentario de la clase.
+    // super ordena por ttl, que aqui no es el criterio que hace falta: lo que
+    // decide quien consume cupo es el orden, y el visitante va primero (ver el
+    // comentario de la clase). Un nombre que no este en la lista se queda al
+    // final en vez de romper el orden de los que si estan.
     this.throttlers.sort(
-      (a, b) => Number(isPeerThrottler(b)) - Number(isPeerThrottler(a)),
+      (a, b) => ordenDeEvaluacion(a.name) - ordenDeEvaluacion(b.name),
     );
   }
 }
 
-function isPeerThrottler(throttler: { name?: string }): boolean {
-  return throttler.name?.includes('Peer') ?? false;
+/**
+ * Orden explicito y no una heuristica sobre el nombre: quien anada una ventana
+ * nueva tiene que decidir a proposito si consume cupo agregado o no.
+ */
+const ORDEN_DE_EVALUACION = [
+  'publicPreviewClientMinute',
+  'publicPreviewClientHourly',
+  'publicPreviewPeerMinute',
+  'publicPreviewPeerHourly',
+];
+
+function ordenDeEvaluacion(name?: string): number {
+  const posicion = ORDEN_DE_EVALUACION.indexOf(name ?? '');
+  return posicion === -1 ? ORDEN_DE_EVALUACION.length : posicion;
 }
 
 export const publicPreviewThrottlerProviders: Provider[] = [
