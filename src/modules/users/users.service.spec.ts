@@ -1458,6 +1458,34 @@ describe('UsersService — foto de perfil', () => {
     } as Express.Multer.File;
   }
 
+  function crc32(buffer: Buffer): number {
+    let crc = 0xffffffff;
+
+    for (const byte of buffer) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) {
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      }
+    }
+
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  async function pngWithDeclaredDimensions(
+    width: number,
+    height: number,
+  ): Promise<Buffer> {
+    // Partimos de un PNG real de 1x1 y cambiamos solo su IHDR. `metadata()` lee
+    // las dimensiones declaradas sin decodificar el IDAT, de modo que podemos
+    // probar una cabecera de 42 MP con apenas unos bytes y sin agotar el runner.
+    const png = await imagen('png', 1, 1);
+    png.writeUInt32BE(width, 16);
+    png.writeUInt32BE(height, 20);
+    png.writeUInt32BE(crc32(png.subarray(12, 29)), 29);
+
+    return png;
+  }
+
   describe('validación', () => {
     it('rechaza la petición sin archivo con NO_FILES', async () => {
       const { service } = buildService();
@@ -1518,6 +1546,30 @@ describe('UsersService — foto de perfil', () => {
           data: { maxPixels: MAX_PROFILE_PHOTO_PIXELS, pixels: 900_000_000 },
         });
       }
+    });
+
+    it('rechaza por el camino real de upload una cabecera de más de 40 MP', async () => {
+      const { service, storageService } = buildService();
+      const width = 7000;
+      const height = 6000;
+      const png = await pngWithDeclaredDimensions(width, height);
+
+      expect(png.length).toBeLessThan(1024);
+      await expect(
+        service.uploadProfilePhoto(UID, upload(png)),
+      ).rejects.toMatchObject({
+        status: 413,
+        response: {
+          error: 'IMAGE_TOO_LARGE',
+          data: {
+            maxPixels: MAX_PROFILE_PHOTO_PIXELS,
+            pixels: width * height,
+            width,
+            height,
+          },
+        },
+      });
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
     });
 
     it('deja pasar una foto de cámara normal', () => {

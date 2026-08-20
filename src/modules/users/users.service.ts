@@ -617,8 +617,12 @@ export class UsersService {
     let metadata: sharp.Metadata | undefined;
 
     try {
+      // `metadata()` solo inspecciona la cabecera: aquí necesitamos conocer las
+      // dimensiones aunque excedan el presupuesto para poder responder con el
+      // 413 documentado. El límite sigue activo abajo, en la decodificación que
+      // sí reserva memoria.
       metadata = await sharp(buffer, {
-        limitInputPixels: MAX_PROFILE_PHOTO_PIXELS,
+        limitInputPixels: false,
       }).metadata();
     } catch (error) {
       this.logger.warn(`Foto de perfil ilegible: ${error.message}`);
