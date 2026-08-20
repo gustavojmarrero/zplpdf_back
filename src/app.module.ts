@@ -35,6 +35,18 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
         ttl: 60000,
         limit: 100,
       },
+      // Ventana horaria. Existe para que las rutas publicas puedan overridearla
+      // con @Throttle: un tope por minuto no impide sostener el consumo durante
+      // horas, y el render publico va contra el plan free de Labelary (1 req/s
+      // para toda la plataforma). El limite global es deliberadamente
+      // inalcanzable — con 'default' en 100 req/min el techo real ya es 6.000/h
+      // — para no meterle un rate limit nuevo a quien esta autenticado, que
+      // ademas comparte IP con sus companeros detras de cualquier NAT.
+      {
+        name: 'hourly',
+        ttl: 3600000,
+        limit: 100000,
+      },
     ]),
     AuthModule,
     UsersModule,

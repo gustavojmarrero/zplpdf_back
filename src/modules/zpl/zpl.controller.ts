@@ -43,6 +43,10 @@ import {
 } from './dto/batch.dto.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { FontPreviewPublicDto } from './dto/font-preview-public.dto.js';
+import {
+  PublicPreviewDto,
+  PUBLIC_PREVIEW_MAX_UNIQUE_LABELS,
+} from './dto/public-preview.dto.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -754,6 +758,87 @@ export class ZplController {
 
     const labelSize = dto.labelSize || LabelSize.FOUR_BY_SIX;
     return this.zplService.getPublicFontPreview(dto.zplContent, labelSize);
+  }
+
+  // ============== PUBLIC PREVIEW ENDPOINT (VISOR ZPL) ==============
+
+  // Endpoint aparte y no `POST /zpl/preview` sin guard a proposito: el rate
+  // limit por IP y el tope de etiquetas son para el visitante anonimo, no para
+  // quien paga (que ademas comparte IP con toda su oficina detras del NAT).
+  @Post('public-preview')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({
+    default: { limit: 10, ttl: 60000 },
+    hourly: { limit: 30, ttl: 3600000 },
+  })
+  @ApiOperation({
+    summary: 'Vista previa publica de etiquetas ZPL (sin autenticacion)',
+    description:
+      'Recibe codigo ZPL y devuelve imagenes PNG de las etiquetas unicas con sus cantidades, ' +
+      'con la misma forma de respuesta que POST /zpl/preview. ' +
+      `Renderiza como mucho ${PUBLIC_PREVIEW_MAX_UNIQUE_LABELS} etiquetas unicas por peticion ` +
+      '(el recorte se aplica antes de llamar a Labelary; el archivo completo requiere cuenta). ' +
+      'Rate limit por IP: 10 peticiones/minuto y 30/hora. No requiere autenticacion.',
+  })
+  @ApiBody({ type: PublicPreviewDto })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Vista previa generada correctamente',
+    schema: {
+      properties: {
+        success: { type: 'boolean', example: true },
+        message: {
+          type: 'string',
+          example: 'Vista previa generada correctamente',
+        },
+        data: {
+          type: 'array',
+          description: `Como mucho ${PUBLIC_PREVIEW_MAX_UNIQUE_LABELS} elementos`,
+          items: {
+            type: 'object',
+            properties: {
+              img: {
+                type: 'string',
+                description: 'Imagen PNG en base64',
+                example: 'data:image/png;base64,...',
+              },
+              qty: {
+                type: 'number',
+                description:
+                  'Cantidad real de copias de la etiqueta en el archivo (^PQ incluido)',
+                example: 5,
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Contenido ZPL invalido (INVALID_ZPL) o demasiado grande',
+  })
+  @ApiResponse({
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    description: 'Rate limit por IP superado (10 req/min o 30 req/hora)',
+  })
+  async publicPreview(
+    @Body() dto: PublicPreviewDto,
+  ): Promise<ZplPreviewResponseDto> {
+    this.validateZplContent(dto.zplContent);
+
+    const size = dto.labelSize || LabelSize.TWO_BY_ONE;
+    const previews = await this.zplService.getLabelsPreview(
+      dto.zplContent,
+      size,
+      { maxUniqueLabels: PUBLIC_PREVIEW_MAX_UNIQUE_LABELS },
+    );
+
+    return {
+      success: true,
+      message: 'Vista previa generada correctamente',
+      data: previews,
+    };
   }
 
   // ============== BATCH PROCESSING ENDPOINTS ==============
