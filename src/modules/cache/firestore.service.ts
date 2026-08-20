@@ -7661,6 +7661,88 @@ export class FirestoreService {
     }
   }
 
+  /**
+   * Borra los batches del usuario y devuelve sus ids, para poder limpiar
+   * después los ZIP que cuelgan de `batches/<batchId>/` en Storage.
+   */
+  async deleteBatchJobsByUserId(userId: string): Promise<string[]> {
+    const snapshot = await this.firestore
+      .collection(this.batchCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    const ids = snapshot.docs.map((doc) => doc.id);
+    await this.deleteDocs(snapshot.docs);
+
+    return ids;
+  }
+
+  /**
+   * Borra los documentos de estado de conversión del usuario.
+   *
+   * Son los que sirven `GET /zpl/status/:jobId`: llevan `userId`, el nombre del
+   * archivo y la URL firmada del resultado, así que sobrevivir a la baja los
+   * dejaría respondiendo con datos de una cuenta que ya no existe.
+   */
+  async deleteConversionStatusesByUserId(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.collectionName)
+      .where('userId', '==', userId)
+      .get();
+
+    return this.deleteDocs(snapshot.docs);
+  }
+
+  /**
+   * Desvincula del usuario los registros contables locales.
+   *
+   * `stripe_transactions` y `subscription_events` alimentan las métricas de
+   * ingresos y de churn, así que borrarlos falsearía la contabilidad histórica.
+   * Pero llevan `userId` y `userEmail`, que sí identifican al titular: se les
+   * aplica la misma desvinculación que a los CFDI —los importes, fechas y
+   * planes se quedan— para que la baja no deje al usuario nombrado en un sitio
+   * que la respuesta ni siquiera menciona.
+   *
+   * @returns cuántos registros se anonimizaron entre ambas colecciones.
+   */
+  async anonymizeUserFinancialRecords(userId: string): Promise<number> {
+    const now = new Date();
+    let updated = 0;
+
+    for (const collection of [
+      this.transactionsCollection,
+      this.subscriptionEventsCollection,
+    ]) {
+      const snapshot = await this.firestore
+        .collection(collection)
+        .where('userId', '==', userId)
+        .get();
+
+      if (snapshot.empty) continue;
+
+      for (const chunk of this.chunk(
+        snapshot.docs,
+        FirestoreService.DELETION_BATCH_SIZE,
+      )) {
+        const batch = this.firestore.batch();
+        for (const doc of chunk) {
+          batch.update(doc.ref, {
+            userId: FirestoreService.ANONYMIZED_USER_ID,
+            // Se vacía en vez de borrarse el campo: los consumidores lo leen sin
+            // comprobar que exista, y un `undefined` inesperado rompería el
+            // dashboard de finanzas.
+            userEmail: '',
+            anonymizedAt: now,
+          });
+        }
+        await batch.commit();
+        updated += chunk.length;
+      }
+    }
+
+    return updated;
+  }
+
   /** Borra los registros de historial indicados y devuelve cuántos se borraron. */
   async deleteConversionHistoryByIds(ids: string[]): Promise<number> {
     if (ids.length === 0) {

@@ -21,6 +21,7 @@ import {
 export type AccountDeletionStep =
   | 'conversions'
   | 'storedFiles'
+  | 'batches'
   | 'usage'
   | 'taxProfile'
   | 'retainedRecords'
@@ -62,9 +63,11 @@ const INVOICE_PAGE_SIZE = 100;
  * ## Lo que no se borra
  *
  * Los CFDI timbrados y las facturas de Stripe se conservan cinco años por
- * obligación fiscal (México). No se borran: se **desvinculan** del usuario —el
- * `userId` del CFDI pasa a un marcador, y el customer de Stripe pierde nombre y
- * email—, de modo que el comprobante sobrevive sin identificar a nadie. La
+ * obligación fiscal (México), y los registros contables locales
+ * (`stripe_transactions`, `subscription_events`) sostienen las métricas de
+ * ingresos y churn. No se borran: se **desvinculan** del usuario —`userId` pasa
+ * a un marcador, `userEmail` se vacía y el customer de Stripe pierde nombre,
+ * email y metadata—, de modo que el registro sobrevive sin identificar a nadie. La
  * respuesta lo declara en `retained`, para que el diálogo de confirmación del
  * frontend pueda enumerar exactamente qué se pierde y qué se queda.
  */
@@ -142,6 +145,26 @@ export class AccountDeletionService {
       failed('storedFiles', error);
     }
 
+    // Las conversiones batch no pasan por `conversion_history` con su archivo:
+    // el ZIP vive en `batches/<batchId>/` y el documento de `zpl-batches` lleva
+    // userId, los nombres de los ficheros subidos y una `downloadUrl` que el
+    // endpoint de estado sigue sirviendo. Sin este paso, la baja dejaría
+    // descargables los archivos de una cuenta que ya no existe.
+    try {
+      const batchIds =
+        await this.firestoreService.deleteBatchJobsByUserId(userId);
+
+      for (const batchId of batchIds) {
+        storedFiles += await this.storageService.deleteByPrefix(
+          `batches/${batchId}/`,
+        );
+      }
+
+      await this.firestoreService.deleteConversionStatusesByUserId(userId);
+    } catch (error) {
+      failed('batches', error);
+    }
+
     try {
       await this.firestoreService.deleteUsageByUserId(userId);
     } catch (error) {
@@ -156,6 +179,7 @@ export class AccountDeletionService {
 
     try {
       retainedRecords = await this.firestoreService.anonymizeUserCfdis(userId);
+      await this.firestoreService.anonymizeUserFinancialRecords(userId);
       await this.anonymizeStripeCustomer(user);
     } catch (error) {
       failed('retainedRecords', error);
@@ -446,8 +470,17 @@ export class AccountDeletionService {
    * comprobante emitido.
    */
   private async anonymizeStripeCustomer(user: User): Promise<void> {
-    if (!user.stripeCustomerId || !this.stripe) {
+    if (!user.stripeCustomerId) {
       return;
+    }
+
+    if (!this.stripe) {
+      // Sin cliente de Stripe el customer se queda con nombre, email y
+      // metadata. Devolver 200 aquí afirmaría que solo sobreviven comprobantes
+      // anonimizados, que es exactamente lo contrario de lo que pasó.
+      throw new Error(
+        'stripe_not_configured: no se puede anonimizar el customer de Stripe',
+      );
     }
 
     const customer = await this.stripe.customers.retrieve(

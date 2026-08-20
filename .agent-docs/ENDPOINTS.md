@@ -80,11 +80,21 @@ Lógica en `src/modules/users/account-deletion.service.ts`. Encadena, **en este 
    esa es la razón de que la cancelación vaya primero.
 3. Borra `conversion_history` y los archivos de Storage que cuelguen de la URL firmada
    de cada fila, más el prefijo `debug-zpl/<uid>/` y sus docs de `zpl_debug_files`.
-4. Borra `usage`, el perfil fiscal (`tax_profiles`) y cancela los emails en cola.
-5. Anonimiza lo que tiene retención legal: los `cfdis` del usuario pasan a
-   `userId: 'deleted_user'` y el customer de Stripe pierde nombre, email y metadata.
-   El XML/PDF timbrado NO se toca: es el documento fiscal.
-6. Borra el doc de `users` y, por último, la cuenta de Firebase Auth.
+4. Borra los batches (`zpl-batches` + los ZIP de `batches/<batchId>/`) y los docs de
+   estado de `zpl-conversions`, que siguen sirviendo `GET /zpl/status/:jobId`.
+5. Borra `usage`, el perfil fiscal (`tax_profiles`) y cancela los emails en cola.
+6. Anonimiza lo que se conserva: los `cfdis` y los registros contables
+   (`stripe_transactions`, `subscription_events`) pasan a `userId: 'deleted_user'` con
+   `userEmail` vacío, y el customer de Stripe pierde nombre, email y metadata. El
+   XML/PDF timbrado NO se toca: es el documento fiscal.
+7. Borra el doc de `users` y, por último, la cuenta de Firebase Auth. Si el doc no
+   llega a borrarse, la cuenta de Auth se deja viva: sin ella el usuario no podría
+   autenticarse para reintentar la baja.
+
+`FirebaseAuthGuard` comprueba en Firebase Auth que la cuenta existe **antes** de su
+"lazy user creation": un ID token sigue siendo válido hasta una hora después de la
+baja, y sin esa comprobación la primera petición posterior recrearía el perfil. Solo
+se paga en el alta; el resto de peticiones encuentran el documento y no pasan por ahí.
 
 Respuesta 200: `{ deleted: { conversions, storedFiles, taxProfile, subscription:
 { cancelled, plan, effectiveAt } }, retained: { invoices, reason } }`. `reason` es un

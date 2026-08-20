@@ -46,6 +46,15 @@ export class FirebaseAuthGuard implements CanActivate {
       let user = await this.firestoreService.getUserById(decodedToken.uid);
 
       if (!user) {
+        // Antes de crear nada: comprobar que la cuenta sigue existiendo en
+        // Firebase Auth. Un ID token sigue siendo criptográficamente válido
+        // hasta una hora después de borrar la cuenta, así que sin esta
+        // comprobación la primera petición posterior a una baja recrearía el
+        // documento y la cuenta "borrada" volvería a existir. Solo se paga en
+        // el alta —el resto de peticiones encuentran el documento y no pasan
+        // por aquí—, así que no añade latencia al camino normal.
+        await this.assertAuthAccountExists(decodedToken.uid);
+
         // Crear usuario con plan free
         const newUser: User = {
           id: decodedToken.uid,
@@ -71,6 +80,13 @@ export class FirebaseAuthGuard implements CanActivate {
       };
       return true;
     } catch (error) {
+      // El rechazo por cuenta inexistente es una decisión, no un fallo de
+      // Firestore: degradarlo al acceso permitido de abajo reabriría justo el
+      // agujero que cierra.
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+
       this.logger.error(`Firestore error: ${error.message}`);
       // Si Firestore falla, aún permitimos el acceso con datos del token
       request.user = {
@@ -81,6 +97,31 @@ export class FirebaseAuthGuard implements CanActivate {
         picture: decodedToken.picture,
       };
       return true;
+    }
+  }
+
+  /**
+   * Rechaza al portador de un token cuya cuenta de Firebase Auth ya no existe.
+   *
+   * Solo `auth/user-not-found` bloquea: cualquier otro fallo (Auth caído, SDK
+   * sin credenciales) dejaría sin registrarse a usuarios legítimos, y esta
+   * comprobación es una salvaguarda contra la resurrección de una cuenta
+   * borrada, no el control de acceso principal.
+   */
+  private async assertAuthAccountExists(uid: string): Promise<void> {
+    try {
+      await this.firebaseAdminService.getUser(uid);
+    } catch (error) {
+      if (error?.code === 'auth/user-not-found') {
+        this.logger.warn(
+          `Token válido de una cuenta ya borrada (${uid}); no se recrea el perfil`,
+        );
+        throw new UnauthorizedException('Account no longer exists');
+      }
+
+      this.logger.warn(
+        `No se pudo comprobar la cuenta ${uid} en Firebase Auth: ${error.message}`,
+      );
     }
   }
 }

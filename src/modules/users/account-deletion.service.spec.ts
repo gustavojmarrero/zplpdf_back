@@ -70,6 +70,9 @@ function buildService(
       .fn()
       .mockImplementation(async (ids: string[]) => ids.length),
     deleteZplDebugFilesByUserId: jest.fn().mockResolvedValue(0),
+    deleteBatchJobsByUserId: jest.fn().mockResolvedValue([]),
+    deleteConversionStatusesByUserId: jest.fn().mockResolvedValue(0),
+    anonymizeUserFinancialRecords: jest.fn().mockResolvedValue(0),
     deleteUsageByUserId: jest.fn().mockResolvedValue(2),
     deleteTaxProfile: jest.fn().mockResolvedValue(true),
     anonymizeUserCfdis: jest.fn().mockResolvedValue(3),
@@ -160,6 +163,60 @@ describe('AccountDeletionService — baja completa', () => {
     expect(firestore.deleteUsageByUserId).toHaveBeenCalledWith('uid-1');
     expect(firestore.deleteUser).toHaveBeenCalledWith('uid-1');
     expect(firebaseAdmin.deleteUser).toHaveBeenCalledWith('uid-1');
+  });
+
+  it('borra los batches del usuario y los ZIP que cuelgan de ellos', async () => {
+    const { service, firestore, storage } = buildService({
+      firestore: {
+        deleteBatchJobsByUserId: jest
+          .fn()
+          .mockResolvedValue(['batch-1', 'batch-2']),
+      },
+      storage: {
+        deleteFile: jest.fn().mockResolvedValue(true),
+        deleteByPrefix: jest.fn().mockResolvedValue(2),
+      },
+    });
+
+    const result = await service.deleteAccount('uid-1');
+
+    expect(storage.deleteByPrefix).toHaveBeenCalledWith('batches/batch-1/');
+    expect(storage.deleteByPrefix).toHaveBeenCalledWith('batches/batch-2/');
+    // El doc de estado sirve `GET /zpl/status/:jobId` con la URL del resultado.
+    expect(firestore.deleteConversionStatusesByUserId).toHaveBeenCalledWith(
+      'uid-1',
+    );
+    // 2 PDF del historial + 3 prefijos (debug-zpl y los dos batches) x 2.
+    expect(result.deleted.storedFiles).toBe(8);
+  });
+
+  it('anonimiza también los registros contables locales', async () => {
+    const { service, firestore } = buildService();
+
+    await service.deleteAccount('uid-1');
+
+    // stripe_transactions y subscription_events llevan userId y userEmail: se
+    // conservan por contabilidad, pero dejan de nombrar al titular.
+    expect(firestore.anonymizeUserFinancialRecords).toHaveBeenCalledWith(
+      'uid-1',
+    );
+  });
+
+  it('no da por buena la baja si el customer de Stripe se queda sin anonimizar', async () => {
+    const { service } = buildService({
+      user: { ...baseUser, stripeSubscriptionId: undefined },
+      stripe: null,
+    });
+
+    const error: HttpException = await service
+      .deleteAccount('uid-1')
+      .catch((e: HttpException) => e);
+
+    // Sin cliente de Stripe, el customer conserva nombre, email y metadata:
+    // responder 200 afirmaría lo contrario de lo que pasó.
+    const response = error.getResponse() as any;
+    expect(response.error).toBe(ErrorCodes.ACCOUNT_DELETION_PARTIAL);
+    expect(response.data.failedSteps).toContain('retainedRecords');
   });
 
   it('anonimiza los CFDI en lugar de borrarlos, y anonimiza el customer de Stripe', async () => {
