@@ -75,21 +75,28 @@ cae en la foto del proveedor de acceso.
 Lógica en `src/modules/users/account-deletion.service.ts`. Encadena, **en este orden**:
 
 1. Cuenta las facturas de Stripe que van a conservarse.
-2. **Cancela la suscripción** (inmediata, no a fin de periodo). Si Stripe la rechaza,
-   la petición muere aquí con `409 SUBSCRIPTION_CANCEL_FAILED` y **no se borra nada**:
-   esa es la razón de que la cancelación vaya primero.
+2. **Cancela las suscripciones vivas** (inmediata, no a fin de periodo). Mira el
+   `stripeSubscriptionId` guardado **y** las del `stripeCustomerId`: el id local puede
+   faltar o estar desfasado, y fiarse solo de él dejaría un contrato cobrando a una
+   cuenta borrada. Si Stripe rechaza cualquiera, la petición muere aquí con
+   `409 SUBSCRIPTION_CANCEL_FAILED` y **no se borra nada**.
 3. Borra `conversion_history` y los archivos de Storage que cuelguen de la URL firmada
    de cada fila, más el prefijo `debug-zpl/<uid>/` y sus docs de `zpl_debug_files`.
 4. Borra los batches (`zpl-batches` + los ZIP de `batches/<batchId>/`) y los docs de
    estado de `zpl-conversions`, que siguen sirviendo `GET /zpl/status/:jobId`.
 5. Borra `usage`, el perfil fiscal (`tax_profiles`) y cancela los emails en cola.
-6. Anonimiza lo que se conserva: los `cfdis` y los registros contables
-   (`stripe_transactions`, `subscription_events`) pasan a `userId: 'deleted_user'` con
-   `userEmail` vacío, y el customer de Stripe pierde nombre, email y metadata. El
-   XML/PDF timbrado NO se toca: es el documento fiscal.
-7. Borra el doc de `users` y, por último, la cuenta de Firebase Auth. Si el doc no
-   llega a borrarse, la cuenta de Auth se deja viva: sin ella el usuario no podría
-   autenticarse para reintentar la baja.
+6. Anonimiza lo que se conserva: los `cfdis`, los registros contables
+   (`stripe_transactions`, `subscription_events`) y los de actividad (`email_queue`,
+   `email_events`, `feedback`) pasan a `userId: 'deleted_user'` con `userEmail` vacío,
+   y el customer de Stripe pierde nombre, email, teléfono, domicilio, metadata y sus
+   tax IDs. El XML/PDF timbrado NO se toca: es el documento fiscal. Tras borrar el
+   perfil se repite el barrido contable, porque el webhook de cancelación puede
+   escribir un `subscription_event` con PII mientras la baja avanza.
+7. Borra el doc de `users` y, por último, la cuenta de Firebase Auth — **solo si
+   ningún paso anterior falló**. Con datos o archivos pendientes, la identidad se
+   conserva: es lo único que permite reintentar la baja, y sin ella esos restos
+   quedarían sin dueño. Si el doc no llega a borrarse, tampoco se borra la cuenta de
+   Auth.
 
 `FirebaseAuthGuard` comprueba en Firebase Auth que la cuenta existe **antes** de su
 "lazy user creation": un ID token sigue siendo válido hasta una hora después de la

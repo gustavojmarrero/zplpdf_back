@@ -7662,19 +7662,40 @@ export class FirestoreService {
   }
 
   /**
-   * Borra los batches del usuario y devuelve sus ids, para poder limpiar
-   * después los ZIP que cuelgan de `batches/<batchId>/` en Storage.
+   * Ids de los batches del usuario, para localizar sus ZIP en Storage.
+   *
+   * Se leen antes de borrar nada: el `batchId` es la única forma de encontrar
+   * `batches/<batchId>/`, así que borrar primero el documento y fallar después
+   * al limpiar el bucket dejaría los archivos huérfanos y sin rastro con el que
+   * volver a buscarlos.
    */
-  async deleteBatchJobsByUserId(userId: string): Promise<string[]> {
+  async getBatchIdsByUserId(userId: string): Promise<string[]> {
     const snapshot = await this.firestore
       .collection(this.batchCollection)
       .where('userId', '==', userId)
       .get();
 
-    const ids = snapshot.docs.map((doc) => doc.id);
-    await this.deleteDocs(snapshot.docs);
+    return snapshot.docs.map((doc) => doc.id);
+  }
 
-    return ids;
+  /** Borra los batches indicados. */
+  async deleteBatchJobsByIds(batchIds: string[]): Promise<number> {
+    if (batchIds.length === 0) {
+      return 0;
+    }
+
+    for (const chunk of this.chunk(
+      batchIds,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const id of chunk) {
+        batch.delete(this.firestore.collection(this.batchCollection).doc(id));
+      }
+      await batch.commit();
+    }
+
+    return batchIds.length;
   }
 
   /**
@@ -7734,6 +7755,70 @@ export class FirestoreService {
             userEmail: '',
             anonymizedAt: now,
           });
+        }
+        await batch.commit();
+        updated += chunk.length;
+      }
+    }
+
+    return updated;
+  }
+
+  /**
+   * Desvincula del usuario la cola de emails, sus eventos y su feedback.
+   *
+   * `email_queue` guarda `userEmail` y la metadata con la que se compuso cada
+   * envío (nombre incluido); `email_events` y `feedback` guardan `userId` y
+   * `userEmail`, y el feedback además texto libre. Se anonimizan en vez de
+   * borrarse porque las métricas de email y el feedback del producto se
+   * calculan sobre ellos y borrarlos falsearía la serie histórica: lo que
+   * desaparece es a quién pertenecen.
+   *
+   * @returns cuántos documentos se anonimizaron entre las tres colecciones.
+   */
+  async anonymizeUserActivityRecords(userId: string): Promise<number> {
+    const now = new Date();
+    let updated = 0;
+
+    const targets: Array<{ collection: string; clearMetadata: boolean }> = [
+      { collection: this.emailQueueCollection, clearMetadata: true },
+      { collection: this.emailEventsCollection, clearMetadata: true },
+      { collection: this.feedbackCollection, clearMetadata: false },
+    ];
+
+    for (const { collection, clearMetadata } of targets) {
+      const snapshot = await this.firestore
+        .collection(collection)
+        .where('userId', '==', userId)
+        .get();
+
+      if (snapshot.empty) continue;
+
+      for (const chunk of this.chunk(
+        snapshot.docs,
+        FirestoreService.DELETION_BATCH_SIZE,
+      )) {
+        const batch = this.firestore.batch();
+        for (const doc of chunk) {
+          const updates: Record<string, any> = {
+            userId: FirestoreService.ANONYMIZED_USER_ID,
+            anonymizedAt: now,
+            updatedAt: now,
+          };
+
+          // Solo se toca `userEmail` si el documento lo tiene: escribirlo en uno
+          // que no lo llevaba añadiría un campo vacío donde no había ninguno.
+          if (doc.get('userEmail') !== undefined) {
+            updates.userEmail = '';
+          }
+
+          // La metadata del email lleva el nombre con el que se personalizó el
+          // envío. El feedback conserva la suya: es contenido de producto.
+          if (clearMetadata && doc.get('metadata') !== undefined) {
+            updates.metadata = FieldValue.delete();
+          }
+
+          batch.update(doc.ref, updates);
         }
         await batch.commit();
         updated += chunk.length;

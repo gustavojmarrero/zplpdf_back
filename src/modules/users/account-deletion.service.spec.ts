@@ -70,7 +70,9 @@ function buildService(
       .fn()
       .mockImplementation(async (ids: string[]) => ids.length),
     deleteZplDebugFilesByUserId: jest.fn().mockResolvedValue(0),
-    deleteBatchJobsByUserId: jest.fn().mockResolvedValue([]),
+    getBatchIdsByUserId: jest.fn().mockResolvedValue([]),
+    deleteBatchJobsByIds: jest.fn().mockResolvedValue(0),
+    anonymizeUserActivityRecords: jest.fn().mockResolvedValue(0),
     deleteConversionStatusesByUserId: jest.fn().mockResolvedValue(0),
     anonymizeUserFinancialRecords: jest.fn().mockResolvedValue(0),
     deleteUsageByUserId: jest.fn().mockResolvedValue(2),
@@ -98,6 +100,7 @@ function buildService(
               id: 'sub_1',
               status: 'active',
             }),
+            list: jest.fn().mockResolvedValue({ data: [] }),
             cancel: jest.fn().mockResolvedValue({
               id: 'sub_1',
               status: 'canceled',
@@ -118,6 +121,8 @@ function buildService(
               metadata: { userId: 'uid-1' },
             }),
             update: jest.fn().mockResolvedValue({}),
+            listTaxIds: jest.fn().mockResolvedValue({ data: [] }),
+            deleteTaxId: jest.fn().mockResolvedValue({}),
           },
           ...overrides.stripe,
         };
@@ -168,7 +173,7 @@ describe('AccountDeletionService — baja completa', () => {
   it('borra los batches del usuario y los ZIP que cuelgan de ellos', async () => {
     const { service, firestore, storage } = buildService({
       firestore: {
-        deleteBatchJobsByUserId: jest
+        getBatchIdsByUserId: jest
           .fn()
           .mockResolvedValue(['batch-1', 'batch-2']),
       },
@@ -182,6 +187,11 @@ describe('AccountDeletionService — baja completa', () => {
 
     expect(storage.deleteByPrefix).toHaveBeenCalledWith('batches/batch-1/');
     expect(storage.deleteByPrefix).toHaveBeenCalledWith('batches/batch-2/');
+    // Los documentos se borran DESPUÉS de sus archivos, y solo los limpiados.
+    expect(firestore.deleteBatchJobsByIds).toHaveBeenCalledWith([
+      'batch-1',
+      'batch-2',
+    ]);
     // El doc de estado sirve `GET /zpl/status/:jobId` con la URL del resultado.
     expect(firestore.deleteConversionStatusesByUserId).toHaveBeenCalledWith(
       'uid-1',
@@ -203,20 +213,84 @@ describe('AccountDeletionService — baja completa', () => {
   });
 
   it('no da por buena la baja si el customer de Stripe se queda sin anonimizar', async () => {
-    const { service } = buildService({
+    const { service, firestore, stripe } = buildService();
+    stripe.customers.update.mockRejectedValue(new Error('stripe caído'));
+
+    const error: HttpException = await service
+      .deleteAccount('uid-1')
+      .catch((e: HttpException) => e);
+
+    // El customer conservaría nombre, email y domicilio: responder 200
+    // afirmaría lo contrario de lo que pasó.
+    const response = error.getResponse() as any;
+    expect(response.error).toBe(ErrorCodes.ACCOUNT_DELETION_PARTIAL);
+    expect(response.data.failedSteps).toContain('retainedRecords');
+    expect(firestore.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it('borra el domicilio y los tax IDs del customer, no solo su email', async () => {
+    const { service, stripe } = buildService();
+    stripe.customers.listTaxIds.mockResolvedValue({
+      data: [{ id: 'txi_1' }, { id: 'txi_2' }],
+    });
+
+    await service.deleteAccount('uid-1');
+
+    expect(stripe.customers.update).toHaveBeenCalledWith(
+      'cus_1',
+      expect.objectContaining({ address: null, phone: '' }),
+    );
+    expect(stripe.customers.deleteTaxId).toHaveBeenCalledWith('cus_1', 'txi_1');
+    expect(stripe.customers.deleteTaxId).toHaveBeenCalledWith('cus_1', 'txi_2');
+  });
+
+  it('anonimiza la cola de emails, sus eventos y el feedback', async () => {
+    const { service, firestore } = buildService();
+
+    await service.deleteAccount('uid-1');
+
+    expect(firestore.anonymizeUserActivityRecords).toHaveBeenCalledWith(
+      'uid-1',
+    );
+    // Segundo pase tras borrar el perfil: cierra la ventana en la que el
+    // webhook de Stripe pudo reescribir el email del titular.
+    expect(firestore.anonymizeUserFinancialRecords).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancela una suscripción activa que el perfil no tenía registrada', async () => {
+    const { service, stripe } = buildService({
       user: { ...baseUser, stripeSubscriptionId: undefined },
-      stripe: null,
+    });
+    stripe.subscriptions.list.mockResolvedValue({
+      data: [{ id: 'sub_huerfana', status: 'active' }],
+    });
+
+    const result = await service.deleteAccount('uid-1');
+
+    // Sin esta búsqueda por customer, la cuenta se borraría y Stripe seguiría
+    // cobrando una suscripción que nadie puede cancelar ya.
+    expect(stripe.subscriptions.cancel).toHaveBeenCalledWith('sub_huerfana');
+    expect(result.deleted.subscription.cancelled).toBe(true);
+  });
+
+  it('conserva la fila del historial cuyo archivo no se pudo borrar', async () => {
+    const { service, firestore } = buildService({
+      storage: {
+        deleteFile: jest.fn().mockRejectedValue({ code: 403 }),
+        deleteByPrefix: jest.fn().mockResolvedValue(0),
+      },
     });
 
     const error: HttpException = await service
       .deleteAccount('uid-1')
       .catch((e: HttpException) => e);
 
-    // Sin cliente de Stripe, el customer conserva nombre, email y metadata:
-    // responder 200 afirmaría lo contrario de lo que pasó.
+    // La `fileUrl` de la fila es la única pista para reintentar el borrado del
+    // objeto: si se fuera la fila, el archivo quedaría en el bucket sin rastro.
+    expect(firestore.deleteConversionHistoryByIds).toHaveBeenCalledWith([]);
     const response = error.getResponse() as any;
-    expect(response.error).toBe(ErrorCodes.ACCOUNT_DELETION_PARTIAL);
-    expect(response.data.failedSteps).toContain('retainedRecords');
+    expect(response.data.failedSteps).toContain('storedFiles');
+    expect(response.data.accountDeleted).toBe(false);
   });
 
   it('anonimiza los CFDI en lugar de borrarlos, y anonimiza el customer de Stripe', async () => {
@@ -400,8 +474,8 @@ describe('AccountDeletionService — borrado parcial', () => {
     expect(response.data.accountDeleted).toBe(false);
   });
 
-  it('sigue borrando el resto aunque falle un paso intermedio', async () => {
-    const { service, firestore } = buildService({
+  it('no borra la identidad si quedó un paso intermedio pendiente', async () => {
+    const { service, firestore, firebaseAdmin } = buildService({
       firestore: {
         deleteTaxProfile: jest.fn().mockRejectedValue(new Error('boom')),
       },
@@ -413,8 +487,13 @@ describe('AccountDeletionService — borrado parcial', () => {
 
     const response = error.getResponse() as any;
     expect(response.data.failedSteps).toEqual(['taxProfile']);
-    expect(response.data.accountDeleted).toBe(true);
-    expect(firestore.deleteUser).toHaveBeenCalled();
+    // El perfil fiscal seguiría ahí: borrar la cuenta lo dejaría sin dueño y al
+    // usuario sin credenciales para reintentar la baja.
+    expect(response.data.accountDeleted).toBe(false);
+    expect(firestore.deleteUser).not.toHaveBeenCalled();
+    expect(firebaseAdmin.deleteUser).not.toHaveBeenCalled();
+    // Los pasos posteriores al que falló sí se ejecutan.
+    expect(firestore.anonymizeUserCfdis).toHaveBeenCalled();
   });
 });
 

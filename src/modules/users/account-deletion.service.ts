@@ -151,15 +151,21 @@ export class AccountDeletionService {
     // endpoint de estado sigue sirviendo. Sin este paso, la baja dejaría
     // descargables los archivos de una cuenta que ya no existe.
     try {
-      const batchIds =
-        await this.firestoreService.deleteBatchJobsByUserId(userId);
+      // Los ZIP primero y el documento después: el `batchId` es la única pista
+      // para encontrar `batches/<batchId>/`, así que borrar el documento antes
+      // y fallar luego en Storage dejaría los archivos huérfanos e ilocalizables
+      // para un reintento.
+      const batchIds = await this.firestoreService.getBatchIdsByUserId(userId);
+      const purgedBatchIds: string[] = [];
 
       for (const batchId of batchIds) {
         storedFiles += await this.storageService.deleteByPrefix(
           `batches/${batchId}/`,
         );
+        purgedBatchIds.push(batchId);
       }
 
+      await this.firestoreService.deleteBatchJobsByIds(purgedBatchIds);
       await this.firestoreService.deleteConversionStatusesByUserId(userId);
     } catch (error) {
       failed('batches', error);
@@ -177,17 +183,8 @@ export class AccountDeletionService {
       failed('taxProfile', error);
     }
 
-    try {
-      retainedRecords = await this.firestoreService.anonymizeUserCfdis(userId);
-      await this.firestoreService.anonymizeUserFinancialRecords(userId);
-      await this.anonymizeStripeCustomer(user);
-    } catch (error) {
-      failed('retainedRecords', error);
-    }
-
-    // La cola de emails no es un dato del usuario, pero seguir escribiéndole
-    // después de darse de baja sí sería un problema. Un fallo aquí no ensucia
-    // el resultado: los envíos comprueban de nuevo que el usuario exista.
+    // Los envíos pendientes se cancelan antes de anonimizar la cola: al revés,
+    // el barrido de cancelación ya no encontraría sus documentos por `userId`.
     try {
       await this.firestoreService.cancelPendingEmails(userId);
     } catch (error) {
@@ -196,13 +193,35 @@ export class AccountDeletionService {
       );
     }
 
+    try {
+      retainedRecords = await this.firestoreService.anonymizeUserCfdis(userId);
+      await this.firestoreService.anonymizeUserFinancialRecords(userId);
+      await this.firestoreService.anonymizeUserActivityRecords(userId);
+      await this.anonymizeStripeCustomer(user);
+    } catch (error) {
+      failed('retainedRecords', error);
+    }
+
     let accountDeleted = false;
 
-    try {
-      await this.firestoreService.deleteUser(userId);
-      accountDeleted = true;
-    } catch (error) {
-      failed('account', error);
+    // La identidad se borra solo si no quedó nada pendiente. Con datos o
+    // archivos del usuario aún sin tocar, borrar el perfil y la cuenta de Auth
+    // dejaría a esos restos sin dueño y al usuario sin forma de autenticarse
+    // para reintentar la baja: el 500 con `failedSteps` es preferible a una
+    // cuenta medio borrada que nadie puede terminar de borrar.
+    if (failedSteps.length > 0) {
+      this.logger.error(
+        `Baja de cuenta ${userId}: no se borra la identidad porque quedaron pasos ` +
+          `pendientes (${failedSteps.join(', ')}); el usuario conserva el acceso ` +
+          'para reintentar',
+      );
+    } else {
+      try {
+        await this.firestoreService.deleteUser(userId);
+        accountDeleted = true;
+      } catch (error) {
+        failed('account', error);
+      }
     }
 
     if (accountDeleted) {
@@ -223,6 +242,22 @@ export class AccountDeletionService {
         `Baja de cuenta ${userId}: no se borra la cuenta de Firebase Auth porque el ` +
           'perfil no llegó a borrarse; sin ella el usuario no podría reintentar',
       );
+    }
+
+    if (accountDeleted) {
+      // Segundo pase, idempotente y normalmente vacío. La cancelación de la
+      // suscripción dispara `customer.subscription.deleted`, cuyo manejador
+      // puede escribir un `subscription_event` con el email del titular mientras
+      // esta baja avanza. En cuanto el documento de `users` desaparece, ese
+      // manejador sale sin escribir —busca al usuario por customer y no lo
+      // encuentra—, así que barrer aquí cierra la ventana en la que el webhook
+      // pudo colarse entre la anonimización y el borrado.
+      try {
+        await this.firestoreService.anonymizeUserFinancialRecords(userId);
+        await this.firestoreService.anonymizeUserActivityRecords(userId);
+      } catch (error) {
+        failed('retainedRecords', error);
+      }
     }
 
     const deleted = {
@@ -285,17 +320,79 @@ export class AccountDeletionService {
   private async cancelSubscription(
     user: User,
   ): Promise<DeletedSubscriptionDto> {
-    if (!user.stripeSubscriptionId) {
+    if (!user.stripeSubscriptionId && !user.stripeCustomerId) {
       return { cancelled: false, plan: null, effectiveAt: null };
     }
 
     if (!this.stripe) {
-      // Con una suscripción registrada y sin cliente de Stripe no hay forma de
-      // comprobar ni de cancelar: borrar la cuenta la dejaría cobrando.
+      // Con rastro de Stripe y sin cliente no hay forma de comprobar ni de
+      // cancelar: borrar la cuenta podría dejarla cobrando.
       throw this.subscriptionCancelFailed(user, 'stripe_not_configured');
     }
 
+    let subscriptionIds: string[];
+
     try {
+      subscriptionIds = await this.resolveLiveSubscriptionIds(user);
+    } catch (error) {
+      this.logger.error(
+        `Baja de cuenta ${user.id}: no se pudieron resolver las suscripciones — ${error.message}`,
+      );
+      throw this.subscriptionCancelFailed(user, error?.code ?? 'stripe_error');
+    }
+
+    if (subscriptionIds.length === 0) {
+      return {
+        cancelled: false,
+        plan: user.stripeSubscriptionId ? (user.plan ?? null) : null,
+        effectiveAt: null,
+      };
+    }
+
+    let canceledAt: Date | null = null;
+
+    for (const subscriptionId of subscriptionIds) {
+      try {
+        const cancelled =
+          await this.stripe.subscriptions.cancel(subscriptionId);
+
+        canceledAt = cancelled.canceled_at
+          ? new Date(cancelled.canceled_at * 1000)
+          : new Date();
+      } catch (error) {
+        this.logger.error(
+          `Baja de cuenta ${user.id}: Stripe rechazó cancelar ${subscriptionId} — ${error.message}`,
+        );
+        throw this.subscriptionCancelFailed(
+          user,
+          error?.code ?? 'stripe_error',
+        );
+      }
+    }
+
+    return {
+      cancelled: true,
+      plan: user.plan ?? null,
+      effectiveAt: (canceledAt ?? new Date()).toISOString(),
+    };
+  }
+
+  /**
+   * Suscripciones vivas del usuario, mirando al customer y no solo al id que
+   * tengamos guardado.
+   *
+   * `stripeSubscriptionId` puede faltar o estar desfasado —un checkout cuyo
+   * webhook no llegó, una suscripción duplicada—, y fiarse solo de él dejaría un
+   * contrato cobrando a una cuenta que acabamos de borrar. El propio flujo de
+   * alta ya consulta por `stripeCustomerId` por este mismo motivo.
+   *
+   * Se devuelven sin duplicar y solo las que no están canceladas: cancelar una
+   * ya cancelada no aporta nada y Stripe lo rechaza.
+   */
+  private async resolveLiveSubscriptionIds(user: User): Promise<string[]> {
+    const ids = new Set<string>();
+
+    if (user.stripeSubscriptionId) {
       const current = await this.stripe.subscriptions.retrieve(
         user.stripeSubscriptionId,
       );
@@ -304,28 +401,26 @@ export class AccountDeletionService {
         this.logger.log(
           `Baja de cuenta ${user.id}: la suscripción ${current.id} ya estaba cancelada`,
         );
-        return { cancelled: false, plan: user.plan ?? null, effectiveAt: null };
+      } else {
+        ids.add(current.id);
       }
-
-      const cancelled = await this.stripe.subscriptions.cancel(
-        user.stripeSubscriptionId,
-      );
-
-      const canceledAt = cancelled.canceled_at
-        ? new Date(cancelled.canceled_at * 1000)
-        : new Date();
-
-      return {
-        cancelled: true,
-        plan: user.plan ?? null,
-        effectiveAt: canceledAt.toISOString(),
-      };
-    } catch (error) {
-      this.logger.error(
-        `Baja de cuenta ${user.id}: Stripe rechazó cancelar ${user.stripeSubscriptionId} — ${error.message}`,
-      );
-      throw this.subscriptionCancelFailed(user, error?.code ?? 'stripe_error');
     }
+
+    if (user.stripeCustomerId) {
+      const subscriptions = await this.stripe.subscriptions.list({
+        customer: user.stripeCustomerId,
+        status: 'all',
+        limit: 100,
+      });
+
+      for (const subscription of subscriptions.data) {
+        if (subscription.status !== 'canceled') {
+          ids.add(subscription.id);
+        }
+      }
+    }
+
+    return [...ids];
   }
 
   private subscriptionCancelFailed(user: User, reason: string): HttpException {
@@ -375,29 +470,42 @@ export class AccountDeletionService {
         return { conversions, storedFiles, storageFailed, incomplete };
       }
 
+      const deletableIds: string[] = [];
+
       for (const record of records) {
         const path = extractStoragePathFromSignedUrl(record.fileUrl);
-        if (!path) continue;
+
+        if (!path) {
+          deletableIds.push(record.id);
+          continue;
+        }
 
         try {
           if (await this.storageService.deleteFile(path)) {
             storedFiles++;
           }
+          deletableIds.push(record.id);
         } catch (error) {
-          // Un objeto que no se deja borrar no puede impedir que se borre la
-          // fila: se anota y la respuesta lo declara como baja parcial.
+          // La fila se queda: su `fileUrl` es la única pista para volver a
+          // intentar borrar el objeto. Borrarla ahora dejaría el archivo en el
+          // bucket y sin nada que lo señale.
           storageFailed = true;
           this.logger.warn(
-            `Baja de cuenta ${userId}: no se pudo borrar ${path} — ${error.message}`,
+            `Baja de cuenta ${userId}: no se pudo borrar ${path}; se conserva la ` +
+              `fila ${record.id} para poder reintentarlo — ${error.message}`,
           );
         }
       }
 
-      conversions += await this.firestoreService.deleteConversionHistoryByIds(
-        records.map((record) => record.id),
-      );
+      conversions +=
+        await this.firestoreService.deleteConversionHistoryByIds(deletableIds);
 
-      if (records.length < HISTORY_DELETION_PAGE_SIZE) {
+      // Sin ninguna fila borrada, la siguiente lectura devolvería las mismas y
+      // el bucle daría vueltas hasta agotar el tope de páginas.
+      if (
+        deletableIds.length === 0 ||
+        records.length < HISTORY_DELETION_PAGE_SIZE
+      ) {
         return { conversions, storedFiles, storageFailed, incomplete };
       }
     }
@@ -503,6 +611,11 @@ export class AccountDeletionService {
     await this.stripe.customers.update(user.stripeCustomerId, {
       name: 'Deleted account',
       email: '',
+      phone: '',
+      // El perfil fiscal propaga el domicilio al customer
+      // (`BillingService.syncTaxProfileToStripe`): vaciarlo es tan necesario
+      // como el email, es la dirección de una persona.
+      address: null,
       description: 'Account deleted at the user request',
       metadata: {
         ...clearedMetadata,
@@ -511,8 +624,25 @@ export class AccountDeletionService {
       },
     });
 
+    // El RFC/VAT vive en objetos aparte del customer, así que el update anterior
+    // no lo toca. Las facturas ya emitidas conservan su copia impresa —eso es lo
+    // retenido—, pero el identificador fiscal reutilizable no puede quedarse
+    // colgando de un customer sin titular.
+    await this.deleteCustomerTaxIds(user.stripeCustomerId);
+
     this.logger.log(
       `Baja de cuenta ${user.id}: customer ${user.stripeCustomerId} anonimizado en Stripe`,
     );
+  }
+
+  /** Borra los tax IDs (RFC, VAT) asociados al customer. */
+  private async deleteCustomerTaxIds(customerId: string): Promise<void> {
+    const taxIds = await this.stripe.customers.listTaxIds(customerId, {
+      limit: 100,
+    });
+
+    for (const taxId of taxIds.data) {
+      await this.stripe.customers.deleteTaxId(customerId, taxId.id);
+    }
   }
 }
