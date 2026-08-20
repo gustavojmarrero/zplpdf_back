@@ -83,7 +83,9 @@ Lógica en `src/modules/users/account-deletion.service.ts`. Encadena, **en este 
    Si la marca falla después de cancelar Stripe, la respuesta es
    `ACCOUNT_DELETION_PARTIAL` con `failedSteps: ['deletionMark']`, no un 500 opaco.
 4. Borra `conversion_history` y los archivos de Storage que cuelguen de la URL firmada
-   de cada fila, más el prefijo `debug-zpl/<uid>/` y sus docs de `zpl_debug_files`.
+   de cada fila, más el prefijo `debug-zpl/<uid>/`, sus docs de `zpl_debug_files` y la
+   foto de perfil (`users/<uid>/avatar.webp` del bucket **público**, #106): esa URL no
+   está firmada ni caduca, así que es el archivo que más importa retirar.
    Los workers comprueban la lápida justo antes y después de cada subida a GCS; si la
    baja empieza durante la subida, retiran el objeto para que no quede huérfano tras
    este barrido.

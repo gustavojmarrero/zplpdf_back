@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { FirebaseAdminService } from '../auth/firebase-admin.service.js';
 import { StorageService } from '../storage/storage.service.js';
+import { UsersService } from './users.service.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { extractStoragePathFromSignedUrl } from '../../common/utils/storage-url.util.js';
 import type { User } from '../../common/interfaces/user.interface.js';
@@ -81,6 +82,7 @@ export class AccountDeletionService {
     private readonly firestoreService: FirestoreService,
     private readonly firebaseAdminService: FirebaseAdminService,
     private readonly storageService: StorageService,
+    private readonly usersService: UsersService,
     private readonly configService: ConfigService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
@@ -154,6 +156,21 @@ export class AccountDeletionService {
         `debug-zpl/${userId}/`,
       );
       await this.firestoreService.deleteZplDebugFilesByUserId(userId);
+
+      // La foto de perfil (#106) vive en el bucket PÚBLICO, así que no cae con
+      // los prefijos del privado. Y es el archivo más expuesto de todos: su URL
+      // no está firmada y no caduca, de modo que dejarla ahí mantendría la cara
+      // del titular accesible a cualquiera después de la baja.
+      await this.storageService.deletePublicFile(
+        this.usersService.getProfilePhotoPath(userId),
+      );
+
+      // Solo se cuenta si el perfil declaraba tener foto: `deletePublicFile`
+      // trata el 404 como éxito, y sumar siempre inflaría el recuento con un
+      // archivo que quizá nunca existió.
+      if (user.photoURL) {
+        storedFiles++;
+      }
     } catch (error) {
       failed('storedFiles', error);
     }

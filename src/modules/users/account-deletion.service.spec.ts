@@ -88,7 +88,14 @@ function buildService(
   const storage = {
     deleteFile: jest.fn().mockResolvedValue(true),
     deleteByPrefix: jest.fn().mockResolvedValue(1),
+    deletePublicFile: jest.fn().mockResolvedValue(undefined),
     ...overrides.storage,
+  };
+
+  const users = {
+    getProfilePhotoPath: jest
+      .fn()
+      .mockImplementation((uid: string) => `users/${uid}/avatar.webp`),
   };
 
   const firebaseAdmin = { deleteUser: jest.fn().mockResolvedValue(undefined) };
@@ -134,9 +141,10 @@ function buildService(
   service.firestoreService = firestore;
   service.firebaseAdminService = firebaseAdmin;
   service.storageService = storage;
+  service.usersService = users;
   service.stripe = stripe;
 
-  return { service, firestore, storage, firebaseAdmin, stripe };
+  return { service, firestore, storage, firebaseAdmin, stripe, users };
 }
 
 describe('AccountDeletionService — baja completa', () => {
@@ -209,6 +217,33 @@ describe('AccountDeletionService — baja completa', () => {
     );
     // 2 PDF del historial + 3 prefijos (debug-zpl y los dos batches) x 2.
     expect(result.deleted.storedFiles).toBe(8);
+  });
+
+  it('borra la foto de perfil, que vive en el bucket público', async () => {
+    const { service, storage } = buildService({
+      user: { ...baseUser, photoURL: 'https://cdn/uid-1/avatar.webp?v=1' },
+    });
+
+    const result = await service.deleteAccount('uid-1');
+
+    // Su URL no está firmada ni caduca: dejarla ahí mantendría la cara del
+    // titular accesible a cualquiera después de la baja.
+    expect(storage.deletePublicFile).toHaveBeenCalledWith(
+      'users/uid-1/avatar.webp',
+    );
+    // 2 PDF + 1 prefijo de debug-zpl + la foto.
+    expect(result.deleted.storedFiles).toBe(4);
+  });
+
+  it('no cuenta una foto que el perfil nunca tuvo', async () => {
+    const { service, storage } = buildService();
+
+    const result = await service.deleteAccount('uid-1');
+
+    // El borrado se intenta igual —el perfil pudo quedar desincronizado—, pero
+    // `deletePublicFile` da por bueno el 404 y sumarlo inflaría el recuento.
+    expect(storage.deletePublicFile).toHaveBeenCalled();
+    expect(result.deleted.storedFiles).toBe(3);
   });
 
   it('anonimiza también los registros contables locales', async () => {
