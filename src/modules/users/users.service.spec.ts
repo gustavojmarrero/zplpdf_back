@@ -1581,6 +1581,46 @@ describe('UsersService — foto de perfil', () => {
       ).rejects.toThrow('auth caído');
       expect(firestoreService.updateUser).not.toHaveBeenCalled();
     });
+
+    it('devuelve Firebase Auth a su foto anterior si Firestore falla', async () => {
+      // Firestore es lo que lee `GET /users/me`: sin revertir, el token pintaría
+      // la foto nueva y el perfil la vieja, y ese desajuste no se corrige solo.
+      const { service, firestoreService, firebaseAdminService } =
+        buildService();
+      firebaseAdminService.getUser.mockResolvedValue({
+        emailVerified: true,
+        photoURL: 'https://lh3.googleusercontent.com/foto-de-google',
+      });
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      expect(firebaseAdminService.updateUser).toHaveBeenLastCalledWith(UID, {
+        photoURL: 'https://lh3.googleusercontent.com/foto-de-google',
+      });
+    });
+
+    it('no revierte a un valor inventado si no pudo leer la foto anterior', async () => {
+      // Revertir a `null` sin saber qué había borraría de Auth la foto del
+      // proveedor de acceso de quien nunca subió ninguna.
+      const { service, firestoreService, firebaseAdminService } =
+        buildService();
+      firebaseAdminService.getUser.mockRejectedValue(new Error('auth caído'));
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      // Solo la escritura de la foto nueva: ninguna reversión a ciegas.
+      expect(firebaseAdminService.updateUser).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('borrado', () => {
@@ -1603,6 +1643,32 @@ describe('UsersService — foto de perfil', () => {
       expect(firestoreService.updateUser).toHaveBeenCalledWith(UID, {
         photoURL: null,
       });
+    });
+
+    it('limpia el perfil antes de borrar el objeto', async () => {
+      // Borrar el archivo es el único paso irreversible: hacerlo primero dejaría
+      // —si luego falla una escritura— un perfil apuntando a un 404.
+      const { service, firestoreService, storageService } = buildService();
+
+      await service.deleteProfilePhoto(UID);
+
+      expect(
+        firestoreService.updateUser.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        storageService.deletePublicFile.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('no borra el objeto si el perfil no llegó a limpiarse', async () => {
+      const { service, firestoreService, storageService } = buildService();
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(service.deleteProfilePhoto(UID)).rejects.toThrow(
+        'firestore caído',
+      );
+      expect(storageService.deletePublicFile).not.toHaveBeenCalled();
     });
 
     it('responde USER_NOT_FOUND si el perfil no existe', async () => {

@@ -406,12 +406,7 @@ export class UsersService {
     // foto anterior.
     const photoURL = `${baseUrl}?v=${Date.now()}`;
 
-    // Firebase Auth primero: es de donde sale el claim `picture` del token, que
-    // es lo que el frontend pinta nada más refrescarlo. Si esta escritura falla,
-    // el error sube y Firestore no queda apuntando a una foto que el token
-    // todavía desconoce; reintentar es idempotente porque la ruta es la misma.
-    await this.firebaseAdminService.updateUser(userId, { photoURL });
-    await this.firestoreService.updateUser(userId, { photoURL });
+    await this.applyProfilePhotoURL(userId, photoURL);
 
     this.logger.log(`Foto de perfil actualizada para ${userId}`);
 
@@ -432,17 +427,77 @@ export class UsersService {
       });
     }
 
+    // El perfil primero y el objeto después: borrar el archivo es lo único
+    // irreversible de los tres pasos, y hacerlo antes dejaría —si luego falla
+    // una escritura— un perfil apuntando a una imagen que ya responde 404. Al
+    // revés, lo peor que queda es un objeto huérfano, que la siguiente subida
+    // sobrescribe y que la baja de cuenta (#99) barre igual.
+    //
+    // `null` explícito, no borrar el campo: distingue "quitó su foto" de "nunca
+    // subió ninguna", y es esa diferencia la que decide si el perfil vuelve a
+    // caer en la foto del proveedor de acceso.
+    await this.applyProfilePhotoURL(userId, null);
+
     await this.storageService.deletePublicFile(
       this.getProfilePhotoPath(userId),
     );
 
-    await this.firebaseAdminService.updateUser(userId, { photoURL: null });
-    // `null` explícito, no borrar el campo: distingue "quitó su foto" de "nunca
-    // subió ninguna", y es esa diferencia la que decide si el perfil vuelve a
-    // caer en la foto del proveedor de acceso.
-    await this.firestoreService.updateUser(userId, { photoURL: null });
-
     this.logger.log(`Foto de perfil eliminada para ${userId}`);
+  }
+
+  /**
+   * Publica la URL —o su borrado— en Firebase Auth y en Firestore dejando los
+   * dos de acuerdo.
+   *
+   * Auth va primero porque de ahí sale el claim `picture` del token, que es lo
+   * que el frontend pinta nada más refrescarlo. Si Firestore falla después, se
+   * devuelve Auth a lo que tenía: sin esa compensación el token mostraría una
+   * foto y `GET /users/me` otra —Firestore manda en esa lectura— y el desajuste
+   * no se corregiría solo, porque nadie vuelve a mirarlo.
+   *
+   * El valor anterior se lee de Auth y no de Firestore: la foto del proveedor de
+   * acceso solo existe ahí, y revertir a `null` la borraría de una cuenta que
+   * nunca subió ninguna. Si esa lectura falla no se revierte nada —volver a un
+   * valor inventado sería peor— y queda constancia en el log.
+   */
+  private async applyProfilePhotoURL(
+    userId: string,
+    photoURL: string | null,
+  ): Promise<void> {
+    let previous: string | null = null;
+    let previousKnown = false;
+
+    try {
+      previous =
+        (await this.firebaseAdminService.getUser(userId)).photoURL ?? null;
+      previousKnown = true;
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer la foto actual de Firebase Auth para ${userId}: ${error.message}`,
+      );
+    }
+
+    await this.firebaseAdminService.updateUser(userId, { photoURL });
+
+    try {
+      await this.firestoreService.updateUser(userId, { photoURL });
+    } catch (error) {
+      if (previousKnown) {
+        await this.firebaseAdminService
+          .updateUser(userId, { photoURL: previous })
+          .catch((rollbackError) =>
+            this.logger.error(
+              `Firebase Auth quedó desalineado con el perfil de ${userId}: ${rollbackError.message}`,
+            ),
+          );
+      } else {
+        this.logger.error(
+          `Firebase Auth quedó desalineado con el perfil de ${userId}: no se pudo revertir`,
+        );
+      }
+
+      throw error;
+    }
   }
 
   /**
