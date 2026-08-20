@@ -194,6 +194,31 @@ export class StorageService {
   }
 
   /**
+   * Lee un archivo del bucket público, o `null` si ya no está.
+   *
+   * Sirve para conservar los bytes de un objeto que se va a sobrescribir y poder
+   * devolverlos si el resto de la operación no llega a confirmarse.
+   */
+  async readPublicFile(filePath: string): Promise<Buffer | null> {
+    try {
+      const [contents] = await this.storage
+        .bucket(this.publicBucketName)
+        .file(filePath)
+        .download();
+
+      return contents;
+    } catch (error) {
+      if (error?.code === 404) {
+        return null;
+      }
+      this.logger.error(
+        `Error al leer el archivo público ${filePath}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Borra un archivo del bucket público.
    *
    * El 404 no es un error: quitar una foto que ya no está en Storage —porque

@@ -38,6 +38,7 @@ describe('StorageService — bucket público', () => {
     const file = {
       save: jest.fn().mockResolvedValue(undefined),
       delete: jest.fn().mockResolvedValue(undefined),
+      download: jest.fn().mockResolvedValue([Buffer.from('imagen')]),
     };
     const bucket = jest.fn().mockReturnValue({ file: () => file });
     const configService: any = {
@@ -79,6 +80,27 @@ describe('StorageService — bucket público', () => {
         cacheControl: 'public, max-age=86400',
       },
     });
+  });
+
+  it('devuelve null al leer un objeto que ya no está', async () => {
+    // Quien llama usa esa ausencia para saber que no hay bytes que restaurar; un
+    // throw convertiría la primera subida de un usuario en un 500.
+    const { service, file } = buildService();
+    file.download.mockRejectedValue(
+      Object.assign(new Error('No such object'), { code: 404 }),
+    );
+
+    await expect(
+      service.readPublicFile('users/uid-1/avatar.webp'),
+    ).resolves.toBeNull();
+  });
+
+  it('devuelve los bytes del objeto público', async () => {
+    const { service } = buildService();
+
+    await expect(
+      service.readPublicFile('users/uid-1/avatar.webp'),
+    ).resolves.toEqual(Buffer.from('imagen'));
   });
 
   it('trata el 404 al borrar como éxito', async () => {

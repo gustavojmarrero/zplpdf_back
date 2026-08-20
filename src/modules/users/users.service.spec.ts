@@ -1399,6 +1399,7 @@ describe('UsersService — foto de perfil', () => {
       getUser: jest.fn().mockResolvedValue({ emailVerified: true }),
     };
     const storageService = {
+      readPublicFile: jest.fn().mockResolvedValue(null),
       savePublicFile: jest.fn().mockResolvedValue(PUBLIC_URL),
       deletePublicFile: jest.fn().mockResolvedValue(undefined),
     };
@@ -1474,6 +1475,22 @@ describe('UsersService — foto de perfil', () => {
 
       await expect(
         service.uploadProfilePhoto(UID, upload(await imagen('gif'))),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { error: 'UNSUPPORTED_IMAGE_TYPE' },
+      });
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+    });
+
+    it('rechaza como 400 una imagen cuya cabecera es válida pero el cuerpo no', async () => {
+      // Un PNG truncado pasa el examen de `metadata()` y revienta al decodificar.
+      // Sigue siendo entrada inválida: como 500 diríamos que el fallo es nuestro
+      // y el frontend se quedaría sin código que traducir.
+      const { service, storageService } = buildService();
+      const png = await imagen('png');
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(png.subarray(0, 120))),
       ).rejects.toMatchObject({
         status: 400,
         response: { error: 'UNSUPPORTED_IMAGE_TYPE' },
@@ -1602,6 +1619,58 @@ describe('UsersService — foto de perfil', () => {
       expect(firebaseAdminService.updateUser).toHaveBeenLastCalledWith(UID, {
         photoURL: 'https://lh3.googleusercontent.com/foto-de-google',
       });
+    });
+
+    it('devuelve los bytes anteriores si el perfil no llega a confirmarse', async () => {
+      // La ruta es fija, así que la subida ya pisó la foto vieja: revertir solo
+      // la URL dejaría al usuario con la imagen nueva pese al error.
+      const { service, firestoreService, storageService } = buildService();
+      const anterior = Buffer.from('foto-anterior');
+      storageService.readPublicFile.mockResolvedValue(anterior);
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      expect(storageService.savePublicFile).toHaveBeenLastCalledWith(
+        `users/${UID}/avatar.webp`,
+        anterior,
+        'image/webp',
+      );
+    });
+
+    it('borra el objeto si falla y el usuario no tenía foto antes', async () => {
+      const { service, firestoreService, storageService } = buildService();
+      storageService.readPublicFile.mockResolvedValue(null);
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      expect(storageService.deletePublicFile).toHaveBeenCalledWith(
+        `users/${UID}/avatar.webp`,
+      );
+    });
+
+    it('propaga el error original aunque la restauración falle', async () => {
+      const { service, firestoreService, storageService } = buildService();
+      storageService.readPublicFile.mockResolvedValue(Buffer.from('anterior'));
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+      storageService.savePublicFile
+        .mockResolvedValueOnce(PUBLIC_URL)
+        .mockRejectedValueOnce(new Error('gcs caído'));
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
     });
 
     it('no revierte a un valor inventado si no pudo leer la foto anterior', async () => {

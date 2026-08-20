@@ -395,9 +395,17 @@ export class UsersService {
     }
 
     const normalized = await this.normalizeProfilePhoto(file.buffer);
+    const path = this.getProfilePhotoPath(userId);
+
+    // Los bytes anteriores se guardan antes de pisarlos. El objeto vive en una
+    // ruta fija —para no acumular huérfanos—, así que la subida es destructiva y
+    // `applyProfilePhotoURL` solo sabe revertir la URL, no la imagen: sin esto,
+    // una petición que termina en error acabaría mostrando la foto nueva en
+    // cuanto caducara la caché. Es un WebP de unos pocos KB.
+    const previousBytes = await this.storageService.readPublicFile(path);
 
     const baseUrl = await this.storageService.savePublicFile(
-      this.getProfilePhotoPath(userId),
+      path,
       normalized,
       'image/webp',
     );
@@ -406,7 +414,12 @@ export class UsersService {
     // foto anterior.
     const photoURL = `${baseUrl}?v=${Date.now()}`;
 
-    await this.applyProfilePhotoURL(userId, photoURL);
+    try {
+      await this.applyProfilePhotoURL(userId, photoURL);
+    } catch (error) {
+      await this.restoreProfilePhotoObject(path, previousBytes);
+      throw error;
+    }
 
     this.logger.log(`Foto de perfil actualizada para ${userId}`);
 
@@ -443,6 +456,34 @@ export class UsersService {
     );
 
     this.logger.log(`Foto de perfil eliminada para ${userId}`);
+  }
+
+  /**
+   * Devuelve el objeto del avatar a como estaba antes de una subida que no llegó
+   * a confirmarse: sus bytes anteriores, o ninguno si el usuario no tenía foto.
+   *
+   * Un fallo aquí no se propaga: el error que interesa al cliente es el que
+   * abortó la subida, no el de una compensación. Queda en el log.
+   */
+  private async restoreProfilePhotoObject(
+    path: string,
+    previousBytes: Buffer | null,
+  ): Promise<void> {
+    try {
+      if (previousBytes) {
+        await this.storageService.savePublicFile(
+          path,
+          previousBytes,
+          'image/webp',
+        );
+      } else {
+        await this.storageService.deletePublicFile(path);
+      }
+    } catch (error) {
+      this.logger.error(
+        `No se pudo restaurar la foto anterior en ${path}: ${error.message}`,
+      );
+    }
   }
 
   /**
@@ -516,18 +557,11 @@ export class UsersService {
     }
 
     if (!format || !ALLOWED_PROFILE_PHOTO_FORMATS.includes(format)) {
-      throw new BadRequestException({
-        error: ErrorCodes.UNSUPPORTED_IMAGE_TYPE,
-        message: 'Unsupported image format',
-        data: {
-          allowed: ALLOWED_PROFILE_PHOTO_FORMATS,
-          format: format ?? null,
-        },
-      });
+      throw this.unsupportedImageError(format);
     }
 
-    return (
-      sharp(buffer)
+    try {
+      return await sharp(buffer)
         // La orientación EXIF se aplica antes de recortar: sin esto, una foto de
         // móvil se recorta girada y el encuadre sale mal.
         .rotate()
@@ -536,8 +570,26 @@ export class UsersService {
           position: 'centre',
         })
         .webp({ quality: 82 })
-        .toBuffer()
-    );
+        .toBuffer();
+    } catch (error) {
+      // La cabecera puede pasar el examen y el archivo romperse al decodificar
+      // —una imagen truncada dice ser PNG y lo es, solo que a medias—. Eso sigue
+      // siendo entrada inválida: devolverlo como 500 le diría al usuario que el
+      // fallo es nuestro, y sin el código que el frontend traduce.
+      this.logger.warn(`Foto de perfil no decodificable: ${error.message}`);
+      throw this.unsupportedImageError(format);
+    }
+  }
+
+  private unsupportedImageError(format?: string): BadRequestException {
+    return new BadRequestException({
+      error: ErrorCodes.UNSUPPORTED_IMAGE_TYPE,
+      message: 'Unsupported image format',
+      data: {
+        allowed: ALLOWED_PROFILE_PHOTO_FORMATS,
+        format: format ?? null,
+      },
+    });
   }
 
   async getUserLimits(userId: string): Promise<UserLimitsDto> {
