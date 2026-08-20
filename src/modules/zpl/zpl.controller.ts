@@ -43,9 +43,9 @@ import {
 } from './dto/batch.dto.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
 import {
-  getClientDeclaredIp,
-  getTrustedHopIp,
-} from '../../common/utils/request-ip.js';
+  PublicPreviewThrottlerGuard,
+  PUBLIC_PREVIEW_THROTTLERS,
+} from '../../common/guards/public-preview-throttler.guard.js';
 import { FontPreviewPublicDto } from './dto/font-preview-public.dto.js';
 import {
   PublicPreviewDto,
@@ -771,39 +771,10 @@ export class ZplController {
   // quien paga (que ademas comparte IP con toda su oficina detras del NAT).
   @Post('public-preview')
   @HttpCode(HttpStatus.OK)
-  // Dos identidades, porque ninguna sirve sola:
-  //
-  // - La IP que declara el cliente segmenta bien el trafico legitimo (todos los
-  //   visitantes entran por el rewrite del frontend y comparten salto), pero es
-  //   falsificable: quien llame directo al servicio de Cloud Run puede mandar
-  //   un `X-Forwarded-For` distinto en cada peticion y estrenar contador.
-  // - La IP del salto de confianza no se puede falsificar, pero agrupa a todos
-  //   los visitantes que comparten edge.
-  //
-  // Asi que la primera lleva el tope por visitante y la segunda el tope
-  // agregado que de verdad protege el techo compartido de Labelary.
-  @Throttle({
-    default: {
-      limit: 10,
-      ttl: 60000,
-      getTracker: (req) => `public-preview:client:${getClientDeclaredIp(req)}`,
-    },
-    hourly: {
-      limit: 30,
-      ttl: 3600000,
-      getTracker: (req) => `public-preview:client:${getClientDeclaredIp(req)}`,
-    },
-    peerMinute: {
-      limit: 60,
-      ttl: 60000,
-      getTracker: (req) => `public-preview:hop:${getTrustedHopIp(req)}`,
-    },
-    peerHourly: {
-      limit: 600,
-      ttl: 3600000,
-      getTracker: (req) => `public-preview:hop:${getTrustedHopIp(req)}`,
-    },
-  })
+  // El rate limit por IP vive en el guard, con opciones y storage propios (ver
+  // PublicPreviewThrottlerGuard): declararlo en el ThrottlerModule global
+  // habria anadido esas ventanas a TODAS las rutas del API.
+  @UseGuards(PublicPreviewThrottlerGuard)
   @ApiOperation({
     summary: 'Vista previa publica de etiquetas ZPL (sin autenticacion)',
     description:
@@ -811,8 +782,10 @@ export class ZplController {
       'con la misma forma de respuesta que POST /zpl/preview. ' +
       `Renderiza como mucho ${PUBLIC_PREVIEW_MAX_UNIQUE_LABELS} etiquetas unicas por peticion ` +
       '(el recorte se aplica antes de llamar a Labelary; el archivo completo requiere cuenta). ' +
-      'Rate limit por IP del visitante: 10 peticiones/minuto y 30/hora, mas un tope agregado ' +
-      'por IP de origen real (60/minuto, 600/hora). No requiere autenticacion.',
+      `Rate limit por IP del visitante: ${PUBLIC_PREVIEW_THROTTLERS.clientMinute.limit} peticiones/minuto ` +
+      `y ${PUBLIC_PREVIEW_THROTTLERS.clientHourly.limit}/hora, mas un tope agregado por IP de origen real ` +
+      `(${PUBLIC_PREVIEW_THROTTLERS.peerMinute.limit}/minuto, ${PUBLIC_PREVIEW_THROTTLERS.peerHourly.limit}/hora). ` +
+      'No requiere autenticacion.',
   })
   @ApiBody({ type: PublicPreviewDto })
   @ApiResponse({
@@ -855,8 +828,12 @@ export class ZplController {
   @ApiResponse({
     status: HttpStatus.TOO_MANY_REQUESTS,
     description:
-      'Rate limit superado: por visitante (10 req/min, 30 req/hora) o agregado por origen ' +
-      '(60 req/min, 600 req/hora)',
+      'Rate limit superado, por visitante o agregado por IP de origen real',
+  })
+  @ApiResponse({
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    description:
+      'No se pudo renderizar ninguna etiqueta (Labelary no responde)',
   })
   async publicPreview(
     @Body() dto: PublicPreviewDto,
@@ -869,6 +846,21 @@ export class ZplController {
       size,
       { maxUniqueLabels: PUBLIC_PREVIEW_MAX_UNIQUE_LABELS },
     );
+
+    // `getLabelsPreview` se traga el fallo de cada etiqueta para seguir con las
+    // demas, asi que si Labelary esta caido o devolviendo 429 la lista llega
+    // vacia. Devolver 200 con `data: []` le pintaria al visitante un lienzo en
+    // blanco sin explicacion; el frontend sabe distinguir un error.
+    if (previews.length === 0) {
+      throw new HttpException(
+        {
+          error: ErrorCodes.SERVICE_UNAVAILABLE,
+          message:
+            'No se pudo generar la vista previa en este momento. Intenta de nuevo en unos segundos.',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
 
     return {
       success: true,

@@ -28,38 +28,15 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
       envFilePath: ['.env.local', '.env'],
     }),
     // Rate limiting: 100 req/min por defecto. Endpoints especificos
-    // overridean limit/ttl con @Throttle inline.
+    // overridean limit/ttl con @Throttle inline. Las ventanas del endpoint
+    // publico de vista previa NO viven aqui a proposito (ver
+    // PublicPreviewThrottlerGuard): el guard global evalua todo lo declarado en
+    // esta lista para TODAS las rutas.
     ThrottlerModule.forRoot([
       {
         name: 'default',
         ttl: 60000,
         limit: 100,
-      },
-      // Ventana horaria. Existe para que las rutas publicas puedan overridearla
-      // con @Throttle: un tope por minuto no impide sostener el consumo durante
-      // horas, y el render publico va contra el plan free de Labelary (1 req/s
-      // para toda la plataforma). El limite global es deliberadamente
-      // inalcanzable — con 'default' en 100 req/min el techo real ya es 6.000/h
-      // — para no meterle un rate limit nuevo a quien esta autenticado, que
-      // ademas comparte IP con sus companeros detras de cualquier NAT.
-      {
-        name: 'hourly',
-        ttl: 3600000,
-        limit: 100000,
-      },
-      // Ventanas por IP de origen real (el salto que no se puede falsificar).
-      // Mismo motivo y mismo limite inerte que 'hourly': solo existen para que
-      // las rutas publicas puedan bajarlas con @Throttle, ya que el guard solo
-      // evalua los throttlers declarados aqui.
-      {
-        name: 'peerMinute',
-        ttl: 60000,
-        limit: 100000,
-      },
-      {
-        name: 'peerHourly',
-        ttl: 3600000,
-        limit: 100000,
       },
     ]),
     AuthModule,

@@ -21,11 +21,7 @@ jest.mock('firebase-admin', () => ({
 
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants.js';
-import {
-  THROTTLER_LIMIT,
-  THROTTLER_TRACKER,
-  THROTTLER_TTL,
-} from '@nestjs/throttler/dist/throttler.constants.js';
+import { THROTTLER_LIMIT } from '@nestjs/throttler/dist/throttler.constants.js';
 import { ZplController } from './zpl.controller.js';
 import { LabelSize } from './enums/label-size.enum.js';
 import { validate } from 'class-validator';
@@ -37,6 +33,10 @@ import {
 } from './dto/public-preview.dto.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
+import {
+  PublicPreviewThrottlerGuard,
+  PUBLIC_PREVIEW_THROTTLERS,
+} from '../../common/guards/public-preview-throttler.guard.js';
 
 const ZPL_VALIDO = '^XA^FO20,20^FDHola^FS^XZ';
 
@@ -110,6 +110,19 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
     ).rejects.toBeInstanceOf(HttpException);
   });
 
+  it('devuelve 503 si Labelary no dejó renderizar ninguna etiqueta', async () => {
+    // getLabelsPreview se traga el fallo de cada etiqueta y puede devolver una
+    // lista vacía; un 200 con `data: []` le pintaría al visitante un lienzo en
+    // blanco sin decirle que el problema es temporal.
+    const { controller, getLabelsPreview } = buildController();
+    getLabelsPreview.mockResolvedValue([]);
+
+    await expect(controller.publicPreview(dto())).rejects.toMatchObject({
+      status: HttpStatus.SERVICE_UNAVAILABLE,
+      response: { error: ErrorCodes.SERVICE_UNAVAILABLE },
+    });
+  });
+
   // El tope de tamaño lo aplica el ValidationPipe global antes de llegar al
   // handler, así que se comprueba sobre el DTO.
   describe('límite de tamaño del zplContent', () => {
@@ -150,58 +163,35 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
     const publicPreview = ZplController.prototype.publicPreview;
 
     it('no lleva guard de autenticación', () => {
-      expect(
-        Reflect.getMetadata(GUARDS_METADATA, publicPreview),
-      ).toBeUndefined();
+      const guards = Reflect.getMetadata(GUARDS_METADATA, publicPreview) ?? [];
+
+      expect(guards).not.toContain(FirebaseAuthGuard);
     });
 
-    it('lleva rate limit por visitante, por minuto y por hora', () => {
-      expect(
-        Reflect.getMetadata(THROTTLER_LIMIT + 'default', publicPreview),
-      ).toBe(10);
-      expect(
-        Reflect.getMetadata(THROTTLER_TTL + 'default', publicPreview),
-      ).toBe(60000);
-      expect(
-        Reflect.getMetadata(THROTTLER_LIMIT + 'hourly', publicPreview),
-      ).toBe(30);
-      expect(Reflect.getMetadata(THROTTLER_TTL + 'hourly', publicPreview)).toBe(
-        3600000,
+    it('lleva el guard de rate limit propio de la ruta', () => {
+      expect(Reflect.getMetadata(GUARDS_METADATA, publicPreview)).toContain(
+        PublicPreviewThrottlerGuard,
       );
     });
 
-    it('lleva ademas un tope agregado por IP de origen real', () => {
-      expect(
-        Reflect.getMetadata(THROTTLER_LIMIT + 'peerMinute', publicPreview),
-      ).toBe(60);
-      expect(
-        Reflect.getMetadata(THROTTLER_LIMIT + 'peerHourly', publicPreview),
-      ).toBe(600);
-    });
-
-    // La ventana por visitante se puede esquivar variando el X-Forwarded-For;
-    // la agregada no, porque se cuenta sobre el salto que anade Cloud Run.
-    it('separa la identidad por visitante de la identidad por origen', () => {
-      const conXffFalso = {
-        headers: { 'x-forwarded-for': '9.9.9.9, 198.51.100.7' },
-        socket: { remoteAddress: '10.0.0.1' },
-      };
-      const conOtroXffFalso = {
-        headers: { 'x-forwarded-for': '8.8.8.8, 198.51.100.7' },
-        socket: { remoteAddress: '10.0.0.1' },
-      };
-      const porVisitante = Reflect.getMetadata(
-        THROTTLER_TRACKER + 'default',
-        publicPreview,
+    it('limita por visitante por minuto y por hora, y agrega por origen', () => {
+      expect(PUBLIC_PREVIEW_THROTTLERS.clientMinute).toEqual({
+        limit: 10,
+        ttl: 60000,
+      });
+      expect(PUBLIC_PREVIEW_THROTTLERS.clientHourly).toEqual({
+        limit: 30,
+        ttl: 3600000,
+      });
+      // El tope agregado es mas alto porque lo comparten todos los visitantes
+      // que entran por el mismo edge, pero sigue por debajo de lo que aguanta
+      // el plan free de Labelary.
+      expect(PUBLIC_PREVIEW_THROTTLERS.peerMinute.limit).toBeGreaterThan(
+        PUBLIC_PREVIEW_THROTTLERS.clientMinute.limit,
       );
-      const porOrigen = Reflect.getMetadata(
-        THROTTLER_TRACKER + 'peerMinute',
-        publicPreview,
+      expect(PUBLIC_PREVIEW_THROTTLERS.peerHourly.limit).toBeGreaterThan(
+        PUBLIC_PREVIEW_THROTTLERS.clientHourly.limit,
       );
-
-      expect(porVisitante(conXffFalso)).not.toBe(porVisitante(conOtroXffFalso));
-      expect(porOrigen(conXffFalso)).toBe(porOrigen(conOtroXffFalso));
-      expect(porOrigen(conXffFalso)).toContain('198.51.100.7');
     });
   });
 
@@ -216,15 +206,18 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
       );
     });
 
+    it('no hereda el guard de rate limit del endpoint publico', () => {
+      expect(Reflect.getMetadata(GUARDS_METADATA, previewZpl)).not.toContain(
+        PublicPreviewThrottlerGuard,
+      );
+    });
+
     it('sigue sin rate limit propio', () => {
       expect(
         Reflect.getMetadata(THROTTLER_LIMIT + 'default', previewZpl),
       ).toBeUndefined();
       expect(
         Reflect.getMetadata(THROTTLER_LIMIT + 'hourly', previewZpl),
-      ).toBeUndefined();
-      expect(
-        Reflect.getMetadata(THROTTLER_LIMIT + 'peerMinute', previewZpl),
       ).toBeUndefined();
     });
   });

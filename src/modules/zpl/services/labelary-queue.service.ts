@@ -41,6 +41,8 @@ export class LabelaryQueueService {
 
   // Rate limiting global
   private lastCallTime = 0;
+  /** Cola de turnos de `waitForRateLimit` (ver alli el porque). */
+  private rateLimitChain: Promise<void> = Promise.resolve();
   private isProcessing = false;
 
   constructor(
@@ -215,18 +217,33 @@ export class LabelaryQueueService {
   }
 
   /**
-   * Espera para respetar el rate limit global
+   * Espera para respetar el rate limit global.
+   *
+   * Los turnos se encadenan (`rateLimitChain`) en vez de calcularse cada uno
+   * por su cuenta: si N llamadas concurrentes leyeran `lastCallTime` a la vez
+   * —lo que pasa con varias previews simultaneas— todas calcularian la misma
+   * espera, despertarian juntas y saldrian de golpe hacia Labelary, que es
+   * exactamente lo que el limite de 1 req/s prohibe. Encadenando, cada llamada
+   * espera a que la anterior haya fijado `lastCallTime` antes de calcular la
+   * suya, y las N salen repartidas en el tiempo.
    */
   private async waitForRateLimit(): Promise<void> {
-    const now = Date.now();
-    const timeSinceLastCall = now - this.lastCallTime;
-    const waitTime = QUEUE_CONFIG.minTimeBetweenCallsMs - timeSinceLastCall;
+    const turn = this.rateLimitChain.then(async () => {
+      const waitTime =
+        QUEUE_CONFIG.minTimeBetweenCallsMs - (Date.now() - this.lastCallTime);
 
-    if (waitTime > 0) {
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
-    }
+      if (waitTime > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
 
-    this.lastCallTime = Date.now();
+      this.lastCallTime = Date.now();
+    });
+
+    // La cadena nunca debe quedarse rota: si un turno fallara, los siguientes
+    // seguirian encolados detras de una promesa rechazada.
+    this.rateLimitChain = turn.catch(() => undefined);
+
+    return turn;
   }
 
   /**
