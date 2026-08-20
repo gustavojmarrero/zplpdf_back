@@ -31,6 +31,11 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 |--------|------|------|------------|-------------|
 | POST | /users/sync | User | UsersController.syncUser | Sync Firebase user with Firestore |
 | GET | /users/me | User | UsersController.getUserProfile | Get current user profile |
+| POST | /users/me/photo | User | UsersController.uploadPhoto | Upload the profile photo (multipart, campo `file`) |
+| DELETE | /users/me/photo | User | UsersController.deletePhoto | Remove the profile photo (204) |
+| DELETE | /users/me | User | UsersController.deleteAccount | Baja de cuenta (irreversible) |
+| GET | /users/me/preferences | User | UsersController.getPreferences | Preferencias de notificación |
+| PUT | /users/me/preferences | User | UsersController.updatePreferences | Actualizar preferencias (parcial) |
 | GET | /users/verification-status | User | UsersController.getVerificationStatus | Check email verification status |
 | GET | /users/limits | User | UsersController.getUserLimits | Get plan limits and current usage |
 | GET | /users/history | User | UsersController.getUserHistory | Get conversion history (Pro+ only) |
@@ -38,6 +43,120 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 | GET | /users/history/:id/zpl | User | UsersController.getHistoryZpl | Get the original ZPL to reconvert (Pro+ only) |
 
 **File:** `src/modules/users/users.controller.ts`
+
+### Foto de perfil
+
+`POST /users/me/photo` recibe `multipart/form-data` con el campo `file` y responde
+`{ photoURL }`. Acepta JPEG, PNG y WebP —decidido por el contenido del archivo, no
+por el `Content-Type`— hasta 2 MB (`IMAGE_TOO_LARGE`, 413); el resto se rechaza con
+`UNSUPPORTED_IMAGE_TYPE` (400).
+
+La imagen se recorta a cuadrado y se reescala a 256 px en WebP, y se guarda siempre
+en `users/<uid>/avatar.webp` del bucket **público** (`GCP_PUBLIC_BUCKET`, por defecto
+`zplpdf-public-assets`): la ruta fija evita huérfanos y el bucket público evita las
+URLs firmadas, que caducarían. La URL devuelta lleva `?v=<timestamp>` para invalidar
+la caché del navegador.
+
+La URL se escribe en Firestore **y** en Firebase Auth (`updateUser`), en ese orden
+inverso —Auth primero—: el claim `picture` del token es lo que pinta el frontend, y
+si solo se guardara en Firestore seguiría mostrando la foto de Google.
+
+`DELETE /users/me/photo` borra el objeto y deja `photoURL: null` en ambos sitios, que
+es lo que devuelve al usuario a sus iniciales; `null` (y no el campo ausente) es lo
+que distingue "la quitó" de "nunca subió ninguna", el caso en que `GET /users/me` sí
+cae en la foto del proveedor de acceso.
+### Baja de cuenta (`DELETE /users/me`)
+
+Lógica en `src/modules/users/account-deletion.service.ts`. Encadena, **en este orden**:
+
+1. Cuenta las facturas de Stripe que van a conservarse.
+2. **Cancela las suscripciones vivas** (inmediata, no a fin de periodo). Mira el
+   `stripeSubscriptionId` guardado **y** las del `stripeCustomerId`: el id local puede
+   faltar o estar desfasado, y fiarse solo de él dejaría un contrato cobrando a una
+   cuenta borrada. Si Stripe rechaza cualquiera, la petición muere aquí con
+   `409 SUBSCRIPTION_CANCEL_FAILED` y **no se borra nada**.
+3. Escribe `deleted_accounts/<uid>` con `deletedAt`. Esta lápida bloquea desde ese
+   instante las autorizaciones y las escrituras tardías de conversiones/batches. Las
+   creaciones persistentes (historial, uso, cola, batches y localizadores) la leen en
+   la misma transacción con la que guardan el dato. Las actualizaciones de progreso
+   usan `update()` directo: no recrean un doc barrido ni pagan lecturas por avance.
+   Si la marca falla después de cancelar Stripe, la respuesta es
+   `ACCOUNT_DELETION_PARTIAL` con `failedSteps: ['deletionMark']`, no un 500 opaco.
+4. Borra `conversion_history` y los archivos de Storage que cuelguen de la URL firmada
+   de cada fila, más el prefijo `debug-zpl/<uid>/`, sus docs de `zpl_debug_files` y la
+   foto de perfil (`users/<uid>/avatar.webp` del bucket **público**, #106): esa URL no
+   está firmada ni caduca, así que es el archivo que más importa retirar.
+   Los workers comprueban la lápida justo antes y después de cada subida a GCS; si la
+   baja empieza durante la subida, retiran el objeto para que no quede huérfano tras
+   este barrido.
+5. Borra los batches (`zpl-batches` + los ZIP de `batches/<batchId>/`) y los docs de
+   estado de `zpl-conversions`, que siguen sirviendo `GET /zpl/status/:jobId`.
+6. Borra `usage`, el perfil fiscal (`tax_profiles`) y cancela los emails en cola.
+7. Anonimiza lo que se conserva: los `cfdis`, los registros contables
+   (`stripe_transactions`, `subscription_events`) y los de actividad (`email_queue`,
+   `email_events`, `feedback`, `error_logs`) pasan a `userId: 'deleted_user'` con
+   `userEmail` vacío. También quita el UID de `daily_stats.activeUserIds` sin alterar
+   ningún contador y anonimiza `admin_audit_log.requestParams.userId`, conservando el
+   resto del evento administrativo. El customer de Stripe pierde nombre, email,
+   teléfono, domicilio, metadata y sus tax IDs. El XML/PDF timbrado NO se toca: es el
+   documento fiscal. Tras borrar el perfil —y antes de borrar Firebase Auth— se repite
+   el barrido, porque el webhook de cancelación puede escribir un `subscription_event`
+   con PII mientras la baja avanza.
+8. Borra el doc de `users` y, por último, la cuenta de Firebase Auth — **solo si
+   ningún paso anterior falló**. Con datos o archivos pendientes, la identidad se
+   conserva: es lo único que permite reintentar la baja, y sin ella esos restos
+   quedarían sin dueño. Si el doc no llega a borrarse, tampoco se borra la cuenta de
+   Auth.
+
+`FirebaseAuthGuard` consulta la lápida en cada request y comprueba en Firebase Auth
+que la cuenta existe **antes** de su "lazy user creation": un ID token sigue siendo
+válido hasta una hora después de la baja, y sin esas dos redes la primera petición
+posterior podría recrear el perfil. La comprobación de Auth solo se paga en el alta.
+
+Respuesta 200: `{ deleted: { conversions, storedFiles, taxProfile, subscription:
+{ cancelled, plan, effectiveAt } }, retained: { invoices, reason } }`. `reason` es un
+código estable (`fiscal_retention`), no una frase: la app está en cuatro idiomas.
+
+Si algún paso posterior a la cancelación falla, responde `500
+ACCOUNT_DELETION_PARTIAL` con `data.accountDeleted` (si la cuenta llegó a
+desaparecer) y `data.failedSteps`. El frontend necesita ese primer campo para no
+afirmar que la cuenta ya no existe cuando sigue existiendo. Si Firebase Auth no se
+borra, también se elimina `deleted_accounts/<uid>` para que el usuario conserve el
+acceso y pueda reintentar.
+
+### Preferencias de notificación (`/users/me/preferences`)
+
+`{ notifications: { product, billing, usageReminders } }`, guardadas en el doc de
+`users` (`notificationPreferences`). Ausente equivale a todo activado. El `PUT` es
+parcial: las claves que no vengan conservan su valor, y la respuesta trae siempre las
+tres resueltas. Se escriben con ruta anidada (`notificationPreferences.product`) para
+que dos clics seguidos en la pantalla de ajustes no se pisen; después se relee el
+documento y se devuelve el estado completo realmente persistido, incluidos cambios
+concurrentes en otras claves.
+
+Un envío que ya está en `sending` cuando empieza una baja no se puede abortar —el
+worker tiene el destinatario en memoria—, así que la baja espera a que se resuelva
+(hasta 3 s) antes de confirmar nada; si sigue en vuelo, responde
+`ACCOUNT_DELETION_PARTIAL` con `failedSteps: ['pendingEmails']` en vez de afirmar un
+borrado que todavía puede producir un correo. Los nuevos ya no salen: el claim lee la
+lápida de `deleted_accounts` dentro de su transacción.
+
+`EmailService.processQueue` las comprueba **justo antes de enviar** —no solo al
+encolar, porque las secuencias se programan con días de antelación— usando el mapa
+`EMAIL_NOTIFICATION_CATEGORY` (`src/modules/email/email-categories.ts`). Lo que no
+sale se marca `cancelled` con su `skipReason` y cuenta en `skipped`, no en `failed`.
+Justo antes de llamar a Resend, el worker reclama atómicamente el documento con
+`pending -> sending`; si una baja u otro worker cambió ya su estado, no envía ni lo
+sobrescribe a `sent`, y ese elemento también cuenta en `skipped`.
+
+Ese `sending` es un **lease de 10 minutos** (`EMAIL_SEND_LEASE_MS`), no un estado
+final: si el proceso muere entre la reclamación y la escritura del resultado, el
+siguiente ciclo lo retoma en vez de perderlo para siempre. El reintento es seguro
+porque el envío lleva `idempotencyKey` con el id de la cola. El barrido consulta
+`status == 'sending'` con **un solo filtro** y descarta por antigüedad en memoria: en
+`email_queue` solo existen los índices compuestos `emailType+status+userId+createdAt`
+y `status+scheduledFor`, y una consulta sin su índice ya costó una tanda de avisos sin
+enviar.
 
 ### Acciones sobre el historial
 

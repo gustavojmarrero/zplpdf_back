@@ -1,3 +1,5 @@
+import type { NotificationPreferences } from './notification-preferences.interface.js';
+
 export type PlanType = 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
 export type UserRole = 'user' | 'admin';
 export type CountrySource = 'ip' | 'stripe' | 'manual';
@@ -29,6 +31,12 @@ export interface User {
   id: string;
   email: string;
   displayName?: string;
+  /**
+   * Foto de perfil subida por el usuario (`POST /users/me/photo`). `null` cuando
+   * la quitó a propósito: el frontend muestra entonces las iniciales en vez de
+   * caer en la foto de la cuenta de Google.
+   */
+  photoURL?: string | null;
   emailVerified: boolean;
   plan: PlanType;
   role: UserRole;
@@ -67,6 +75,11 @@ export interface User {
   city?: string;
   countrySource?: CountrySource;
   countryDetectedAt?: Date;
+  /**
+   * Preferencias de notificación por email. Ausente = todo activado; ver
+   * `resolveNotificationPreferences`.
+   */
+  notificationPreferences?: Partial<NotificationPreferences>;
   // Campos de actividad e inactividad (para GA4)
   lastActivityAt?: Date;
   notifiedInactive7Days?: boolean;

@@ -18,7 +18,9 @@ jest.mock('@google-cloud/storage', () => ({
   })),
 }));
 
+import { HttpException } from '@nestjs/common';
 import { ZplService, LabelSize } from './zpl.service.js';
+import { OutputFormat } from './enums/output-format.enum.js';
 
 /**
  * Regresión: una etiqueta de envío real (Amazon Logistics) que empieza con un
@@ -223,6 +225,102 @@ describe('ZplService — generateFilenames (issue #100: timestamp truncado)', ()
     );
 
     expect(downloadFilename).toBe('zplpdf_50x80mm_20260819T1542.pdf');
+  });
+});
+
+/**
+ * Un worker puede seguir convirtiendo cuando la baja ya barrió Firestore y
+ * Storage. La comprobación debe vivir justo junto a la subida: el guard de la
+ * request original ocurrió demasiado pronto para proteger este punto.
+ */
+describe('ZplService — la lápida bloquea subidas tardías', () => {
+  function buildUploadService(marks: boolean[]) {
+    const save = jest.fn().mockResolvedValue(undefined);
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const file = jest.fn().mockReturnValue({ save, delete: remove });
+    const isAccountDeletionMarked = jest
+      .fn()
+      .mockImplementation(async () => marks.shift() ?? false);
+    const saveZplDebugFile = jest.fn().mockResolvedValue(undefined);
+
+    const service = Object.create(ZplService.prototype) as any;
+    Object.assign(service, {
+      logger: {
+        log: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      },
+      bucket: 'test-bucket',
+      jobs: new Map(),
+      storage: { bucket: () => ({ file }) },
+      firestoreService: {
+        isAccountDeletionMarked,
+        saveZplDebugFile,
+        updateConversionStatus: jest.fn().mockResolvedValue(undefined),
+      },
+      usersService: {},
+      logError: jest.fn().mockResolvedValue(true),
+    });
+
+    return {
+      service,
+      save,
+      remove,
+      isAccountDeletionMarked,
+      saveZplDebugFile,
+    };
+  }
+
+  it('no sube el PDF si la cuenta ya estaba marcada al llegar a GCS', async () => {
+    const { service, save, isAccountDeletionMarked } = buildUploadService([
+      true,
+    ]);
+    service.jobs.set('job-1', {
+      id: 'job-1',
+      zplContent: '^XA^FDhola^FS^XZ',
+      labelSize: LabelSize.FOUR_BY_SIX,
+      outputFormat: OutputFormat.PDF,
+      status: 'pending',
+      progress: 0,
+      createdAt: new Date(),
+      userPlan: 'pro',
+    });
+    service.convertZplToPdf = jest.fn().mockResolvedValue(Buffer.from('pdf'));
+
+    await service.processZplConversion(
+      '^XA^FDhola^FS^XZ',
+      '4x6',
+      'job-1',
+      OutputFormat.PDF,
+      'uid-1',
+      'pro',
+    );
+
+    expect(isAccountDeletionMarked).toHaveBeenCalledWith('uid-1');
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('retira el ZPL si la baja empieza mientras GCS termina la subida', async () => {
+    const { service, save, remove, saveZplDebugFile } = buildUploadService([
+      false,
+      true,
+    ]);
+
+    await service.saveZplForDebug(
+      '^XA^FDhola^FS^XZ',
+      'job-1',
+      'uid-1',
+      'user@example.com',
+      '4x6',
+      1,
+      OutputFormat.PDF,
+    );
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    // No queda metadata apuntando a un objeto que la propia carrera retiró.
+    expect(saveZplDebugFile).not.toHaveBeenCalled();
   });
 });
 
@@ -671,6 +769,7 @@ describe('ZplService — el batch deja el ZPL disponible para reconvertir', () =
       },
       firestoreService: {
         getBatchJob: jest.fn().mockResolvedValue({ userId: 'uid-pro' }),
+        isAccountDeletionMarked: jest.fn().mockResolvedValue(false),
         updateZplDebugResult,
       },
       usersService: {
@@ -760,5 +859,144 @@ describe('ZplService — el batch deja el ZPL disponible para reconvertir', () =
     await service.processBatchFiles('batch-1', [archivo], [job], '4x6', 'pdf');
 
     expect(observado).toEqual([true]);
+  });
+});
+
+/**
+ * El render de la vista previa va contra el plan FREE de Labelary (1 req/s para
+ * TODA la plataforma) y cada etiqueta única es una petición. El endpoint
+ * público (issue #108) acota cuántas se renderizan, y lo que importa es que el
+ * recorte ocurra ANTES de llamar a Labelary: recortar la respuesta no ahorraría
+ * nada del techo compartido.
+ */
+describe('ZplService — etiquetas únicas y vista previa acotada', () => {
+  const buildService = (): ZplService => {
+    const configService: any = { get: jest.fn(() => 'test-bucket') };
+    return new ZplService(configService, {} as any, {} as any, {}, {} as any);
+  };
+
+  const label = (texto: string, extra = '') =>
+    `^XA\n^FO20,20^FD${texto}^FS${extra}\n^XZ`;
+
+  describe('extractUniqueLabels', () => {
+    it('agrupa etiquetas idénticas y suma las copias de ^PQ', () => {
+      const service = buildService();
+
+      const uniques = service.extractUniqueLabels(
+        [
+          label('A', '^PQ3'),
+          label('B'),
+          // Misma etiqueta que la primera salvo formato: sin saltos de línea
+          // y con otro ^PQ. Debe fundirse con ella.
+          '^XA^FO20,20^FDA^FS^PQ2^XZ',
+        ].join('\n'),
+      );
+
+      expect(uniques).toHaveLength(2);
+      expect(uniques[0].qty).toBe(5); // 3 + 2 copias
+      expect(uniques[1].qty).toBe(1);
+      expect(uniques[0].zpl).not.toContain('^PQ');
+      expect(uniques[0].zpl).not.toContain('\n');
+      expect(uniques[0].zpl.startsWith('^XA')).toBe(true);
+      expect(uniques[0].zpl.endsWith('^XZ')).toBe(true);
+    });
+
+    it('respeta el orden de aparición', () => {
+      const service = buildService();
+
+      const uniques = service.extractUniqueLabels(
+        [label('primera'), label('segunda'), label('tercera')].join('\n'),
+      );
+
+      expect(uniques.map((u) => u.zpl.includes('primera'))).toEqual([
+        true,
+        false,
+        false,
+      ]);
+      expect(uniques[2].zpl).toContain('tercera');
+    });
+
+    it('lanza 400 si no hay ningún bloque ^XA…^XZ', () => {
+      const service = buildService();
+
+      expect(() => service.extractUniqueLabels('esto no es ZPL')).toThrow(
+        HttpException,
+      );
+    });
+  });
+
+  describe('getLabelsPreview con maxUniqueLabels', () => {
+    const buildServiceConLabelaryMockeado = () => {
+      const service = buildService();
+      const getSingleLabelaryPngImage = jest
+        .fn()
+        .mockResolvedValue(Buffer.from('png'));
+      (service as any).getSingleLabelaryPngImage = getSingleLabelaryPngImage;
+      return { service, getSingleLabelaryPngImage };
+    };
+
+    const zplDeCincoUnicas = [
+      label('uno'),
+      label('dos'),
+      label('tres'),
+      label('cuatro'),
+      label('cinco'),
+    ].join('\n');
+
+    it('no manda a Labelary más etiquetas de las permitidas', async () => {
+      const { service, getSingleLabelaryPngImage } =
+        buildServiceConLabelaryMockeado();
+
+      const previews = await service.getLabelsPreview(
+        zplDeCincoUnicas,
+        LabelSize.TWO_BY_ONE,
+        { maxUniqueLabels: 2 },
+      );
+
+      expect(previews).toHaveLength(2);
+      expect(getSingleLabelaryPngImage).toHaveBeenCalledTimes(2);
+      expect(getSingleLabelaryPngImage.mock.calls[0][0]).toContain('uno');
+      expect(getSingleLabelaryPngImage.mock.calls[1][0]).toContain('dos');
+    });
+
+    it('conserva las cantidades reales de las etiquetas que sí renderiza', async () => {
+      const { service } = buildServiceConLabelaryMockeado();
+
+      const previews = await service.getLabelsPreview(
+        [label('uno', '^PQ10'), label('dos'), label('tres')].join('\n'),
+        LabelSize.TWO_BY_ONE,
+        { maxUniqueLabels: 2 },
+      );
+
+      expect(previews.map((p) => p.qty)).toEqual([10, 1]);
+      expect(previews[0].img.startsWith('data:image/png;base64,')).toBe(true);
+    });
+
+    it('mil copias de la misma etiqueta siguen siendo una sola petición', async () => {
+      const { service, getSingleLabelaryPngImage } =
+        buildServiceConLabelaryMockeado();
+
+      const previews = await service.getLabelsPreview(
+        Array.from({ length: 1000 }, () => label('igual')).join('\n'),
+        LabelSize.TWO_BY_ONE,
+        { maxUniqueLabels: 2 },
+      );
+
+      expect(getSingleLabelaryPngImage).toHaveBeenCalledTimes(1);
+      expect(previews).toEqual([expect.objectContaining({ qty: 1000 })]);
+    });
+
+    it('sin tope renderiza todas las etiquetas únicas (comportamiento de /zpl/preview)', async () => {
+      const { service, getSingleLabelaryPngImage } =
+        buildServiceConLabelaryMockeado();
+
+      const previews = await service.getLabelsPreview(
+        zplDeCincoUnicas,
+        LabelSize.TWO_BY_ONE,
+      );
+
+      expect(previews).toHaveLength(5);
+      expect(getSingleLabelaryPngImage).toHaveBeenCalledTimes(5);
+    });
   });
 });

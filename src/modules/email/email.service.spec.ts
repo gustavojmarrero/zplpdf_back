@@ -588,3 +588,207 @@ describe('EmailService.scheduleHighUsageEmails', () => {
     expect(firestore.getUsersWithHighUsage).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Las preferencias se comprueban justo antes de enviar y no solo al encolar: las
+ * secuencias de onboarding se programan con días de antelación, y en ese hueco
+ * el usuario puede desactivar la categoría o darse de baja (issue #99).
+ */
+describe('EmailService.processQueue — preferencias de notificación', () => {
+  let service: EmailService;
+  let firestore: {
+    getPendingEmails: jest.Mock;
+    getUserById: jest.Mock;
+    cancelQueuedEmail: jest.Mock;
+    claimPendingEmail: jest.Mock;
+    getEmailTemplateByKey: jest.Mock;
+    updateEmailQueueStatus: jest.Mock;
+  };
+  let sendEmailSpy: jest.SpyInstance;
+
+  function queued(overrides: Record<string, any> = {}) {
+    return {
+      id: 'q-1',
+      userId: 'uid-1',
+      userEmail: 'user@example.com',
+      emailType: 'welcome',
+      abVariant: 'A',
+      language: 'es',
+      scheduledFor: new Date(),
+      ...overrides,
+    };
+  }
+
+  beforeEach(async () => {
+    firestore = {
+      getPendingEmails: jest.fn().mockResolvedValue([]),
+      getUserById: jest.fn().mockResolvedValue({ id: 'uid-1' }),
+      cancelQueuedEmail: jest.fn().mockResolvedValue(undefined),
+      claimPendingEmail: jest.fn().mockResolvedValue(true),
+      getEmailTemplateByKey: jest.fn(),
+      updateEmailQueueStatus: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RESEND_API_KEY' ? 'test-key' : undefined,
+          },
+        },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+
+    service = module.get<EmailService>(EmailService);
+    // El envío real se prueba aparte; aquí interesa quién llega a él.
+    sendEmailSpy = jest
+      .spyOn(service as any, 'sendEmail')
+      .mockResolvedValue(true as never);
+  });
+
+  it('envía cuando la categoría del email sigue activada', async () => {
+    firestore.getPendingEmails.mockResolvedValue([queued()]);
+    firestore.getUserById.mockResolvedValue({
+      id: 'uid-1',
+      notificationPreferences: { product: true },
+    });
+
+    const result = await service.processQueue();
+
+    expect((service as any).sendEmail).toHaveBeenCalled();
+    expect(result).toMatchObject({ sent: 1, skipped: 0, failed: 0 });
+  });
+
+  it('no envía si el documento fue cancelado después de cargar la tanda', async () => {
+    firestore.getPendingEmails.mockResolvedValue([queued()]);
+    firestore.getEmailTemplateByKey.mockResolvedValue({
+      content: {
+        A: {
+          es: { subject: 'Asunto', body: '<p>Contenido</p>' },
+        },
+      },
+    });
+    firestore.claimPendingEmail.mockResolvedValue(false);
+    sendEmailSpy.mockRestore();
+    const resendSend = jest.fn();
+    (service as any).resend = { emails: { send: resendSend } };
+
+    const result = await service.processQueue();
+
+    // El snapshot seguía diciendo pending, pero la transacción es la autoridad
+    // final. Sobrescribir cancelled con sent reactivaría un correo de la baja.
+    // El userId viaja con el claim: la transacción comprueba la lápida de la
+    // baja de cuenta antes de autorizar el envío.
+    expect(firestore.claimPendingEmail).toHaveBeenCalledWith('q-1', 'uid-1');
+    expect(resendSend).not.toHaveBeenCalled();
+    expect(firestore.updateEmailQueueStatus).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ sent: 0, failed: 0, skipped: 1 });
+  });
+
+  it('no envía un email de producto si el usuario desactivó esa categoría', async () => {
+    firestore.getPendingEmails.mockResolvedValue([queued()]);
+    firestore.getUserById.mockResolvedValue({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    const result = await service.processQueue();
+
+    expect((service as any).sendEmail).not.toHaveBeenCalled();
+    expect(firestore.cancelQueuedEmail).toHaveBeenCalledWith(
+      'q-1',
+      'notifications_off:product',
+    );
+    // Cancelado no es fallido: un pico de bajas no puede leerse como avería.
+    expect(result).toMatchObject({ sent: 0, skipped: 1, failed: 0 });
+  });
+
+  it('desactivar producto no silencia los avisos de cobro ni los de cuota', async () => {
+    firestore.getPendingEmails.mockResolvedValue([
+      queued({ id: 'q-billing', emailType: 'payment_failed' }),
+      queued({ id: 'q-usage', emailType: 'limit_80_percent' }),
+    ]);
+    firestore.getUserById.mockResolvedValue({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    const result = await service.processQueue();
+
+    expect(result).toMatchObject({ sent: 2, skipped: 0 });
+  });
+
+  it('respeta cada categoría por separado', async () => {
+    firestore.getPendingEmails.mockResolvedValue([
+      queued({ id: 'q-billing', emailType: 'subscription_downgraded' }),
+      queued({ id: 'q-usage', emailType: 'conversion_blocked' }),
+    ]);
+    firestore.getUserById.mockResolvedValue({
+      id: 'uid-1',
+      notificationPreferences: { billing: false, usageReminders: true },
+    });
+
+    const result = await service.processQueue();
+
+    expect(firestore.cancelQueuedEmail).toHaveBeenCalledTimes(1);
+    expect(firestore.cancelQueuedEmail).toHaveBeenCalledWith(
+      'q-billing',
+      'notifications_off:billing',
+    );
+    expect(result).toMatchObject({ sent: 1, skipped: 1 });
+  });
+
+  it('no escribe a una cuenta que ya no existe', async () => {
+    firestore.getPendingEmails.mockResolvedValue([queued()]);
+    firestore.getUserById.mockResolvedValue(null);
+
+    const result = await service.processQueue();
+
+    expect((service as any).sendEmail).not.toHaveBeenCalled();
+    expect(firestore.cancelQueuedEmail).toHaveBeenCalledWith(
+      'q-1',
+      'user_deleted',
+    );
+    expect(result).toMatchObject({ skipped: 1 });
+  });
+
+  it('lee las preferencias una sola vez por usuario en cada tanda', async () => {
+    firestore.getPendingEmails.mockResolvedValue([
+      queued({ id: 'q-1' }),
+      queued({ id: 'q-2', emailType: 'tutorial' }),
+      queued({ id: 'q-3', userId: 'uid-2' }),
+    ]);
+
+    await service.processQueue();
+
+    expect(firestore.getUserById).toHaveBeenCalledTimes(2);
+  });
+
+  it('ante un fallo al leer al usuario, envía en vez de silenciar', async () => {
+    firestore.getPendingEmails.mockResolvedValue([
+      queued({ emailType: 'payment_failed' }),
+    ]);
+    firestore.getUserById.mockRejectedValue(new Error('firestore caído'));
+
+    const result = await service.processQueue();
+
+    expect((service as any).sendEmail).toHaveBeenCalled();
+    expect(result).toMatchObject({ sent: 1, skipped: 0 });
+  });
+
+  it('envía los tipos que no estén clasificados en ninguna categoría', async () => {
+    firestore.getPendingEmails.mockResolvedValue([
+      queued({ emailType: 'plantilla_creada_a_mano' }),
+    ]);
+
+    const result = await service.processQueue();
+
+    expect((service as any).sendEmail).toHaveBeenCalled();
+    expect(result).toMatchObject({ sent: 1 });
+  });
+});

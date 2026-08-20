@@ -41,6 +41,12 @@ export interface Cfdi {
   attempts: number;
 
   stampedAt?: Date | null;
+  /**
+   * Momento en que el titular se dio de baja y el comprobante se desvinculó de
+   * él (`userId` pasa a `deleted_user`). El CFDI se conserva cinco años por
+   * obligación fiscal, así que no se borra: solo deja de identificar a nadie.
+   */
+  anonymizedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -48,7 +48,12 @@ export type EmailType =
   | ReactivationEmailType
   | PaymentEmailType;
 
-export type EmailStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
+export type EmailStatus =
+  | 'pending'
+  | 'sending'
+  | 'sent'
+  | 'failed'
+  | 'cancelled';
 
 export type EmailEventType =
   | 'delivered'
@@ -74,6 +79,7 @@ export interface EmailQueue {
   language: EmailLanguage;
   metadata?: Record<string, any>;
   scheduledFor: Date;
+  sendingAt?: Date;
   sentAt?: Date;
   errorMessage?: string;
   createdAt: Date;
@@ -174,6 +180,12 @@ export interface EmailMetricsByType {
 export interface ProcessQueueResult {
   sent: number;
   failed: number;
+  /**
+   * Emails que no salieron porque el usuario desactivó esa categoría de
+   * notificaciones o porque su cuenta ya no existe. No son fallos: cuentan
+   * aparte para que un pico de bajas no se lea como una avería de la cola.
+   */
+  skipped: number;
   executedAt: Date;
 }
 

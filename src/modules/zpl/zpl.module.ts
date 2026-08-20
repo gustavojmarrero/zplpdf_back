@@ -11,6 +11,7 @@ import { CacheModule } from '../cache/cache.module.js';
 import { UtilsModule } from '../../utils/utils.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { GoogleAuthProvider } from '../../config/google-auth.provider.js';
+import { publicPreviewThrottlerProviders } from '../../common/guards/public-preview-throttler.guard.js';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { GoogleAuthProvider } from '../../config/google-auth.provider.js';
     LabelaryQueueService,
     LabelaryAnalyticsService,
     GoogleAuthProvider,
+    ...publicPreviewThrottlerProviders,
   ],
   exports: [
     ZplService,

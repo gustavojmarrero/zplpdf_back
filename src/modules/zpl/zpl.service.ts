@@ -6,6 +6,7 @@ import {
   Inject,
   forwardRef,
   ForbiddenException,
+  GoneException,
   Optional,
 } from '@nestjs/common';
 import {
@@ -65,6 +66,7 @@ interface ConversionJob {
   progress: number;
   resultUrl?: string;
   filename?: string;
+  storagePath?: string;
   error?: string;
   createdAt: Date;
   originalFilename?: string;
@@ -158,6 +160,76 @@ export class ZplService {
   }
 
   /**
+   * Sube un objeto solo mientras la cuenta continúa activa.
+   *
+   * La lápida se consulta aquí, en el borde de GCS, y no en cada escritura de
+   * progreso. La segunda lectura cubre que la baja empiece durante la propia
+   * subida: en ese caso se retira el objeto antes de devolver el control, porque
+   * su metadata ya pudo haber sido barrida y el jobId dejaría de ser localizable.
+   */
+  private async uploadForActiveAccount(
+    userId: string | undefined,
+    storagePath: string,
+    content: string | Buffer,
+    contentType: string,
+  ): Promise<void> {
+    if (
+      userId &&
+      (await this.firestoreService.isAccountDeletionMarked(userId))
+    ) {
+      throw new GoneException('Account deletion in progress');
+    }
+
+    await this.storage
+      .bucket(this.bucket)
+      .file(storagePath)
+      .save(content, { contentType });
+
+    if (
+      userId &&
+      (await this.firestoreService.isAccountDeletionMarked(userId))
+    ) {
+      await this.deleteStorageObject(storagePath);
+      throw new GoneException('Account deletion in progress');
+    }
+  }
+
+  /** Retira un objeto recién subido; un 404 ya equivale al estado deseado. */
+  private async deleteStorageObject(storagePath: string): Promise<void> {
+    try {
+      await this.storage.bucket(this.bucket).file(storagePath).delete();
+    } catch (error) {
+      if (error?.code !== 404) {
+        this.logger.error(
+          `No se pudo retirar de Storage ${storagePath}: ${error.message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Cierra la carrera entre la comprobación posterior a la subida y el commit
+   * del historial. Si ese commit pierde contra la lápida, el PDF/ZIP ya subido
+   * se elimina en vez de quedar sin una fila que permita encontrarlo.
+   */
+  private async cleanupUploadIfDeletionStarted(
+    userId: string,
+    storagePath: string | undefined,
+  ): Promise<void> {
+    if (!storagePath) return;
+
+    try {
+      if (await this.firestoreService.isAccountDeletionMarked(userId)) {
+        await this.deleteStorageObject(storagePath);
+      }
+    } catch (error) {
+      this.logger.error(
+        `No se pudo comprobar la baja antes de limpiar ${storagePath}: ${error.message}`,
+      );
+    }
+  }
+
+  /**
    * Registra un error en el log de errores de admin.
    * @returns `true` si el registro se guardó, `false` si el write falló.
    *   Permite a quien lo llama decidir si confiar en que el error quedó
@@ -237,16 +309,21 @@ export class ZplService {
     labelCount: number,
     outputFormat: OutputFormat,
   ): Promise<void> {
+    let uploaded = false;
+    let storagePath: string | undefined;
+
     try {
       const dateStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-      const storagePath = `debug-zpl/${userId}/${dateStr}/${jobId}.zpl`;
+      storagePath = `debug-zpl/${userId}/${dateStr}/${jobId}.zpl`;
       const fileSize = Buffer.byteLength(zplContent, 'utf8');
 
-      // Guardar archivo en GCS
-      await this.storage
-        .bucket(this.bucket)
-        .file(storagePath)
-        .save(zplContent, { contentType: 'text/plain' });
+      await this.uploadForActiveAccount(
+        userId,
+        storagePath,
+        zplContent,
+        'text/plain',
+      );
+      uploaded = true;
 
       // Guardar metadata en Firestore
       await this.firestoreService.saveZplDebugFile({
@@ -262,6 +339,12 @@ export class ZplService {
 
       this.logger.debug(`ZPL saved for debugging: ${storagePath}`);
     } catch (error) {
+      // Sin metadata, `storagePath` no queda registrado en ninguna parte. Se
+      // borra incluso si el fallo no fue la lápida: conservarlo crearía el
+      // mismo huérfano imposible de localizar en un reintento.
+      if (uploaded && storagePath) {
+        await this.deleteStorageObject(storagePath);
+      }
       this.logger.warn(`Failed to save ZPL for debug: ${error.message}`);
       // No lanzar error - esto es opcional y no debe afectar la conversión
     }
@@ -499,6 +582,10 @@ export class ZplService {
       this.logger.error(
         `Error in processZplConversionWithUser: ${error.message}`,
       );
+      await this.cleanupUploadIfDeletionStarted(
+        userId,
+        this.jobs.get(jobId)?.storagePath,
+      );
       // Record failed conversion
       try {
         await this.usersService.recordConversion(
@@ -616,13 +703,13 @@ export class ZplService {
       // Fase 4: Subiendo archivo (90%)
       this.updateProgress(jobId, 90, 'uploading');
 
-      // Guardar el archivo en Google Cloud Storage
-      await this.storage
-        .bucket(this.bucket)
-        .file(storageFilename)
-        .save(resultBuffer, {
-          contentType,
-        });
+      await this.uploadForActiveAccount(
+        userId,
+        storageFilename,
+        resultBuffer,
+        contentType,
+      );
+      job.storagePath = storageFilename;
 
       // Generar URL firmada
       const signedUrl = await this.generateSignedUrl(
@@ -1812,70 +1899,96 @@ export class ZplService {
   }
 
   /**
+   * Agrupa las etiquetas únicas del ZPL con su número de copias.
+   *
+   * Normaliza cada bloque `^XA…^XZ` (sin saltos de línea, espacios colapsados
+   * y sin `^PQ`) para que dos etiquetas idénticas cuenten como una sola: cada
+   * etiqueta única es una petición a Labelary, las copias no cuestan nada.
+   *
+   * @param zplContent Contenido ZPL a analizar
+   * @returns Etiquetas únicas normalizadas, en orden de aparición, con su qty
+   */
+  extractUniqueLabels(zplContent: string): { zpl: string; qty: number }[] {
+    const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
+    if (!labelMatches) {
+      throw new HttpException(
+        'No se encontraron etiquetas válidas en el contenido ZPL',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const uniqueLabels = new Map<string, number>();
+
+    for (const label of labelMatches) {
+      let normalized = label
+        .replace(/[\r\n]+/g, '') // Eliminar saltos de línea
+        .replace(/\s+/g, ' ') // Normalizar espacios
+        .trim();
+
+      // Extraer y eliminar ^PQ para contar copias
+      const pqMatch = normalized.match(/\^PQ(\d+)/);
+      const copies = pqMatch ? parseInt(pqMatch[1], 10) : 1;
+      normalized = normalized.replace(/\^PQ\d+,?\d*,?\d*,?\d*/g, '');
+
+      // Asegurar formato ZPL correcto
+      if (!normalized.startsWith('^XA')) normalized = '^XA' + normalized;
+      if (!normalized.endsWith('^XZ')) normalized += '^XZ';
+
+      uniqueLabels.set(
+        normalized,
+        (uniqueLabels.get(normalized) || 0) + copies,
+      );
+    }
+
+    return Array.from(uniqueLabels.entries()).map(([zpl, qty]) => ({
+      zpl,
+      qty,
+    }));
+  }
+
+  /**
    * Obtiene las previsualizaciones de las etiquetas únicas con sus cantidades
    * @param zplContent Contenido ZPL a analizar
    * @param labelSize Tamaño de la etiqueta
+   * @param options.maxUniqueLabels Renderiza como mucho N etiquetas únicas.
+   *   El recorte ocurre ANTES de llamar a Labelary (plan free: 1 req/s para
+   *   toda la plataforma), así que acota el gasto real, no solo la respuesta.
    * @returns Array de objetos con imagen y cantidad de cada etiqueta única
    */
   async getLabelsPreview(
     zplContent: string,
     labelSize: LabelSize,
+    options?: { maxUniqueLabels?: number },
   ): Promise<ZplPreviewItemDto[]> {
     try {
-      // 1. Extraer etiquetas individuales (separar por ^XA...^XZ)
-      const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
-      if (!labelMatches) {
-        throw new HttpException(
-          'No se encontraron etiquetas válidas en el contenido ZPL',
-          HttpStatus.BAD_REQUEST,
+      // 1. Extraer etiquetas únicas normalizadas con sus copias
+      const uniqueLabels = this.extractUniqueLabels(zplContent);
+
+      this.logger.debug(`Total de etiquetas únicas: ${uniqueLabels.length}`);
+
+      // 2. Recortar antes de tocar Labelary si el llamador puso un tope
+      const maxUniqueLabels = options?.maxUniqueLabels;
+      const labelsToRender =
+        maxUniqueLabels && maxUniqueLabels > 0
+          ? uniqueLabels.slice(0, maxUniqueLabels)
+          : uniqueLabels;
+
+      if (labelsToRender.length < uniqueLabels.length) {
+        this.logger.debug(
+          `Vista previa acotada a ${labelsToRender.length} de ${uniqueLabels.length} etiquetas únicas`,
         );
       }
-
-      // 2. Procesar etiquetas y contar duplicados
-      const uniqueLabels = new Map<string, number>();
-      const normalizedLabels: string[] = [];
-
-      for (const label of labelMatches) {
-        let normalized = label
-          .replace(/[\r\n]+/g, '') // Eliminar saltos de línea
-          .replace(/\s+/g, ' ') // Normalizar espacios
-          .trim();
-
-        // Extraer y eliminar ^PQ para contar copias
-        const pqMatch = normalized.match(/\^PQ(\d+)/);
-        const copies = pqMatch ? parseInt(pqMatch[1], 10) : 1;
-        normalized = normalized.replace(/\^PQ\d+,?\d*,?\d*,?\d*/g, '');
-
-        // Asegurar formato ZPL correcto
-        if (!normalized.startsWith('^XA')) normalized = '^XA' + normalized;
-        if (!normalized.endsWith('^XZ')) normalized += '^XZ';
-
-        uniqueLabels.set(
-          normalized,
-          (uniqueLabels.get(normalized) || 0) + copies,
-        );
-        if (!normalizedLabels.includes(normalized)) {
-          normalizedLabels.push(normalized);
-        }
-      }
-
-      this.logger.debug(
-        `Total de etiquetas encontradas: ${labelMatches.length}`,
-      );
-      this.logger.debug(
-        `Total de etiquetas únicas: ${normalizedLabels.length}`,
-      );
 
       // 3. Procesar etiquetas y generar previsualizaciones
       const labelPreviews: ZplPreviewItemDto[] = [];
 
       // Procesar cada etiqueta única individualmente, pero secuencialmente para evitar errores de rate limit
-      for (const zpl of normalizedLabels) {
+      for (const { zpl, qty } of labelsToRender) {
         try {
           const buffer = await this.getSingleLabelaryPngImage(zpl, labelSize);
           labelPreviews.push({
             img: `data:image/png;base64,${buffer.toString('base64')}`,
-            qty: uniqueLabels.get(zpl) || 0,
+            qty,
           });
         } catch (error) {
           this.logger.error(`Error al procesar etiqueta: ${error.message}`);
@@ -2217,6 +2330,7 @@ export class ZplService {
         );
       }
 
+      let uploadedTempPath: string | undefined;
       try {
         // Actualizar estado a procesando
         job.status = 'processing';
@@ -2258,10 +2372,13 @@ export class ZplService {
 
         // Guardar archivo temporal en GCS
         const tempPath = `batches/${batchId}/temp/${job.jobId}.${fileExtension}`;
-        await this.storage
-          .bucket(this.bucket)
-          .file(tempPath)
-          .save(resultBuffer, { contentType });
+        await this.uploadForActiveAccount(
+          userId,
+          tempPath,
+          resultBuffer,
+          contentType,
+        );
+        uploadedTempPath = tempPath;
 
         // Marcar como completado
         job.status = 'completed';
@@ -2296,6 +2413,9 @@ export class ZplService {
           `Batch ${batchId}: Archivo ${file.fileName} completado`,
         );
       } catch (error) {
+        if (userId) {
+          await this.cleanupUploadIfDeletionStarted(userId, uploadedTempPath);
+        }
         this.logger.error(
           `Batch ${batchId}: Error procesando ${file.fileName}: ${error.message}`,
         );
@@ -2348,6 +2468,7 @@ export class ZplService {
       completedCount,
       failedCount,
       outputFormat,
+      userId,
     );
   }
 
@@ -2376,6 +2497,7 @@ export class ZplService {
     completedCount: number,
     failedCount: number,
     outputFormat: 'pdf' | 'png' | 'jpeg',
+    userId?: string,
   ): Promise<void> {
     try {
       const completedJobs = jobs.filter(
@@ -2407,9 +2529,12 @@ export class ZplService {
       const zipFilename = `zpl-batch-${timestamp}.zip`;
       const zipPath = `batches/${batchId}/${zipFilename}`;
 
-      await this.storage.bucket(this.bucket).file(zipPath).save(zipBuffer, {
-        contentType: 'application/zip',
-      });
+      await this.uploadForActiveAccount(
+        userId,
+        zipPath,
+        zipBuffer,
+        'application/zip',
+      );
 
       // Generar URL firmada
       const downloadUrl = await this.generateSignedUrl(zipPath, zipFilename);

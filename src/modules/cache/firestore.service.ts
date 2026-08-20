@@ -51,6 +51,21 @@ import type {
   HighUsageUsersResult,
 } from '../email/interfaces/email.interface.js';
 
+/**
+ * Tiempo que un worker puede tener un email en `sending` antes de que se
+ * considere abandonado y otro pueda retomarlo. Holgado a propósito: reintentar
+ * un envío que sigue en vuelo cuesta una entrega duplicada, mientras que esperar
+ * de más solo retrasa un correo que ya se perdió.
+ */
+export const EMAIL_SEND_LEASE_MS = 10 * 60 * 1000;
+
+/**
+ * Tope de documentos en `sending` que se leen de una vez. Son los envíos en
+ * vuelo más los abandonados: si alguna vez hubiera más, sobra con tratarlos en
+ * varias vueltas del cron.
+ */
+const MAX_SENDING_SCAN = 200;
+
 // ============== Daily Stats (Aggregated Metrics) ==============
 
 export interface DailyStats {
@@ -232,6 +247,7 @@ export class FirestoreService {
 
   private readonly collectionName = 'zpl-conversions';
   private readonly usersCollection = 'users';
+  private readonly deletedAccountsCollection = 'deleted_accounts';
   private readonly usageCollection = 'usage';
   private readonly historyCollection = 'conversion_history';
   // Finance collections
@@ -300,10 +316,23 @@ export class FirestoreService {
     status: ConversionStatus,
   ): Promise<void> {
     try {
-      await this.firestore
-        .collection(this.collectionName)
-        .doc(jobId)
-        .set(status, { merge: true });
+      const ref = this.firestore.collection(this.collectionName).doc(jobId);
+
+      if (status.userId) {
+        const deletedRef = this.firestore
+          .collection(this.deletedAccountsCollection)
+          .doc(status.userId);
+        // Esta escritura crea el localizador persistente del trabajo y ocurre
+        // una sola vez por conversión. Sí merece compartir frontera con la
+        // lápida; las actualizaciones frecuentes de progreso de abajo no.
+        await this.firestore.runTransaction(async (transaction) => {
+          const deleted = await transaction.get(deletedRef);
+          this.assertAccountWritable(status.userId, deleted.exists);
+          transaction.set(ref, status, { merge: true });
+        });
+      } else {
+        await ref.set(status, { merge: true });
+      }
 
       this.logger.log(`Estado de conversion actualizado para jobId: ${jobId}`);
     } catch (error) {
@@ -335,6 +364,9 @@ export class FirestoreService {
     status: Partial<ConversionStatus>,
   ): Promise<void> {
     try {
+      // Es el camino caliente: se llama por cada avance de progreso. `update`
+      // no recrea un documento que la baja ya borró, así que una transacción
+      // y dos lecturas por avance no añadían protección persistente.
       await this.firestore
         .collection(this.collectionName)
         .doc(jobId)
@@ -354,14 +386,22 @@ export class FirestoreService {
 
   async createUser(user: User): Promise<void> {
     try {
-      await this.firestore
+      const userRef = this.firestore
         .collection(this.usersCollection)
-        .doc(user.id)
-        .set({
+        .doc(user.id);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(user.id);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(user.id, deleted.exists);
+        transaction.set(userRef, {
           ...user,
           createdAt: user.createdAt || new Date(),
           updatedAt: new Date(),
         });
+      });
       this.logger.log(`Usuario creado: ${user.id}`);
     } catch (error) {
       this.logger.error(`Error al crear usuario: ${error.message}`);
@@ -397,6 +437,43 @@ export class FirestoreService {
     } catch (error) {
       this.logger.error(`Error al obtener usuario: ${error.message}`);
       throw error;
+    }
+  }
+
+  /** Marca el UID antes de barrer sus datos y bloquea escrituras posteriores. */
+  async markAccountDeletion(userId: string): Promise<void> {
+    await this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(userId)
+      .set({ deletedAt: new Date() });
+  }
+
+  /** Permite reintentar una baja parcial con la identidad todavía activa. */
+  async clearAccountDeletionMark(userId: string): Promise<void> {
+    await this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(userId)
+      .delete();
+  }
+
+  async isAccountDeletionMarked(userId: string): Promise<boolean> {
+    const doc = await this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(userId)
+      .get();
+    return doc.exists;
+  }
+
+  /**
+   * Las creaciones y upserts persistentes que leen la lápida y escriben el dato
+   * forman una única frontera: si la baja gana la carrera, Firestore reintenta
+   * la transacción y esta termina aquí sin recrear restos del usuario. Las
+   * actualizaciones de progreso usan `update()` directo: no pueden recrear un
+   * documento borrado y no deben pagar lecturas en cada avance.
+   */
+  private assertAccountWritable(userId: string, deleted: boolean): void {
+    if (deleted) {
+      throw new Error(`Account deletion in progress for user ${userId}`);
     }
   }
 
@@ -1103,21 +1180,29 @@ export class FirestoreService {
       const docRef = this.firestore
         .collection(this.usageCollection)
         .doc(usageId);
-      const doc = await docRef.get();
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
 
-      if (!doc.exists) {
-        // Create new usage period with initial counts
-        const newUsage = this.createNewUsagePeriod(userId);
-        newUsage.pdfCount = pdfCount;
-        newUsage.labelCount = labelCount;
-        await docRef.set(newUsage);
-      } else {
-        // Atomic increment to avoid race conditions
-        await docRef.update({
-          pdfCount: FieldValue.increment(pdfCount),
-          labelCount: FieldValue.increment(labelCount),
-        });
-      }
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        const doc = await transaction.get(docRef);
+        this.assertAccountWritable(userId, deleted.exists);
+
+        if (!doc.exists) {
+          // Create new usage period with initial counts
+          const newUsage = this.createNewUsagePeriod(userId);
+          newUsage.pdfCount = pdfCount;
+          newUsage.labelCount = labelCount;
+          transaction.create(docRef, newUsage);
+        } else {
+          // Atomic increment to avoid race conditions
+          transaction.update(docRef, {
+            pdfCount: FieldValue.increment(pdfCount),
+            labelCount: FieldValue.increment(labelCount),
+          });
+        }
+      });
 
       this.logger.log(`Uso incrementado para usuario: ${userId}`);
     } catch (error) {
@@ -1211,48 +1296,39 @@ export class FirestoreService {
       const docRef = this.firestore
         .collection(this.usageCollection)
         .doc(periodInfo.periodId);
-      const doc = await docRef.get();
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
 
-      if (doc.exists) {
-        const data = doc.data();
-        return {
-          ...data,
-          periodStart: data.periodStart?.toDate?.() || data.periodStart,
-          periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
-        } as Usage;
-      }
+      return await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        const doc = await transaction.get(docRef);
+        this.assertAccountWritable(userId, deleted.exists);
 
-      // Crear nuevo período de uso
-      const newUsage: Usage = {
-        odId: periodInfo.periodId,
-        userId,
-        periodStart: periodInfo.periodStart,
-        periodEnd: periodInfo.periodEnd,
-        pdfCount: 0,
-        labelCount: 0,
-      };
-
-      // create() es atómico: falla con ALREADY_EXISTS si el doc apareció entre
-      // el get() y ahora (ej. un incrementUsageWithPeriod concurrente lo creó).
-      // Eso evita que un set() con contadores en 0 pise uso ya registrado.
-      try {
-        await docRef.create(newUsage);
-        this.logger.log(
-          `Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`,
-        );
-        return newUsage;
-      } catch (createError) {
-        if (createError?.code === 6 /* ALREADY_EXISTS */) {
-          const existing = await docRef.get();
-          const data = existing.data();
+        if (doc.exists) {
+          const data = doc.data();
           return {
             ...data,
             periodStart: data.periodStart?.toDate?.() || data.periodStart,
             periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
           } as Usage;
         }
-        throw createError;
-      }
+
+        const newUsage: Usage = {
+          odId: periodInfo.periodId,
+          userId,
+          periodStart: periodInfo.periodStart,
+          periodEnd: periodInfo.periodEnd,
+          pdfCount: 0,
+          labelCount: 0,
+        };
+
+        transaction.create(docRef, newUsage);
+        this.logger.log(
+          `Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`,
+        );
+        return newUsage;
+      });
     } catch (error) {
       this.logger.error(
         `Error al obtener/crear uso con período: ${error.message}`,
@@ -1281,17 +1357,26 @@ export class FirestoreService {
       const docRef = this.firestore
         .collection(this.usageCollection)
         .doc(periodInfo.periodId);
-      await docRef.set(
-        {
-          odId: periodInfo.periodId,
-          userId,
-          periodStart: periodInfo.periodStart,
-          periodEnd: periodInfo.periodEnd,
-          pdfCount: FieldValue.increment(pdfCount),
-          labelCount: FieldValue.increment(labelCount),
-        },
-        { merge: true },
-      );
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(userId, deleted.exists);
+        transaction.set(
+          docRef,
+          {
+            odId: periodInfo.periodId,
+            userId,
+            periodStart: periodInfo.periodStart,
+            periodEnd: periodInfo.periodEnd,
+            pdfCount: FieldValue.increment(pdfCount),
+            labelCount: FieldValue.increment(labelCount),
+          },
+          { merge: true },
+        );
+      });
       this.logger.log(
         `Uso incrementado para usuario: ${userId} (${periodInfo.periodId})`,
       );
@@ -1331,9 +1416,20 @@ export class FirestoreService {
 
   async saveConversionHistory(history: ConversionHistory): Promise<void> {
     try {
-      await this.firestore.collection(this.historyCollection).add({
-        ...history,
-        createdAt: history.createdAt || new Date(),
+      const historyRef = this.firestore
+        .collection(this.historyCollection)
+        .doc();
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(history.userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(history.userId, deleted.exists);
+        transaction.create(historyRef, {
+          ...history,
+          createdAt: history.createdAt || new Date(),
+        });
       });
       this.logger.log(`Historial guardado para usuario: ${history.userId}`);
     } catch (error) {
@@ -1509,10 +1605,19 @@ export class FirestoreService {
         .collection(this.dailyStatsCollection)
         .doc(dateKey);
       const globalRef = this.firestore.doc(this.globalTotalsDoc);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
 
+      // Esta transacción ya es necesaria para conservar los contadores. La
+      // lectura adicional de la lápida ocurre una vez al terminar, no por cada
+      // progreso, y evita que el fire-and-forget reintroduzca el UID en
+      // `activeUserIds` después de que la baja lo anonimizó.
       await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
         const doc = await transaction.get(docRef);
         const globalDoc = await transaction.get(globalRef);
+        this.assertAccountWritable(userId, deleted.exists);
 
         if (doc.exists) {
           const data = doc.data() as DailyStats;
@@ -1712,14 +1817,22 @@ export class FirestoreService {
 
   async saveBatchJob(batch: BatchJob): Promise<void> {
     try {
-      await this.firestore
+      const batchRef = this.firestore
         .collection(this.batchCollection)
-        .doc(batch.id)
-        .set({
+        .doc(batch.id);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(batch.userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(batch.userId, deleted.exists);
+        transaction.set(batchRef, {
           ...batch,
           createdAt: batch.createdAt || new Date(),
           updatedAt: new Date(),
         });
+      });
       this.logger.log(`Batch guardado: ${batch.id}`);
     } catch (error) {
       this.logger.error(`Error al guardar batch: ${error.message}`);
@@ -1755,6 +1868,9 @@ export class FirestoreService {
     data: Partial<BatchJob>,
   ): Promise<void> {
     try {
+      // Solo actualiza un batch creado bajo la guarda de `saveBatchJob`.
+      // `update()` falla si la baja ya borró el doc y nunca lo resucita; el
+      // progreso del batch no necesita releer la lápida en cada archivo.
       await this.firestore
         .collection(this.batchCollection)
         .doc(batchId)
@@ -4889,15 +5005,22 @@ export class FirestoreService {
     metadata?: Record<string, any>;
   }): Promise<string> {
     const docRef = this.firestore.collection(this.emailQueueCollection).doc();
+    const deletedRef = this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(data.userId);
     const now = new Date();
 
-    await docRef.set({
-      ...data,
-      id: docRef.id,
-      status: 'pending',
-      scheduledFor: data.scheduledFor,
-      createdAt: now,
-      updatedAt: now,
+    await this.firestore.runTransaction(async (transaction) => {
+      const deleted = await transaction.get(deletedRef);
+      this.assertAccountWritable(data.userId, deleted.exists);
+      transaction.create(docRef, {
+        ...data,
+        id: docRef.id,
+        status: 'pending',
+        scheduledFor: data.scheduledFor,
+        createdAt: now,
+        updatedAt: now,
+      });
     });
 
     return docRef.id;
@@ -4927,7 +5050,7 @@ export class FirestoreService {
       .limit(limit)
       .get();
 
-    return snapshot.docs.map((doc) => {
+    const toQueueItem = (doc: FirebaseFirestore.DocumentSnapshot) => {
       const data = doc.data();
       return {
         id: doc.id,
@@ -4939,6 +5062,158 @@ export class FirestoreService {
         scheduledFor: data.scheduledFor?.toDate?.() || data.scheduledFor,
         metadata: data.metadata,
       };
+    };
+
+    const pending = snapshot.docs.map(toQueueItem);
+
+    if (pending.length >= limit) {
+      return pending;
+    }
+
+    const abandoned = await this.getAbandonedSendingEmails(
+      limit - pending.length,
+    );
+
+    return [...pending, ...abandoned.map(toQueueItem)];
+  }
+
+  /**
+   * Envíos que se quedaron en `sending` porque el proceso murió entre la
+   * reclamación y la escritura del resultado.
+   *
+   * Sin esto el documento se queda en ese estado para siempre —`getPendingEmails`
+   * solo mira `pending`— y el correo se pierde en silencio, avisos de facturación
+   * incluidos. Reenviarlos es seguro porque el envío va con `idempotencyKey`: si
+   * el proceso murió después de que Resend lo aceptara, el segundo intento no
+   * entrega un duplicado.
+   *
+   * La antigüedad se filtra en memoria, no con `where('sendingAt','<=',...)`:
+   * combinarlo con el filtro de estado exigiría un índice compuesto nuevo, y en
+   * esta colección una consulta sin su índice ya costó una tanda de emails sin
+   * enviar. Los documentos en `sending` son un puñado por definición.
+   */
+  private async getAbandonedSendingEmails(
+    limit: number,
+  ): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+    if (limit <= 0) {
+      return [];
+    }
+
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'sending')
+      .limit(MAX_SENDING_SCAN)
+      .get();
+
+    const expiredBefore = Date.now() - EMAIL_SEND_LEASE_MS;
+
+    const abandoned = snapshot.docs.filter((doc) => {
+      const sendingAt =
+        doc.get('sendingAt')?.toDate?.() ?? doc.get('sendingAt');
+      // Sin `sendingAt` no se puede saber si sigue en vuelo; se deja estar, que
+      // es el lado seguro: reenviar lo que otro worker está mandando ahora mismo
+      // gasta una entrega de más.
+      return sendingAt instanceof Date && sendingAt.getTime() <= expiredBefore;
+    });
+
+    if (abandoned.length > 0) {
+      this.logger.warn(
+        `${abandoned.length} emails llevaban más de ${
+          EMAIL_SEND_LEASE_MS / 60000
+        } minutos en 'sending'; se reintentan`,
+      );
+    }
+
+    return abandoned.slice(0, limit);
+  }
+
+  /**
+   * Emails de un usuario que un worker ya reclamó y todavía no ha resuelto.
+   *
+   * La baja de cuenta los consulta para no confirmar el borrado mientras puede
+   * salir un correo: `cancelPendingEmails` solo alcanza a los `pending`, y quien
+   * ya pasó a `sending` tiene el destinatario cargado en memoria.
+   */
+  async countInFlightEmails(userId: string): Promise<number> {
+    // Un solo filtro y el usuario se compara en memoria, igual que el barrido de
+    // abandonados: los índices compuestos de esta colección son los que son, y
+    // una query sin el suyo falla en producción con FAILED_PRECONDITION. Los
+    // documentos en `sending` son un puñado en todo el sistema, así que filtrar
+    // aquí no cuesta nada.
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'sending')
+      .limit(MAX_SENDING_SCAN)
+      .get();
+
+    return snapshot.docs.filter((doc) => doc.get('userId') === userId).length;
+  }
+
+  /**
+   * Reclama un email solo si continúa pendiente en el instante del envío.
+   * La transición condicional evita que dos workers lo manden y hace que una
+   * cancelación concurrente gane limpiamente la carrera.
+   */
+  async claimPendingEmail(emailId: string, userId?: string): Promise<boolean> {
+    const ref = this.firestore
+      .collection(this.emailQueueCollection)
+      .doc(emailId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const email = await transaction.get(ref);
+      if (!email.exists) {
+        return false;
+      }
+
+      const status = email.get('status');
+      const now = new Date();
+
+      // `sending` solo se readmite cuando el lease venció: es el envío que dejó
+      // colgado un proceso muerto, no uno que otro worker esté haciendo ahora.
+      if (status !== 'pending') {
+        if (status !== 'sending') {
+          return false;
+        }
+
+        const sendingAt =
+          email.get('sendingAt')?.toDate?.() ?? email.get('sendingAt');
+
+        if (
+          !(sendingAt instanceof Date) ||
+          sendingAt.getTime() > now.getTime() - EMAIL_SEND_LEASE_MS
+        ) {
+          return false;
+        }
+      }
+
+      // La baja de cuenta marca el UID antes de barrer nada, y esta lectura
+      // dentro de la transacción es lo que impide que un envío se cuele entre
+      // esa marca y la cancelación de la cola: el destinatario ya pidió que su
+      // dirección se olvidara.
+      const ownerId = userId ?? email.get('userId');
+      if (ownerId) {
+        const deleted = await transaction.get(
+          this.firestore
+            .collection(this.deletedAccountsCollection)
+            .doc(ownerId),
+        );
+
+        if (deleted.exists) {
+          transaction.update(ref, {
+            status: 'cancelled',
+            skipReason: 'account_deleted',
+            updatedAt: now,
+          });
+          return false;
+        }
+      }
+
+      transaction.update(ref, {
+        status: 'sending',
+        sendingAt: now,
+        updatedAt: now,
+      });
+      return true;
     });
   }
 
@@ -4972,6 +5247,37 @@ export class FirestoreService {
   }
 
   /**
+   * Marca un email de la cola como cancelado sin haberlo enviado.
+   *
+   * Va aparte de `updateEmailQueueStatus` porque no es un resultado del envío:
+   * el email nunca salió. `skipReason` deja por escrito por qué —hoy, que el
+   * usuario desactivó esa categoría de notificaciones—, para que un hueco en la
+   * secuencia de onboarding no parezca un fallo de entrega.
+   */
+  async cancelQueuedEmail(
+    emailId: string,
+    skipReason: string,
+  ): Promise<boolean> {
+    const ref = this.firestore
+      .collection(this.emailQueueCollection)
+      .doc(emailId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const email = await transaction.get(ref);
+      if (!email.exists || email.get('status') !== 'pending') {
+        return false;
+      }
+
+      transaction.update(ref, {
+        status: 'cancelled',
+        skipReason,
+        updatedAt: new Date(),
+      });
+      return true;
+    });
+  }
+
+  /**
    * Check if user has already received a specific email type
    */
   async hasUserReceivedEmail(
@@ -4982,7 +5288,7 @@ export class FirestoreService {
       .collection(this.emailQueueCollection)
       .where('userId', '==', userId)
       .where('emailType', '==', emailType)
-      .where('status', 'in', ['pending', 'sent'])
+      .where('status', 'in', ['pending', 'sending', 'sent'])
       .limit(1)
       .get();
 
@@ -5002,7 +5308,7 @@ export class FirestoreService {
       .collection(this.emailQueueCollection)
       .where('userId', '==', userId)
       .where('emailType', '==', emailType)
-      .where('status', 'in', ['pending', 'sent'])
+      .where('status', 'in', ['pending', 'sending', 'sent'])
       .where('createdAt', '>=', periodStart)
       .limit(1)
       .get();
@@ -5055,16 +5361,26 @@ export class FirestoreService {
 
     const snapshot = await query.get();
 
-    const batch = this.firestore.batch();
-    snapshot.docs.forEach((doc) => {
-      batch.update(doc.ref, {
-        status: 'cancelled',
-        updatedAt: new Date(),
-      });
-    });
+    let cancelled = 0;
+    for (const doc of snapshot.docs) {
+      const didCancel = await this.firestore.runTransaction(
+        async (transaction) => {
+          const current = await transaction.get(doc.ref);
+          if (!current.exists || current.get('status') !== 'pending') {
+            return false;
+          }
 
-    await batch.commit();
-    return snapshot.size;
+          transaction.update(doc.ref, {
+            status: 'cancelled',
+            updatedAt: new Date(),
+          });
+          return true;
+        },
+      );
+      if (didCancel) cancelled++;
+    }
+
+    return cancelled;
   }
 
   // ============== Email Events Methods ==============
@@ -6239,7 +6555,7 @@ export class FirestoreService {
             'pro_inactive_14_days',
             'pro_inactive_30_days',
           ])
-          .where('status', 'in', ['pending', 'sent'])
+          .where('status', 'in', ['pending', 'sending', 'sent'])
           .get(),
       );
       const emailSnapshots = await Promise.all(emailPromises);
@@ -6563,7 +6879,7 @@ export class FirestoreService {
             'free_dormant_30d',
             'free_abandoned_60d',
           ])
-          .where('status', 'in', ['pending', 'sent'])
+          .where('status', 'in', ['pending', 'sending', 'sent'])
           .get(),
       );
       const emailSnapshots = await Promise.all(emailPromises);
@@ -7144,14 +7460,22 @@ export class FirestoreService {
     outputFormat: string;
   }): Promise<void> {
     try {
-      await this.firestore
+      const debugRef = this.firestore
         .collection(this.zplDebugCollection)
-        .doc(data.jobId)
-        .set({
+        .doc(data.jobId);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(data.userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(data.userId, deleted.exists);
+        transaction.set(debugRef, {
           ...data,
           createdAt: new Date(),
           result: 'pending',
         });
+      });
       this.logger.debug(`ZPL debug file saved: ${data.jobId}`);
     } catch (error) {
       this.logger.error(`Error saving ZPL debug file: ${error.message}`);
@@ -7168,6 +7492,9 @@ export class FirestoreService {
       const updateData: Record<string, any> = { result };
       if (errorCode) updateData.errorCode = errorCode;
 
+      // Es un cambio de estado sobre metadata ya creada con la lápida. Si el
+      // barrido la borró, `update()` falla sin recrearla; no hacen falta dos
+      // lecturas para cambiar pending -> success/error.
       await this.firestore
         .collection(this.zplDebugCollection)
         .doc(jobId)
@@ -7612,5 +7939,416 @@ export class FirestoreService {
       this.logger.error(`Error al actualizar CFDI: ${error.message}`);
       throw error;
     }
+  }
+  // ============== Baja de cuenta ==============
+
+  /**
+   * Identificador que sustituye al `userId` real en los documentos que se
+   * conservan por obligación fiscal. No es un id de usuario existente: sirve
+   * para que las queries por usuario dejen de devolverlos sin tener que borrar
+   * el comprobante.
+   */
+  static readonly ANONYMIZED_USER_ID = 'deleted_user';
+
+  /** Tope de documentos por lote en los borrados de la baja de cuenta. */
+  private static readonly DELETION_BATCH_SIZE = 400;
+
+  /**
+   * Escribe solo los interruptores que vengan, con rutas de campo anidadas.
+   *
+   * Firestore fusiona `notificationPreferences.product` sin releer el resto del
+   * objeto, así que dos cambios simultáneos —dos clics seguidos en la pantalla
+   * de ajustes— ya no se pisan: escribir el objeto entero haría que el segundo
+   * revirtiera el interruptor del primero con el valor que leyó antes.
+   */
+  async updateNotificationPreferences(
+    userId: string,
+    changes: Record<string, boolean>,
+  ): Promise<void> {
+    const updates: Record<string, any> = { updatedAt: new Date() };
+
+    for (const [key, value] of Object.entries(changes)) {
+      updates[`notificationPreferences.${key}`] = value;
+    }
+
+    await this.firestore
+      .collection(this.usersCollection)
+      .doc(userId)
+      .update(updates);
+  }
+
+  /** Borra el documento de `users`. */
+  async deleteUser(userId: string): Promise<void> {
+    try {
+      await this.firestore
+        .collection(this.usersCollection)
+        .doc(userId)
+        .delete();
+      this.logger.log(`Usuario eliminado: ${userId}`);
+    } catch (error) {
+      this.logger.error(
+        `Error al eliminar usuario ${userId}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Ids de los batches del usuario, para localizar sus ZIP en Storage.
+   *
+   * Se leen antes de borrar nada: el `batchId` es la única forma de encontrar
+   * `batches/<batchId>/`, así que borrar primero el documento y fallar después
+   * al limpiar el bucket dejaría los archivos huérfanos y sin rastro con el que
+   * volver a buscarlos.
+   */
+  async getBatchIdsByUserId(userId: string): Promise<string[]> {
+    const snapshot = await this.firestore
+      .collection(this.batchCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    return snapshot.docs.map((doc) => doc.id);
+  }
+
+  /** Borra los batches indicados. */
+  async deleteBatchJobsByIds(batchIds: string[]): Promise<number> {
+    if (batchIds.length === 0) {
+      return 0;
+    }
+
+    for (const chunk of this.chunk(
+      batchIds,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const id of chunk) {
+        batch.delete(this.firestore.collection(this.batchCollection).doc(id));
+      }
+      await batch.commit();
+    }
+
+    return batchIds.length;
+  }
+
+  /**
+   * Borra los documentos de estado de conversión del usuario.
+   *
+   * Son los que sirven `GET /zpl/status/:jobId`: llevan `userId`, el nombre del
+   * archivo y la URL firmada del resultado, así que sobrevivir a la baja los
+   * dejaría respondiendo con datos de una cuenta que ya no existe.
+   */
+  async deleteConversionStatusesByUserId(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.collectionName)
+      .where('userId', '==', userId)
+      .get();
+
+    return this.deleteDocs(snapshot.docs);
+  }
+
+  /**
+   * Desvincula del usuario los registros contables locales.
+   *
+   * `stripe_transactions` y `subscription_events` alimentan las métricas de
+   * ingresos y de churn, así que borrarlos falsearía la contabilidad histórica.
+   * Pero llevan `userId` y `userEmail`, que sí identifican al titular: se les
+   * aplica la misma desvinculación que a los CFDI —los importes, fechas y
+   * planes se quedan— para que la baja no deje al usuario nombrado en un sitio
+   * que la respuesta ni siquiera menciona.
+   *
+   * @returns cuántos registros se anonimizaron entre ambas colecciones.
+   */
+  async anonymizeUserFinancialRecords(userId: string): Promise<number> {
+    const now = new Date();
+    let updated = 0;
+
+    for (const collection of [
+      this.transactionsCollection,
+      this.subscriptionEventsCollection,
+    ]) {
+      const snapshot = await this.firestore
+        .collection(collection)
+        .where('userId', '==', userId)
+        .get();
+
+      if (snapshot.empty) continue;
+
+      for (const chunk of this.chunk(
+        snapshot.docs,
+        FirestoreService.DELETION_BATCH_SIZE,
+      )) {
+        const batch = this.firestore.batch();
+        for (const doc of chunk) {
+          batch.update(doc.ref, {
+            userId: FirestoreService.ANONYMIZED_USER_ID,
+            // Se vacía en vez de borrarse el campo: los consumidores lo leen sin
+            // comprobar que exista, y un `undefined` inesperado rompería el
+            // dashboard de finanzas.
+            userEmail: '',
+            anonymizedAt: now,
+          });
+        }
+        await batch.commit();
+        updated += chunk.length;
+      }
+    }
+
+    return updated;
+  }
+
+  /**
+   * Desvincula del usuario la cola de emails, sus eventos y su feedback.
+   *
+   * `email_queue` guarda `userEmail` y la metadata con la que se compuso cada
+   * envío (nombre incluido); `email_events`, `feedback` y `error_logs` guardan
+   * `userId` y `userEmail`, y los dos últimos además texto libre y contexto del
+   * fallo. Se anonimizan en vez de borrarse porque las métricas de email, el
+   * feedback del producto y el dashboard de errores se calculan sobre ellos y
+   * borrarlos falsearía la serie histórica: lo que desaparece es a quién
+   * pertenecen.
+   *
+   * @returns cuántos documentos se anonimizaron entre las tres colecciones.
+   */
+  async anonymizeUserActivityRecords(userId: string): Promise<number> {
+    const now = new Date();
+    let updated = 0;
+
+    const targets: Array<{ collection: string; clearMetadata: boolean }> = [
+      { collection: this.emailQueueCollection, clearMetadata: true },
+      { collection: this.emailEventsCollection, clearMetadata: true },
+      { collection: this.feedbackCollection, clearMetadata: false },
+      // `error_logs` guarda `userEmail` y un `context` que puede arrastrar lo
+      // que el usuario tecleó al fallar. Los errores se conservan porque el
+      // dashboard vive de ellos, pero dejan de apuntar a nadie.
+      { collection: this.errorLogsCollection, clearMetadata: true },
+    ];
+
+    for (const { collection, clearMetadata } of targets) {
+      const snapshot = await this.firestore
+        .collection(collection)
+        .where('userId', '==', userId)
+        .get();
+
+      if (snapshot.empty) continue;
+
+      for (const chunk of this.chunk(
+        snapshot.docs,
+        FirestoreService.DELETION_BATCH_SIZE,
+      )) {
+        const batch = this.firestore.batch();
+        for (const doc of chunk) {
+          const updates: Record<string, any> = {
+            userId: FirestoreService.ANONYMIZED_USER_ID,
+            anonymizedAt: now,
+            updatedAt: now,
+          };
+
+          // Solo se toca `userEmail` si el documento lo tiene: escribirlo en uno
+          // que no lo llevaba añadiría un campo vacío donde no había ninguno.
+          if (doc.get('userEmail') !== undefined) {
+            updates.userEmail = '';
+          }
+
+          // La metadata del email lleva el nombre con el que se personalizó el
+          // envío, y el `context` de un error puede arrastrar el contenido que
+          // lo provocó. El feedback conserva la suya: es contenido de producto.
+          if (clearMetadata) {
+            if (doc.get('metadata') !== undefined) {
+              updates.metadata = FieldValue.delete();
+            }
+            if (doc.get('context') !== undefined) {
+              updates.context = FieldValue.delete();
+            }
+          }
+
+          batch.update(doc.ref, updates);
+        }
+        await batch.commit();
+        updated += chunk.length;
+      }
+    }
+
+    // `daily_stats` es histórico: sus totales no se descuentan al borrar una
+    // cuenta, pero la lista auxiliar de usuarios activos sí identifica al
+    // titular. Solo se reescribe esa lista; contadores y desglose por plan
+    // quedan intactos.
+    const dailyStats = await this.firestore
+      .collection(this.dailyStatsCollection)
+      .where('activeUserIds', 'array-contains', userId)
+      .get();
+
+    for (const chunk of this.chunk(
+      dailyStats.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        const activeUserIds = (doc.get('activeUserIds') as string[]).filter(
+          (id) => id !== userId,
+        );
+        batch.update(doc.ref, { activeUserIds });
+      }
+      await batch.commit();
+      updated += chunk.length;
+    }
+
+    // El historial de administración se conserva, pero un cambio de plan no
+    // necesita seguir apuntando al UID borrado. La ruta anidada preserva el
+    // resto de requestParams (planes, motivo y resultado de Stripe).
+    const auditLogs = await this.firestore
+      .collection(this.adminAuditCollection)
+      .where('requestParams.userId', '==', userId)
+      .get();
+
+    for (const chunk of this.chunk(
+      auditLogs.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        batch.update(doc.ref, {
+          'requestParams.userId': FirestoreService.ANONYMIZED_USER_ID,
+          anonymizedAt: now,
+        });
+      }
+      await batch.commit();
+      updated += chunk.length;
+    }
+
+    return updated;
+  }
+
+  /** Borra los registros de historial indicados y devuelve cuántos se borraron. */
+  async deleteConversionHistoryByIds(ids: string[]): Promise<number> {
+    if (ids.length === 0) {
+      return 0;
+    }
+
+    let deleted = 0;
+
+    for (const chunk of this.chunk(ids, FirestoreService.DELETION_BATCH_SIZE)) {
+      const batch = this.firestore.batch();
+      for (const id of chunk) {
+        batch.delete(this.firestore.collection(this.historyCollection).doc(id));
+      }
+      await batch.commit();
+      deleted += chunk.length;
+    }
+
+    return deleted;
+  }
+
+  /**
+   * Borra todos los periodos de uso del usuario.
+   *
+   * Se consulta por el campo `userId` y no por el patrón del docId: conviven el
+   * formato legacy `uid_YYYYMM` con el de periodo de facturación, y componer
+   * ids a mano dejaría documentos sin borrar.
+   */
+  async deleteUsageByUserId(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.usageCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    return this.deleteDocs(snapshot.docs);
+  }
+
+  /** Borra el perfil fiscal. Devuelve `false` si el usuario nunca lo cargó. */
+  async deleteTaxProfile(userId: string): Promise<boolean> {
+    const ref = this.firestore
+      .collection(this.taxProfilesCollection)
+      .doc(userId);
+    const doc = await ref.get();
+
+    if (!doc.exists) {
+      return false;
+    }
+
+    await ref.delete();
+    return true;
+  }
+
+  /** Borra la metadata de los ZPL guardados para depuración. */
+  async deleteZplDebugFilesByUserId(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.zplDebugCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    return this.deleteDocs(snapshot.docs);
+  }
+
+  /**
+   * Desvincula del usuario los CFDI ya emitidos, sin borrarlos.
+   *
+   * Un comprobante timbrado se conserva cinco años ante el SAT: no se puede
+   * borrar aunque su titular se dé de baja. Lo que sí desaparece es el vínculo
+   * con la persona en nuestra base — `userId` pasa a `ANONYMIZED_USER_ID` —, de
+   * modo que el comprobante deja de ser localizable por usuario y las queries
+   * por `userId` no lo devuelven. El XML timbrado y el PDF siguen intactos en
+   * Storage: son el documento fiscal en sí, y alterarlos lo invalidaría.
+   *
+   * @returns cuántos CFDI se anonimizaron.
+   */
+  async anonymizeUserCfdis(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.cfdisCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    if (snapshot.empty) {
+      return 0;
+    }
+
+    const now = new Date();
+    let updated = 0;
+
+    for (const chunk of this.chunk(
+      snapshot.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        batch.update(doc.ref, {
+          userId: FirestoreService.ANONYMIZED_USER_ID,
+          anonymizedAt: now,
+          updatedAt: now,
+        });
+      }
+      await batch.commit();
+      updated += chunk.length;
+    }
+
+    return updated;
+  }
+
+  private async deleteDocs(
+    docs: FirebaseFirestore.QueryDocumentSnapshot[],
+  ): Promise<number> {
+    if (docs.length === 0) {
+      return 0;
+    }
+
+    for (const chunk of this.chunk(
+      docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        batch.delete(doc.ref);
+      }
+      await batch.commit();
+    }
+
+    return docs.length;
+  }
+
+  private chunk<T>(items: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
   }
 }

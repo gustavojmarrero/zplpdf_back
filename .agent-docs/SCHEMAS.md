@@ -65,6 +65,13 @@ interface User {
   countrySource?: 'ip' | 'stripe' | 'manual';
   countryDetectedAt?: Date;
 
+  // Preferencias de notificación por email (ausente = todo activado)
+  notificationPreferences?: {
+    product?: boolean;        // novedades del producto, onboarding, retención
+    billing?: boolean;        // cobros, fallos de pago, facturas
+    usageReminders?: boolean; // avisos al acercarse al límite del plan
+  };
+
   // Activity tracking
   lastActivityAt?: Date;
   notifiedInactive7Days?: boolean;
