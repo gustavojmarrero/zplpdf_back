@@ -1,9 +1,11 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
   Param,
   Post,
+  Put,
   Query,
   UploadedFile,
   UseGuards,
@@ -35,7 +37,13 @@ import {
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import type { FirebaseUser } from '../../common/decorators/current-user.decorator.js';
+import { AccountDeletionService } from './account-deletion.service.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
+import { DeleteAccountResponseDto } from './dto/delete-account.dto.js';
+import {
+  NotificationPreferencesResponseDto,
+  UpdatePreferencesDto,
+} from './dto/notification-preferences.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
 import { ProfilePhotoResponseDto } from './dto/profile-photo.dto.js';
@@ -56,7 +64,10 @@ import { OutputFormat } from '../zpl/enums/output-format.enum.js';
 @Controller('users')
 @UseGuards(FirebaseAuthGuard)
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly accountDeletionService: AccountDeletionService,
+  ) {}
 
   @Post('sync')
   @HttpCode(HttpStatus.OK)
@@ -203,6 +214,92 @@ export class UsersController {
   @ApiResponse({ status: 204, description: 'Photo removed' })
   async deletePhoto(@CurrentUser() user: FirebaseUser): Promise<void> {
     await this.usersService.deleteProfilePhoto(user.uid);
+  }
+
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete the authenticated account',
+    description:
+      'Cancela la suscripción de Stripe, borra el historial de conversiones y sus ' +
+      'archivos, el uso, el perfil fiscal, el documento de usuario y la cuenta de ' +
+      'Firebase Auth. Los CFDI timbrados y las facturas de Stripe NO se borran: se ' +
+      'conservan cinco años por obligación fiscal y solo se desvinculan del usuario. ' +
+      'La cancelación es inmediata, no al final del periodo. La operación no es ' +
+      'reversible.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Cuenta borrada. `retained.reason` es un código estable, no una frase.',
+    type: DeleteAccountResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: '`USER_NOT_FOUND` — no hay perfil que borrar',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      '`SUBSCRIPTION_CANCEL_FAILED` — Stripe rechazó cancelar la suscripción y, ' +
+      'por tanto, NO se ha borrado nada',
+  })
+  @ApiResponse({
+    status: 500,
+    description:
+      '`ACCOUNT_DELETION_PARTIAL` — la suscripción quedó cancelada pero el borrado ' +
+      'se interrumpió. `data.accountDeleted` dice si la cuenta llegó a desaparecer y ' +
+      '`data.failedSteps` qué quedó pendiente.',
+  })
+  async deleteAccount(
+    @CurrentUser() user: FirebaseUser,
+  ): Promise<DeleteAccountResponseDto> {
+    return this.accountDeletionService.deleteAccount(user.uid);
+  }
+
+  @Get('me/preferences')
+  @ApiOperation({
+    summary: 'Get notification preferences',
+    description:
+      'Las tres claves vienen siempre resueltas: una cuenta que nunca las tocó ' +
+      'las recibe todas en `true`.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Notification preferences',
+    type: NotificationPreferencesResponseDto,
+  })
+  async getPreferences(
+    @CurrentUser() user: FirebaseUser,
+  ): Promise<NotificationPreferencesResponseDto> {
+    const notifications = await this.usersService.getNotificationPreferences(
+      user.uid,
+    );
+    return { notifications };
+  }
+
+  @Put('me/preferences')
+  @ApiOperation({
+    summary: 'Update notification preferences',
+    description:
+      'Actualización parcial: las claves que no vengan conservan su valor. ' +
+      'La respuesta trae siempre el estado completo resultante.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Preferencias actualizadas',
+    type: NotificationPreferencesResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'Body inválido' })
+  async updatePreferences(
+    @CurrentUser() user: FirebaseUser,
+    @Body() body: UpdatePreferencesDto,
+  ): Promise<NotificationPreferencesResponseDto> {
+    const notifications = await this.usersService.updateNotificationPreferences(
+      user.uid,
+      body.notifications,
+    );
+    return { notifications };
   }
 
   @Get('verification-status')

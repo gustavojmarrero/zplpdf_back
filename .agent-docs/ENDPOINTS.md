@@ -31,8 +31,14 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 |--------|------|------|------------|-------------|
 | POST | /users/sync | User | UsersController.syncUser | Sync Firebase user with Firestore |
 | GET | /users/me | User | UsersController.getUserProfile | Get current user profile |
+<<<<<<< HEAD
 | POST | /users/me/photo | User | UsersController.uploadPhoto | Upload the profile photo (multipart, campo `file`) |
 | DELETE | /users/me/photo | User | UsersController.deletePhoto | Remove the profile photo (204) |
+=======
+| DELETE | /users/me | User | UsersController.deleteAccount | Baja de cuenta (irreversible) |
+| GET | /users/me/preferences | User | UsersController.getPreferences | Preferencias de notificación |
+| PUT | /users/me/preferences | User | UsersController.updatePreferences | Actualizar preferencias (parcial) |
+>>>>>>> a260325 (feat(users): baja de cuenta (DELETE /me) y preferencias de notificación)
 | GET | /users/verification-status | User | UsersController.getVerificationStatus | Check email verification status |
 | GET | /users/limits | User | UsersController.getUserLimits | Get plan limits and current usage |
 | GET | /users/history | User | UsersController.getUserHistory | Get conversion history (Pro+ only) |
@@ -41,6 +47,7 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 
 **File:** `src/modules/users/users.controller.ts`
 
+<<<<<<< HEAD
 ### Foto de perfil
 
 `POST /users/me/photo` recibe `multipart/form-data` con el campo `file` y responde
@@ -62,6 +69,44 @@ si solo se guardara en Firestore seguiría mostrando la foto de Google.
 es lo que devuelve al usuario a sus iniciales; `null` (y no el campo ausente) es lo
 que distingue "la quitó" de "nunca subió ninguna", el caso en que `GET /users/me` sí
 cae en la foto del proveedor de acceso.
+=======
+### Baja de cuenta (`DELETE /users/me`)
+
+Lógica en `src/modules/users/account-deletion.service.ts`. Encadena, **en este orden**:
+
+1. Cuenta las facturas de Stripe que van a conservarse.
+2. **Cancela la suscripción** (inmediata, no a fin de periodo). Si Stripe la rechaza,
+   la petición muere aquí con `409 SUBSCRIPTION_CANCEL_FAILED` y **no se borra nada**:
+   esa es la razón de que la cancelación vaya primero.
+3. Borra `conversion_history` y los archivos de Storage que cuelguen de la URL firmada
+   de cada fila, más el prefijo `debug-zpl/<uid>/` y sus docs de `zpl_debug_files`.
+4. Borra `usage`, el perfil fiscal (`tax_profiles`) y cancela los emails en cola.
+5. Anonimiza lo que tiene retención legal: los `cfdis` del usuario pasan a
+   `userId: 'deleted_user'` y el customer de Stripe pierde nombre, email y metadata.
+   El XML/PDF timbrado NO se toca: es el documento fiscal.
+6. Borra el doc de `users` y, por último, la cuenta de Firebase Auth.
+
+Respuesta 200: `{ deleted: { conversions, storedFiles, taxProfile, subscription:
+{ cancelled, plan, effectiveAt } }, retained: { invoices, reason } }`. `reason` es un
+código estable (`fiscal_retention`), no una frase: la app está en cuatro idiomas.
+
+Si algún paso posterior a la cancelación falla, responde `500
+ACCOUNT_DELETION_PARTIAL` con `data.accountDeleted` (si la cuenta llegó a
+desaparecer) y `data.failedSteps`. El frontend necesita ese primer campo para no
+afirmar que la cuenta ya no existe cuando sigue existiendo.
+
+### Preferencias de notificación (`/users/me/preferences`)
+
+`{ notifications: { product, billing, usageReminders } }`, guardadas en el doc de
+`users` (`notificationPreferences`). Ausente equivale a todo activado. El `PUT` es
+parcial: las claves que no vengan conservan su valor, y la respuesta trae siempre las
+tres resueltas.
+
+`EmailService.processQueue` las comprueba **justo antes de enviar** —no solo al
+encolar, porque las secuencias se programan con días de antelación— usando el mapa
+`EMAIL_NOTIFICATION_CATEGORY` (`src/modules/email/email-categories.ts`). Lo que no
+sale se marca `cancelled` con su `skipReason` y cuenta en `skipped`, no en `failed`.
+>>>>>>> a260325 (feat(users): baja de cuenta (DELETE /me) y preferencias de notificación)
 
 ### Acciones sobre el historial
 

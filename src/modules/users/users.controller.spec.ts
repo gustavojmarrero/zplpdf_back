@@ -3,6 +3,7 @@ import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { UsersController } from './users.controller.js';
 import { UsersService, MAX_PROFILE_PHOTO_BYTES } from './users.service.js';
+import { AccountDeletionService } from './account-deletion.service.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter.js';
 
@@ -40,7 +41,13 @@ describe('UsersController — rutas del historial', () => {
 
     const moduleRef = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [{ provide: UsersService, useValue: usersService }],
+      providers: [
+        { provide: UsersService, useValue: usersService },
+        {
+          provide: AccountDeletionService,
+          useValue: { deleteAccount: jest.fn() },
+        },
+      ],
     })
       .overrideGuard(FirebaseAuthGuard)
       .useValue({
@@ -157,7 +164,13 @@ describe('UsersController — foto de perfil', () => {
 
     const moduleRef = await Test.createTestingModule({
       controllers: [UsersController],
-      providers: [{ provide: UsersService, useValue: usersService }],
+      providers: [
+        { provide: UsersService, useValue: usersService },
+        {
+          provide: AccountDeletionService,
+          useValue: { deleteAccount: jest.fn() },
+        },
+      ],
     })
       .overrideGuard(FirebaseAuthGuard)
       .useValue({
@@ -224,5 +237,175 @@ describe('UsersController — foto de perfil', () => {
     await request(app.getHttpServer()).delete('/users/me/photo').expect(204);
 
     expect(usersService.deleteProfilePhoto).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Contrato HTTP de la baja de cuenta y de las preferencias (issue #99). La
+ * lógica vive en sus servicios; aquí se comprueba el cableado: que las rutas
+ * `me/...` no se coman a `me`, que el body se valida y que los códigos de error
+ * llegan al cliente tal cual, que es como el frontend distingue los casos.
+ */
+describe('UsersController — baja de cuenta y preferencias', () => {
+  const UID = 'uid-titular';
+
+  let app: INestApplication;
+  let usersService: {
+    getUserProfile: jest.Mock;
+    getNotificationPreferences: jest.Mock;
+    updateNotificationPreferences: jest.Mock;
+  };
+  let accountDeletionService: { deleteAccount: jest.Mock };
+
+  const deletionResult = {
+    deleted: {
+      conversions: 128,
+      storedFiles: 120,
+      taxProfile: true,
+      subscription: {
+        cancelled: true,
+        plan: 'pro',
+        effectiveAt: '2026-09-01T00:00:00.000Z',
+      },
+    },
+    retained: { invoices: 4, reason: 'fiscal_retention' },
+  };
+
+  beforeEach(async () => {
+    usersService = {
+      getUserProfile: jest.fn().mockResolvedValue({ id: UID }),
+      getNotificationPreferences: jest.fn().mockResolvedValue({
+        product: true,
+        billing: true,
+        usageReminders: true,
+      }),
+      updateNotificationPreferences: jest.fn().mockResolvedValue({
+        product: false,
+        billing: true,
+        usageReminders: true,
+      }),
+    };
+    accountDeletionService = {
+      deleteAccount: jest.fn().mockResolvedValue(deletionResult),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      controllers: [UsersController],
+      providers: [
+        { provide: UsersService, useValue: usersService },
+        {
+          provide: AccountDeletionService,
+          useValue: accountDeletionService,
+        },
+      ],
+    })
+      .overrideGuard(FirebaseAuthGuard)
+      .useValue({
+        canActivate: (context) => {
+          context.switchToHttp().getRequest().user = { uid: UID };
+          return true;
+        },
+      })
+      .compile();
+
+    app = moduleRef.createNestApplication();
+    const { ValidationPipe } = await import('@nestjs/common');
+    app.useGlobalPipes(new ValidationPipe({ transform: true }));
+    app.useGlobalFilters(new HttpExceptionFilter());
+    await app.init();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('DELETE /users/me devuelve el contrato con deleted y retained', async () => {
+    const response = await request(app.getHttpServer())
+      .delete('/users/me')
+      .expect(200);
+
+    expect(accountDeletionService.deleteAccount).toHaveBeenCalledWith(UID);
+    expect(response.body).toEqual(deletionResult);
+  });
+
+  it('propaga SUBSCRIPTION_CANCEL_FAILED con su data', async () => {
+    const { HttpException, HttpStatus } = await import('@nestjs/common');
+    accountDeletionService.deleteAccount.mockRejectedValue(
+      new HttpException(
+        {
+          error: 'SUBSCRIPTION_CANCEL_FAILED',
+          message: 'no',
+          data: { plan: 'pro', subscriptionId: 'sub_1', reason: 'api_error' },
+        },
+        HttpStatus.CONFLICT,
+      ),
+    );
+
+    const response = await request(app.getHttpServer())
+      .delete('/users/me')
+      .expect(409);
+
+    expect(response.body.error).toBe('SUBSCRIPTION_CANCEL_FAILED');
+    expect(response.body.data.reason).toBe('api_error');
+  });
+
+  it('propaga ACCOUNT_DELETION_PARTIAL con accountDeleted y failedSteps', async () => {
+    const { HttpException, HttpStatus } = await import('@nestjs/common');
+    accountDeletionService.deleteAccount.mockRejectedValue(
+      new HttpException(
+        {
+          error: 'ACCOUNT_DELETION_PARTIAL',
+          message: 'partial',
+          data: { accountDeleted: false, failedSteps: ['account'] },
+        },
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      ),
+    );
+
+    const response = await request(app.getHttpServer())
+      .delete('/users/me')
+      .expect(500);
+
+    expect(response.body.error).toBe('ACCOUNT_DELETION_PARTIAL');
+    expect(response.body.data).toEqual({
+      accountDeleted: false,
+      failedSteps: ['account'],
+    });
+  });
+
+  it('GET /users/me/preferences no se resuelve como GET /users/me', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/users/me/preferences')
+      .expect(200);
+
+    expect(usersService.getNotificationPreferences).toHaveBeenCalledWith(UID);
+    expect(usersService.getUserProfile).not.toHaveBeenCalled();
+    expect(response.body).toEqual({
+      notifications: { product: true, billing: true, usageReminders: true },
+    });
+  });
+
+  it('PUT /users/me/preferences pasa el bloque notifications y devuelve el estado completo', async () => {
+    const response = await request(app.getHttpServer())
+      .put('/users/me/preferences')
+      .send({ notifications: { product: false } })
+      .expect(200);
+
+    expect(usersService.updateNotificationPreferences).toHaveBeenCalledWith(
+      UID,
+      { product: false },
+    );
+    expect(response.body).toEqual({
+      notifications: { product: false, billing: true, usageReminders: true },
+    });
+  });
+
+  it('rechaza un interruptor que no sea booleano', async () => {
+    await request(app.getHttpServer())
+      .put('/users/me/preferences')
+      .send({ notifications: { product: 'sí' } })
+      .expect(400);
+
+    expect(usersService.updateNotificationPreferences).not.toHaveBeenCalled();
   });
 });

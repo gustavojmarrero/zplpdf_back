@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { UsersController } from './users.controller.js';
 import { UsersService } from './users.service.js';
+import { AccountDeletionService } from './account-deletion.service.js';
 import { CacheModule } from '../cache/cache.module.js';
 import { ZplModule } from '../zpl/zpl.module.js';
 import { PeriodModule } from '../../common/services/period.module.js';
@@ -18,7 +19,7 @@ import { StorageModule } from '../storage/storage.module.js';
     StorageModule,
   ],
   controllers: [UsersController],
-  providers: [UsersService],
+  providers: [UsersService, AccountDeletionService],
   exports: [UsersService],
 })
 export class UsersModule {}

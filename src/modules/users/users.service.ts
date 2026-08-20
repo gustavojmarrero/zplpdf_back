@@ -52,6 +52,11 @@ import { EmailService } from '../email/email.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { normalizeLabelSize } from '../zpl/enums/label-size.enum.js';
 import { normalizeOutputFormat } from '../zpl/enums/output-format.enum.js';
+import { extractStoragePathFromSignedUrl } from '../../common/utils/storage-url.util.js';
+import {
+  resolveNotificationPreferences,
+  type NotificationPreferences,
+} from '../../common/interfaces/notification-preferences.interface.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -357,6 +362,63 @@ export class UsersService {
     }
 
     return user.photoURL ?? authPhotoURL;
+  }
+
+  /**
+   * Preferencias de notificación del usuario, siempre con las tres claves.
+   *
+   * Una cuenta anterior a esta feature no tiene el campo guardado y recibe todo
+   * en `true`: nunca pidió dejar de recibir nada.
+   */
+  async getNotificationPreferences(
+    userId: string,
+  ): Promise<NotificationPreferences> {
+    const user = await this.firestoreService.getUserById(userId);
+
+    if (!user) {
+      throw new ForbiddenException('User not found');
+    }
+
+    return resolveNotificationPreferences(user.notificationPreferences);
+  }
+
+  /**
+   * Guarda las preferencias que vengan y devuelve el estado completo resultante.
+   *
+   * La actualización es parcial a propósito —la pantalla de ajustes cambia un
+   * interruptor cada vez—, pero lo que se persiste son siempre las tres claves
+   * resueltas: así el documento no depende de en qué orden se tocaron, y una
+   * clave que el cliente no envía no se queda a medio camino entre "sin definir"
+   * y "desactivada".
+   */
+  async updateNotificationPreferences(
+    userId: string,
+    changes: Partial<NotificationPreferences>,
+  ): Promise<NotificationPreferences> {
+    const user = await this.firestoreService.getUserById(userId);
+
+    if (!user) {
+      throw new ForbiddenException('User not found');
+    }
+
+    // Clave a clave y no con un spread: un DTO parcial puede traer la clave
+    // presente con valor `undefined`, y el spread la impondría sobre la
+    // preferencia guardada, desactivando de vuelta un interruptor que el usuario
+    // no ha tocado en esta petición.
+    const current = resolveNotificationPreferences(
+      user.notificationPreferences,
+    );
+    const updated: NotificationPreferences = {
+      product: changes.product ?? current.product,
+      billing: changes.billing ?? current.billing,
+      usageReminders: changes.usageReminders ?? current.usageReminders,
+    };
+
+    await this.firestoreService.updateUser(userId, {
+      notificationPreferences: updated,
+    });
+
+    return updated;
   }
 
   async getVerificationStatus(userId: string): Promise<VerificationStatusDto> {
@@ -1324,8 +1386,7 @@ export class UsersService {
     downloadFilename: string | null;
   } {
     // Extraer path: https://storage.googleapis.com/bucket/label-xxx.pdf?X-Goog-...
-    const pathMatch = signedUrl.match(/googleapis\.com\/[^/]+\/([^?]+)/);
-    const storagePath = pathMatch ? pathMatch[1] : null;
+    const storagePath = extractStoragePathFromSignedUrl(signedUrl);
 
     // Extraer nombre de descarga del parámetro response-content-disposition
     // Formato: ...&response-content-disposition=attachment%3B%20filename%3D%22nombre.pdf%22&...

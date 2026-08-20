@@ -4972,6 +4972,25 @@ export class FirestoreService {
   }
 
   /**
+   * Marca un email de la cola como cancelado sin haberlo enviado.
+   *
+   * Va aparte de `updateEmailQueueStatus` porque no es un resultado del envío:
+   * el email nunca salió. `skipReason` deja por escrito por qué —hoy, que el
+   * usuario desactivó esa categoría de notificaciones—, para que un hueco en la
+   * secuencia de onboarding no parezca un fallo de entrega.
+   */
+  async cancelQueuedEmail(emailId: string, skipReason: string): Promise<void> {
+    await this.firestore
+      .collection(this.emailQueueCollection)
+      .doc(emailId)
+      .update({
+        status: 'cancelled',
+        skipReason,
+        updatedAt: new Date(),
+      });
+  }
+
+  /**
    * Check if user has already received a specific email type
    */
   async hasUserReceivedEmail(
@@ -7612,5 +7631,167 @@ export class FirestoreService {
       this.logger.error(`Error al actualizar CFDI: ${error.message}`);
       throw error;
     }
+  }
+  // ============== Baja de cuenta ==============
+
+  /**
+   * Identificador que sustituye al `userId` real en los documentos que se
+   * conservan por obligación fiscal. No es un id de usuario existente: sirve
+   * para que las queries por usuario dejen de devolverlos sin tener que borrar
+   * el comprobante.
+   */
+  static readonly ANONYMIZED_USER_ID = 'deleted_user';
+
+  /** Tope de documentos por lote en los borrados de la baja de cuenta. */
+  private static readonly DELETION_BATCH_SIZE = 400;
+
+  /** Borra el documento de `users`. */
+  async deleteUser(userId: string): Promise<void> {
+    try {
+      await this.firestore
+        .collection(this.usersCollection)
+        .doc(userId)
+        .delete();
+      this.logger.log(`Usuario eliminado: ${userId}`);
+    } catch (error) {
+      this.logger.error(
+        `Error al eliminar usuario ${userId}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /** Borra los registros de historial indicados y devuelve cuántos se borraron. */
+  async deleteConversionHistoryByIds(ids: string[]): Promise<number> {
+    if (ids.length === 0) {
+      return 0;
+    }
+
+    let deleted = 0;
+
+    for (const chunk of this.chunk(ids, FirestoreService.DELETION_BATCH_SIZE)) {
+      const batch = this.firestore.batch();
+      for (const id of chunk) {
+        batch.delete(this.firestore.collection(this.historyCollection).doc(id));
+      }
+      await batch.commit();
+      deleted += chunk.length;
+    }
+
+    return deleted;
+  }
+
+  /**
+   * Borra todos los periodos de uso del usuario.
+   *
+   * Se consulta por el campo `userId` y no por el patrón del docId: conviven el
+   * formato legacy `uid_YYYYMM` con el de periodo de facturación, y componer
+   * ids a mano dejaría documentos sin borrar.
+   */
+  async deleteUsageByUserId(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.usageCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    return this.deleteDocs(snapshot.docs);
+  }
+
+  /** Borra el perfil fiscal. Devuelve `false` si el usuario nunca lo cargó. */
+  async deleteTaxProfile(userId: string): Promise<boolean> {
+    const ref = this.firestore
+      .collection(this.taxProfilesCollection)
+      .doc(userId);
+    const doc = await ref.get();
+
+    if (!doc.exists) {
+      return false;
+    }
+
+    await ref.delete();
+    return true;
+  }
+
+  /** Borra la metadata de los ZPL guardados para depuración. */
+  async deleteZplDebugFilesByUserId(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.zplDebugCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    return this.deleteDocs(snapshot.docs);
+  }
+
+  /**
+   * Desvincula del usuario los CFDI ya emitidos, sin borrarlos.
+   *
+   * Un comprobante timbrado se conserva cinco años ante el SAT: no se puede
+   * borrar aunque su titular se dé de baja. Lo que sí desaparece es el vínculo
+   * con la persona en nuestra base — `userId` pasa a `ANONYMIZED_USER_ID` —, de
+   * modo que el comprobante deja de ser localizable por usuario y las queries
+   * por `userId` no lo devuelven. El XML timbrado y el PDF siguen intactos en
+   * Storage: son el documento fiscal en sí, y alterarlos lo invalidaría.
+   *
+   * @returns cuántos CFDI se anonimizaron.
+   */
+  async anonymizeUserCfdis(userId: string): Promise<number> {
+    const snapshot = await this.firestore
+      .collection(this.cfdisCollection)
+      .where('userId', '==', userId)
+      .get();
+
+    if (snapshot.empty) {
+      return 0;
+    }
+
+    const now = new Date();
+    let updated = 0;
+
+    for (const chunk of this.chunk(
+      snapshot.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        batch.update(doc.ref, {
+          userId: FirestoreService.ANONYMIZED_USER_ID,
+          anonymizedAt: now,
+          updatedAt: now,
+        });
+      }
+      await batch.commit();
+      updated += chunk.length;
+    }
+
+    return updated;
+  }
+
+  private async deleteDocs(
+    docs: FirebaseFirestore.QueryDocumentSnapshot[],
+  ): Promise<number> {
+    if (docs.length === 0) {
+      return 0;
+    }
+
+    for (const chunk of this.chunk(
+      docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        batch.delete(doc.ref);
+      }
+      await batch.commit();
+    }
+
+    return docs.length;
+  }
+
+  private chunk<T>(items: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
   }
 }

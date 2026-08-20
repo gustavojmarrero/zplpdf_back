@@ -52,6 +52,21 @@ export const ErrorCodes = {
    */
   ZPL_NOT_AVAILABLE: 'ZPL_NOT_AVAILABLE',
 
+  // Errores de baja de cuenta (409/500)
+  /**
+   * Stripe rechazó cancelar la suscripción, así que NO se borró nada: cancelar
+   * el contrato es el primer paso del borrado justamente para que un fallo aquí
+   * deje la cuenta intacta. El usuario conserva su plan y puede reintentar.
+   */
+  SUBSCRIPTION_CANCEL_FAILED: 'SUBSCRIPTION_CANCEL_FAILED',
+  /**
+   * La baja se quedó a medias: la suscripción sí quedó cancelada en Stripe pero
+   * alguno de los borrados posteriores falló. `data.accountDeleted` dice si la
+   * cuenta llegó a desaparecer —el frontend no puede afirmar que ya no existe
+   * sin mirarlo— y `data.failedSteps` enumera lo que quedó pendiente.
+   */
+  ACCOUNT_DELETION_PARTIAL: 'ACCOUNT_DELETION_PARTIAL',
+
   // Errores de estado (400)
   BATCH_PROCESSING: 'BATCH_PROCESSING',
   JOB_NOT_COMPLETE: 'JOB_NOT_COMPLETE',
@@ -107,6 +122,9 @@ export const ErrorHttpStatus: Record<ErrorCode, number> = {
   [ErrorCodes.DOWNLOAD_NOT_AVAILABLE]: 404,
   [ErrorCodes.HISTORY_NOT_FOUND]: 404,
 
+  // 409 Conflict
+  [ErrorCodes.SUBSCRIPTION_CANCEL_FAILED]: 409,
+
   // 410 Gone
   [ErrorCodes.JOB_EXPIRED]: 410,
   [ErrorCodes.ZPL_NOT_AVAILABLE]: 410,
@@ -117,6 +135,7 @@ export const ErrorHttpStatus: Record<ErrorCode, number> = {
 
   // 500 Internal Server Error
   [ErrorCodes.SERVER_ERROR]: 500,
+  [ErrorCodes.ACCOUNT_DELETION_PARTIAL]: 500,
 
   // 503 Service Unavailable
   [ErrorCodes.SERVICE_UNAVAILABLE]: 503,
@@ -157,6 +176,10 @@ export const ErrorMessagesEs: Record<ErrorCode, string> = {
   [ErrorCodes.HISTORY_NOT_FOUND]: 'Registro de historial no encontrado',
   [ErrorCodes.ZPL_NOT_AVAILABLE]:
     'El ZPL original de esta conversión ya no está disponible',
+  [ErrorCodes.SUBSCRIPTION_CANCEL_FAILED]:
+    'No se pudo cancelar la suscripción; no se ha borrado nada de tu cuenta',
+  [ErrorCodes.ACCOUNT_DELETION_PARTIAL]:
+    'La baja quedó incompleta: revisa el detalle antes de darla por hecha',
   [ErrorCodes.BATCH_PROCESSING]: 'El batch aún está procesándose',
   [ErrorCodes.JOB_NOT_COMPLETE]: 'La conversión no está completa',
   [ErrorCodes.SERVER_ERROR]: 'Error interno del servidor',
@@ -194,6 +217,10 @@ export const ErrorMessagesEn: Record<ErrorCode, string> = {
   [ErrorCodes.HISTORY_NOT_FOUND]: 'History record not found',
   [ErrorCodes.ZPL_NOT_AVAILABLE]:
     'The original ZPL for this conversion is no longer available',
+  [ErrorCodes.SUBSCRIPTION_CANCEL_FAILED]:
+    'Could not cancel the subscription; nothing was deleted from your account',
+  [ErrorCodes.ACCOUNT_DELETION_PARTIAL]:
+    'Account deletion was left incomplete: check the details before assuming it finished',
   [ErrorCodes.BATCH_PROCESSING]: 'Batch is still processing',
   [ErrorCodes.JOB_NOT_COMPLETE]: 'Conversion is not complete',
   [ErrorCodes.SERVER_ERROR]: 'Internal server error',

@@ -72,4 +72,29 @@ export class FirebaseAdminService implements OnModuleInit {
     }
     return this.app.auth().updateUser(uid, properties);
   }
+
+  /**
+   * Borra la cuenta de Firebase Auth.
+   *
+   * Trata `auth/user-not-found` como éxito: la baja de cuenta es reintentable, y
+   * un segundo intento tras un fallo posterior no puede quedarse bloqueado
+   * porque el usuario ya no esté en Auth.
+   */
+  async deleteUser(uid: string): Promise<void> {
+    if (!this.app) {
+      throw new Error('Firebase Admin SDK not initialized');
+    }
+
+    try {
+      await this.app.auth().deleteUser(uid);
+    } catch (error) {
+      if (error?.code === 'auth/user-not-found') {
+        this.logger.warn(
+          `El usuario ${uid} ya no existía en Firebase Auth al borrarlo`,
+        );
+        return;
+      }
+      throw error;
+    }
+  }
 }

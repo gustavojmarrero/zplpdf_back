@@ -160,3 +160,78 @@ describe('StorageService — bucket público', () => {
     ).rejects.toThrow('permiso denegado');
   });
 });
+
+/**
+ * El borrado por prefijo lo estrena la baja de cuenta (issue #99), que lo llama
+ * con `debug-zpl/<uid>/`. Sin la barra final, el prefijo de `uid1` casaría
+ * también con `uid10` y se llevaría por delante los archivos de otro usuario.
+ */
+describe('StorageService — borrado', () => {
+  function buildService(files: Array<{ name: string }> = []) {
+    const deleteFiles = jest.fn().mockResolvedValue(undefined);
+    const getFiles = jest.fn().mockResolvedValue([files]);
+    const deleteFile = jest.fn().mockResolvedValue(undefined);
+    const bucket = jest.fn().mockReturnValue({
+      getFiles,
+      deleteFiles,
+      file: jest.fn().mockReturnValue({ delete: deleteFile }),
+    });
+
+    const service: any = new StorageService(
+      { get: jest.fn().mockReturnValue('mi-bucket') } as any,
+      {},
+    );
+    service.storage = { bucket };
+
+    return { service, getFiles, deleteFiles, deleteFile };
+  }
+
+  it('rechaza un prefijo sin barra final en vez de borrar de más', async () => {
+    const { service, deleteFiles } = buildService();
+
+    await expect(service.deleteByPrefix('debug-zpl/uid1')).rejects.toThrow(
+      /debe terminar en/,
+    );
+    expect(deleteFiles).not.toHaveBeenCalled();
+  });
+
+  it('devuelve cuántos objetos había bajo el prefijo', async () => {
+    const { service, deleteFiles } = buildService([
+      { name: 'debug-zpl/uid1/a.zpl' },
+      { name: 'debug-zpl/uid1/b.zpl' },
+    ]);
+
+    await expect(service.deleteByPrefix('debug-zpl/uid1/')).resolves.toBe(2);
+    expect(deleteFiles).toHaveBeenCalledWith({
+      prefix: 'debug-zpl/uid1/',
+      force: true,
+    });
+  });
+
+  it('no llama al borrado si no hay nada bajo el prefijo', async () => {
+    const { service, deleteFiles } = buildService([]);
+
+    await expect(service.deleteByPrefix('debug-zpl/uid1/')).resolves.toBe(0);
+    expect(deleteFiles).not.toHaveBeenCalled();
+  });
+
+  it('trata como no borrado el objeto que ya no existía', async () => {
+    const { service } = buildService();
+    service.storage.bucket().file = jest.fn().mockReturnValue({
+      delete: jest.fn().mockRejectedValue({ code: 404 }),
+    });
+
+    await expect(service.deleteFile('label-viejo.pdf')).resolves.toBe(false);
+  });
+
+  it('relanza cualquier otro error de borrado', async () => {
+    const { service } = buildService();
+    service.storage.bucket().file = jest.fn().mockReturnValue({
+      delete: jest.fn().mockRejectedValue({ code: 403, message: 'denegado' }),
+    });
+
+    await expect(service.deleteFile('label.pdf')).rejects.toMatchObject({
+      code: 403,
+    });
+  });
+});

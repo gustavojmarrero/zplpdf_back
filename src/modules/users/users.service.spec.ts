@@ -2001,3 +2001,95 @@ describe('UsersService — foto de perfil', () => {
     });
   });
 });
+
+/**
+ * Sin persistencia, los interruptores de la pantalla de ajustes serían
+ * decorativos: el frontend no los pinta hasta que estos dos métodos existen
+ * (issue #99).
+ */
+describe('UsersService — preferencias de notificación', () => {
+  function buildService(user: Record<string, unknown> | null) {
+    const updateUser = jest.fn().mockResolvedValue(undefined);
+    const service: any = Object.create(UsersService.prototype);
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestoreService = {
+      getUserById: jest.fn().mockResolvedValue(user),
+      updateUser,
+    };
+    return { service, updateUser };
+  }
+
+  it('devuelve todo activado para una cuenta que nunca tocó sus preferencias', async () => {
+    const { service } = buildService({ id: 'uid-1' });
+
+    await expect(service.getNotificationPreferences('uid-1')).resolves.toEqual({
+      product: true,
+      billing: true,
+      usageReminders: true,
+    });
+  });
+
+  it('completa las claves que falten en el documento guardado', async () => {
+    const { service } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    await expect(service.getNotificationPreferences('uid-1')).resolves.toEqual({
+      product: false,
+      billing: true,
+      usageReminders: true,
+    });
+  });
+
+  it('fusiona la actualización parcial sin tocar los interruptores ausentes', async () => {
+    const { service, updateUser } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false, billing: true },
+    });
+
+    const result = await service.updateNotificationPreferences('uid-1', {
+      usageReminders: false,
+    });
+
+    expect(result).toEqual({
+      product: false,
+      billing: true,
+      usageReminders: false,
+    });
+    // Se persisten siempre las tres claves resueltas.
+    expect(updateUser).toHaveBeenCalledWith('uid-1', {
+      notificationPreferences: {
+        product: false,
+        billing: true,
+        usageReminders: false,
+      },
+    });
+  });
+
+  it('una clave presente con valor undefined no revierte la preferencia guardada', async () => {
+    const { service } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    const result = await service.updateNotificationPreferences('uid-1', {
+      product: undefined,
+      billing: false,
+    });
+
+    expect(result.product).toBe(false);
+    expect(result.billing).toBe(false);
+  });
+
+  it('rechaza a un usuario que no existe', async () => {
+    const { service } = buildService(null);
+
+    await expect(
+      service.getNotificationPreferences('uid-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.updateNotificationPreferences('uid-1', { product: false }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
