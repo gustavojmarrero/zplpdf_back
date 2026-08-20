@@ -19,6 +19,7 @@ import {
  * traduce por su cuenta.
  */
 export type AccountDeletionStep =
+  | 'deletionMark'
   | 'conversions'
   | 'storedFiles'
   | 'batches'
@@ -107,11 +108,6 @@ export class AccountDeletionService {
 
     const subscription = await this.cancelSubscription(user);
 
-    // Desde este punto ninguna conversión, batch ni petición nueva puede volver
-    // a escribir datos del UID. La marca se conserva tras el éxito para cubrir
-    // tokens de Firebase todavía válidos y se retira si la identidad sobrevive.
-    await this.firestoreService.markAccountDeletion(userId);
-
     const failedSteps: AccountDeletionStep[] = [];
     const failed = (step: AccountDeletionStep, error: unknown): void => {
       failedSteps.push(step);
@@ -121,6 +117,18 @@ export class AccountDeletionService {
         }`,
       );
     };
+
+    // Desde este punto ninguna conversión, batch ni petición nueva puede volver
+    // a escribir datos del UID. La marca se conserva tras el éxito para cubrir
+    // tokens de Firebase todavía válidos y se retira si la identidad sobrevive.
+    try {
+      await this.firestoreService.markAccountDeletion(userId);
+    } catch (error) {
+      // Stripe ya pudo haber cancelado la suscripción. La respuesta debe
+      // conservar ese dato financiero y declarar qué barrera falló, igual que
+      // cualquier otro paso parcial, en vez de escapar como un 500 genérico.
+      failed('deletionMark', error);
+    }
 
     let conversions = 0;
     let storedFiles = 0;

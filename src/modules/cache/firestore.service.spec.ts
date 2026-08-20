@@ -1337,3 +1337,125 @@ describe('FirestoreService — la inactividad no depende del historial', () => {
     expect(resultado.users.map((u: any) => u.userId)).toEqual(['uid-inactivo']);
   });
 });
+
+/**
+ * Las actualizaciones de progreso son muy frecuentes y solo modifican
+ * documentos ya creados. `update()` no resucita un documento borrado, por lo
+ * que releer estado + lápida en una transacción era coste sin protección extra.
+ */
+describe('FirestoreService — progreso sin transacciones de lápida', () => {
+  function buildService() {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const runTransaction = jest.fn();
+    const service: any = Object.create(FirestoreService.prototype);
+    Object.assign(service, {
+      collectionName: 'zpl-conversions',
+      batchCollection: 'zpl-batches',
+      zplDebugCollection: 'zpl_debug_files',
+      logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      firestore: {
+        collection: () => ({ doc: () => ({ update }) }),
+        runTransaction,
+      },
+    });
+    return { service, update, runTransaction };
+  }
+
+  it('actualiza el progreso de conversión con una sola escritura', async () => {
+    const { service, update, runTransaction } = buildService();
+
+    await service.updateConversionStatus('job-1', { progress: 50 });
+
+    expect(update).toHaveBeenCalledWith({
+      progress: 50,
+      updatedAt: expect.any(String),
+    });
+    expect(runTransaction).not.toHaveBeenCalled();
+  });
+
+  it('no relee el batch ni la lápida para cada archivo procesado', async () => {
+    const { service, update, runTransaction } = buildService();
+
+    await service.updateBatchJob('batch-1', { completedFiles: 3 });
+
+    expect(update).toHaveBeenCalledWith({
+      completedFiles: 3,
+      updatedAt: expect.any(Date),
+    });
+    expect(runTransaction).not.toHaveBeenCalled();
+  });
+
+  it('marca el resultado debug sin convertirlo en una transacción', async () => {
+    const { service, update, runTransaction } = buildService();
+
+    await service.updateZplDebugResult('job-1', 'success');
+
+    expect(update).toHaveBeenCalledWith({ result: 'success' });
+    expect(runTransaction).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * La baja conserva las series históricas, pero no sus identificadores
+ * auxiliares. Los contadores diarios y los datos del cambio de plan deben
+ * sobrevivir exactamente iguales salvo por el UID.
+ */
+describe('FirestoreService — anonimiza UIDs en agregados y auditoría', () => {
+  it('quita el UID sin reescribir totales ni el resto de requestParams', async () => {
+    const dailyRef = { path: 'daily_stats/2026-08-19' };
+    const auditRef = { path: 'admin_audit_log/audit-1' };
+    const dailyDoc = {
+      ref: dailyRef,
+      get: (field: string) =>
+        field === 'activeUserIds' ? ['uid-1', 'uid-2'] : undefined,
+    };
+    const auditDoc = { ref: auditRef };
+    const update = jest.fn();
+    const commit = jest.fn().mockResolvedValue(undefined);
+
+    const service: any = Object.create(FirestoreService.prototype);
+    Object.assign(service, {
+      emailQueueCollection: 'email_queue',
+      emailEventsCollection: 'email_events',
+      feedbackCollection: 'feedback',
+      errorLogsCollection: 'error_logs',
+      dailyStatsCollection: 'daily_stats',
+      adminAuditCollection: 'admin_audit_log',
+      firestore: {
+        collection: (collection: string) => ({
+          where: (field: string) => ({
+            get: async () => {
+              if (collection === 'daily_stats' && field === 'activeUserIds') {
+                return { docs: [dailyDoc], empty: false };
+              }
+              if (
+                collection === 'admin_audit_log' &&
+                field === 'requestParams.userId'
+              ) {
+                return { docs: [auditDoc], empty: false };
+              }
+              return { docs: [], empty: true };
+            },
+          }),
+        }),
+        batch: () => ({ update, commit }),
+      },
+    });
+
+    const anonymized = await service.anonymizeUserActivityRecords('uid-1');
+
+    expect(update).toHaveBeenCalledWith(dailyRef, {
+      activeUserIds: ['uid-2'],
+    });
+    expect(update).toHaveBeenCalledWith(
+      auditRef,
+      expect.objectContaining({
+        'requestParams.userId': FirestoreService.ANONYMIZED_USER_ID,
+        anonymizedAt: expect.any(Date),
+      }),
+    );
+    // Solo se escriben los campos identificadores: ningún contador histórico
+    // ni los planes guardados en requestParams aparecen en los updates.
+    expect(anonymized).toBe(2);
+  });
+});

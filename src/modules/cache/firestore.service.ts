@@ -307,6 +307,9 @@ export class FirestoreService {
         const deletedRef = this.firestore
           .collection(this.deletedAccountsCollection)
           .doc(status.userId);
+        // Esta escritura crea el localizador persistente del trabajo y ocurre
+        // una sola vez por conversión. Sí merece compartir frontera con la
+        // lápida; las actualizaciones frecuentes de progreso de abajo no.
         await this.firestore.runTransaction(async (transaction) => {
           const deleted = await transaction.get(deletedRef);
           this.assertAccountWritable(status.userId, deleted.exists);
@@ -346,26 +349,16 @@ export class FirestoreService {
     status: Partial<ConversionStatus>,
   ): Promise<void> {
     try {
-      const ref = this.firestore.collection(this.collectionName).doc(jobId);
-
-      await this.firestore.runTransaction(async (transaction) => {
-        const current = await transaction.get(ref);
-        const userId = status.userId || current.get('userId');
-
-        if (userId) {
-          const deleted = await transaction.get(
-            this.firestore
-              .collection(this.deletedAccountsCollection)
-              .doc(userId),
-          );
-          this.assertAccountWritable(userId, deleted.exists);
-        }
-
-        transaction.update(ref, {
+      // Es el camino caliente: se llama por cada avance de progreso. `update`
+      // no recrea un documento que la baja ya borró, así que una transacción
+      // y dos lecturas por avance no añadían protección persistente.
+      await this.firestore
+        .collection(this.collectionName)
+        .doc(jobId)
+        .update({
           ...status,
           updatedAt: new Date().toISOString(),
         });
-      });
 
       this.logger.log(`Estado actualizado para jobId: ${jobId}`);
     } catch (error) {
@@ -457,9 +450,11 @@ export class FirestoreService {
   }
 
   /**
-   * Las transacciones que leen la lápida y escriben el dato forman una única
-   * frontera: si la baja gana la carrera, Firestore reintenta la transacción y
-   * esta termina aquí sin recrear restos del usuario.
+   * Las creaciones y upserts persistentes que leen la lápida y escriben el dato
+   * forman una única frontera: si la baja gana la carrera, Firestore reintenta
+   * la transacción y esta termina aquí sin recrear restos del usuario. Las
+   * actualizaciones de progreso usan `update()` directo: no pueden recrear un
+   * documento borrado y no deben pagar lecturas en cada avance.
    */
   private assertAccountWritable(userId: string, deleted: boolean): void {
     if (deleted) {
@@ -1599,6 +1594,10 @@ export class FirestoreService {
         .collection(this.deletedAccountsCollection)
         .doc(userId);
 
+      // Esta transacción ya es necesaria para conservar los contadores. La
+      // lectura adicional de la lápida ocurre una vez al terminar, no por cada
+      // progreso, y evita que el fire-and-forget reintroduzca el UID en
+      // `activeUserIds` después de que la baja lo anonimizó.
       await this.firestore.runTransaction(async (transaction) => {
         const deleted = await transaction.get(deletedRef);
         const doc = await transaction.get(docRef);
@@ -1854,28 +1853,16 @@ export class FirestoreService {
     data: Partial<BatchJob>,
   ): Promise<void> {
     try {
-      const batchRef = this.firestore
+      // Solo actualiza un batch creado bajo la guarda de `saveBatchJob`.
+      // `update()` falla si la baja ya borró el doc y nunca lo resucita; el
+      // progreso del batch no necesita releer la lápida en cada archivo.
+      await this.firestore
         .collection(this.batchCollection)
-        .doc(batchId);
-
-      await this.firestore.runTransaction(async (transaction) => {
-        const batch = await transaction.get(batchRef);
-        const userId = data.userId || batch.get('userId');
-
-        if (userId) {
-          const deleted = await transaction.get(
-            this.firestore
-              .collection(this.deletedAccountsCollection)
-              .doc(userId),
-          );
-          this.assertAccountWritable(userId, deleted.exists);
-        }
-
-        transaction.update(batchRef, {
+        .doc(batchId)
+        .update({
           ...data,
           updatedAt: new Date(),
         });
-      });
       this.logger.log(`Batch actualizado: ${batchId}`);
     } catch (error) {
       this.logger.error(`Error al actualizar batch: ${error.message}`);
@@ -7364,24 +7351,13 @@ export class FirestoreService {
       const updateData: Record<string, any> = { result };
       if (errorCode) updateData.errorCode = errorCode;
 
-      const debugRef = this.firestore
+      // Es un cambio de estado sobre metadata ya creada con la lápida. Si el
+      // barrido la borró, `update()` falla sin recrearla; no hacen falta dos
+      // lecturas para cambiar pending -> success/error.
+      await this.firestore
         .collection(this.zplDebugCollection)
-        .doc(jobId);
-      await this.firestore.runTransaction(async (transaction) => {
-        const debug = await transaction.get(debugRef);
-        const userId = debug.get('userId');
-
-        if (userId) {
-          const deleted = await transaction.get(
-            this.firestore
-              .collection(this.deletedAccountsCollection)
-              .doc(userId),
-          );
-          this.assertAccountWritable(userId, deleted.exists);
-        }
-
-        transaction.update(debugRef, updateData);
-      });
+        .doc(jobId)
+        .update(updateData);
     } catch (error) {
       this.logger.warn(`Error updating ZPL debug result: ${error.message}`);
     }
@@ -8049,6 +8025,53 @@ export class FirestoreService {
         await batch.commit();
         updated += chunk.length;
       }
+    }
+
+    // `daily_stats` es histórico: sus totales no se descuentan al borrar una
+    // cuenta, pero la lista auxiliar de usuarios activos sí identifica al
+    // titular. Solo se reescribe esa lista; contadores y desglose por plan
+    // quedan intactos.
+    const dailyStats = await this.firestore
+      .collection(this.dailyStatsCollection)
+      .where('activeUserIds', 'array-contains', userId)
+      .get();
+
+    for (const chunk of this.chunk(
+      dailyStats.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        const activeUserIds = (doc.get('activeUserIds') as string[]).filter(
+          (id) => id !== userId,
+        );
+        batch.update(doc.ref, { activeUserIds });
+      }
+      await batch.commit();
+      updated += chunk.length;
+    }
+
+    // El historial de administración se conserva, pero un cambio de plan no
+    // necesita seguir apuntando al UID borrado. La ruta anidada preserva el
+    // resto de requestParams (planes, motivo y resultado de Stripe).
+    const auditLogs = await this.firestore
+      .collection(this.adminAuditCollection)
+      .where('requestParams.userId', '==', userId)
+      .get();
+
+    for (const chunk of this.chunk(
+      auditLogs.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const doc of chunk) {
+        batch.update(doc.ref, {
+          'requestParams.userId': FirestoreService.ANONYMIZED_USER_ID,
+          anonymizedAt: now,
+        });
+      }
+      await batch.commit();
+      updated += chunk.length;
     }
 
     return updated;

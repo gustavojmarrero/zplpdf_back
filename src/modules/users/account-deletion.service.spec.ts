@@ -493,6 +493,30 @@ describe('AccountDeletionService — Stripe rechaza cancelar', () => {
 });
 
 describe('AccountDeletionService — borrado parcial', () => {
+  it('declara el fallo de la lápida sin ocultar que Stripe ya canceló', async () => {
+    const { service, firestore, firebaseAdmin } = buildService({
+      firestore: {
+        markAccountDeletion: jest
+          .fn()
+          .mockRejectedValue(new Error('firestore caído')),
+      },
+    });
+
+    const error: HttpException = await service
+      .deleteAccount('uid-1')
+      .catch((e: HttpException) => e);
+
+    const response = error.getResponse() as any;
+    expect(response.error).toBe(ErrorCodes.ACCOUNT_DELETION_PARTIAL);
+    expect(response.data.failedSteps).toEqual(['deletionMark']);
+    // La suscripción ya murió antes de intentar escribir la lápida: el
+    // cliente necesita mostrar ese hecho aunque la baja de datos quede parcial.
+    expect(response.data.deleted.subscription.cancelled).toBe(true);
+    expect(response.data.accountDeleted).toBe(false);
+    expect(firestore.deleteUser).not.toHaveBeenCalled();
+    expect(firebaseAdmin.deleteUser).not.toHaveBeenCalled();
+  });
+
   it('marca la cuenta como NO borrada cuando falla el borrado en Firestore', async () => {
     const { service } = buildService({
       firestore: {

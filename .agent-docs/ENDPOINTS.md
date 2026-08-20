@@ -76,21 +76,30 @@ Lógica en `src/modules/users/account-deletion.service.ts`. Encadena, **en este 
    cuenta borrada. Si Stripe rechaza cualquiera, la petición muere aquí con
    `409 SUBSCRIPTION_CANCEL_FAILED` y **no se borra nada**.
 3. Escribe `deleted_accounts/<uid>` con `deletedAt`. Esta lápida bloquea desde ese
-   instante las autorizaciones y las escrituras tardías de conversiones/batches; las
-   escrituras críticas la leen en la misma transacción con la que guardan el dato.
+   instante las autorizaciones y las escrituras tardías de conversiones/batches. Las
+   creaciones persistentes (historial, uso, cola, batches y localizadores) la leen en
+   la misma transacción con la que guardan el dato. Las actualizaciones de progreso
+   usan `update()` directo: no recrean un doc barrido ni pagan lecturas por avance.
+   Si la marca falla después de cancelar Stripe, la respuesta es
+   `ACCOUNT_DELETION_PARTIAL` con `failedSteps: ['deletionMark']`, no un 500 opaco.
 4. Borra `conversion_history` y los archivos de Storage que cuelguen de la URL firmada
    de cada fila, más el prefijo `debug-zpl/<uid>/` y sus docs de `zpl_debug_files`.
+   Los workers comprueban la lápida justo antes y después de cada subida a GCS; si la
+   baja empieza durante la subida, retiran el objeto para que no quede huérfano tras
+   este barrido.
 5. Borra los batches (`zpl-batches` + los ZIP de `batches/<batchId>/`) y los docs de
    estado de `zpl-conversions`, que siguen sirviendo `GET /zpl/status/:jobId`.
 6. Borra `usage`, el perfil fiscal (`tax_profiles`) y cancela los emails en cola.
 7. Anonimiza lo que se conserva: los `cfdis`, los registros contables
    (`stripe_transactions`, `subscription_events`) y los de actividad (`email_queue`,
-   `email_events`, `feedback`, `error_logs`) pasan a `userId: 'deleted_user'` con `userEmail` vacío,
-   y el customer de Stripe pierde nombre, email, teléfono, domicilio, metadata y sus
-   tax IDs. El XML/PDF timbrado NO se toca: es el documento fiscal. Tras borrar el
-   perfil —y antes de borrar Firebase Auth— se repite el barrido, porque el webhook
-   de cancelación puede escribir un `subscription_event` con PII mientras la baja
-   avanza.
+   `email_events`, `feedback`, `error_logs`) pasan a `userId: 'deleted_user'` con
+   `userEmail` vacío. También quita el UID de `daily_stats.activeUserIds` sin alterar
+   ningún contador y anonimiza `admin_audit_log.requestParams.userId`, conservando el
+   resto del evento administrativo. El customer de Stripe pierde nombre, email,
+   teléfono, domicilio, metadata y sus tax IDs. El XML/PDF timbrado NO se toca: es el
+   documento fiscal. Tras borrar el perfil —y antes de borrar Firebase Auth— se repite
+   el barrido, porque el webhook de cancelación puede escribir un `subscription_event`
+   con PII mientras la baja avanza.
 8. Borra el doc de `users` y, por último, la cuenta de Firebase Auth — **solo si
    ningún paso anterior falló**. Con datos o archivos pendientes, la identidad se
    conserva: es lo único que permite reintentar la baja, y sin ella esos restos
