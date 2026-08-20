@@ -28,6 +28,7 @@ describe('BoundedThrottlerStorage', () => {
   });
 
   it('no crece por encima del tope aunque las identidades sean infinitas', async () => {
+    jest.useFakeTimers();
     const storage = buildStorage(5);
 
     // Lo que hace un cliente que rota el X-Forwarded-For en cada peticion.
@@ -36,10 +37,45 @@ describe('BoundedThrottlerStorage', () => {
     }
 
     expect(storage.storage.size).toBeLessThanOrEqual(5);
+    expect(jest.getTimerCount()).toBeLessThanOrEqual(5);
     storage.onApplicationShutdown();
   });
 
+  it('cancela los timers de una clave al expulsarla', async () => {
+    jest.useFakeTimers();
+    const storage = buildStorage(1);
+
+    await storage.increment('expulsada', TTL, 5, 0, 'test');
+    await storage.increment('expulsada', TTL, 5, 0, 'test');
+    await storage.increment('vigente', TTL, 5, 0, 'test');
+
+    expect(storage.storage.has('expulsada')).toBe(false);
+    expect(storage.storage.has('vigente')).toBe(true);
+    expect(jest.getTimerCount()).toBe(1);
+
+    // El callback de la clave expulsada ya no puede ejecutarse sobre undefined.
+    jest.advanceTimersByTime(TTL);
+    expect(storage.storage.size).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
+    storage.onApplicationShutdown();
+  });
+
+  it('cancela todos los timers pendientes al cerrar la aplicacion', async () => {
+    jest.useFakeTimers();
+    const storage = buildStorage(10);
+
+    await storage.increment('a', TTL, 5, 0, 'test');
+    await storage.increment('b', TTL, 5, 0, 'test');
+    expect(jest.getTimerCount()).toBe(2);
+
+    storage.onApplicationShutdown();
+
+    expect(jest.getTimerCount()).toBe(0);
+    expect(storage.storage.size).toBe(0);
+  });
+
   it('expulsa las identidades inventadas antes que el contador que está frenando el abuso', async () => {
+    jest.useFakeTimers();
     const storage = buildStorage(3);
 
     // El contador de verdad se toca en cada peticion; los inventados, una vez.

@@ -14,7 +14,7 @@ import {
   HttpException,
   UseGuards,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { v4 as uuidv4 } from 'uuid';
 import { ZplService } from './zpl.service.js';
 import { ConvertZplDto } from './dto/convert-zpl.dto.js';
@@ -771,6 +771,9 @@ export class ZplController {
   // quien paga (que ademas comparte IP con toda su oficina detras del NAT).
   @Post('public-preview')
   @HttpCode(HttpStatus.OK)
+  // Omite solo el throttler global `default`, cuyo storage no esta acotado.
+  // Los nombres del guard propio son distintos, asi que este sigue activo.
+  @SkipThrottle()
   // El rate limit por IP vive en el guard, con opciones y storage propios (ver
   // PublicPreviewThrottlerGuard): declararlo en el ThrottlerModule global
   // habria anadido esas ventanas a TODAS las rutas del API.

@@ -21,7 +21,10 @@ jest.mock('firebase-admin', () => ({
 
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants.js';
-import { THROTTLER_LIMIT } from '@nestjs/throttler/dist/throttler.constants.js';
+import {
+  THROTTLER_LIMIT,
+  THROTTLER_SKIP,
+} from '@nestjs/throttler/dist/throttler.constants.js';
 import { ZplController } from './zpl.controller.js';
 import { LabelSize } from './enums/label-size.enum.js';
 import { validate } from 'class-validator';
@@ -174,6 +177,18 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
       );
     });
 
+    it('omite el throttler global sin omitir el guard propio', () => {
+      expect(
+        Reflect.getMetadata(THROTTLER_SKIP + 'default', publicPreview),
+      ).toBe(true);
+      expect(
+        Reflect.getMetadata(
+          THROTTLER_SKIP + 'publicPreviewClientMinute',
+          publicPreview,
+        ),
+      ).toBeUndefined();
+    });
+
     it('limita por visitante por minuto y por hora, y agrega por origen', () => {
       expect(PUBLIC_PREVIEW_THROTTLERS.clientMinute).toEqual({
         limit: 6,
@@ -218,6 +233,12 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
       ).toBeUndefined();
       expect(
         Reflect.getMetadata(THROTTLER_LIMIT + 'hourly', previewZpl),
+      ).toBeUndefined();
+    });
+
+    it('sigue pasando por el throttler global', () => {
+      expect(
+        Reflect.getMetadata(THROTTLER_SKIP + 'default', previewZpl),
       ).toBeUndefined();
     });
   });

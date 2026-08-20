@@ -30,8 +30,8 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
     // Rate limiting: 100 req/min por defecto. Endpoints especificos
     // overridean limit/ttl con @Throttle inline. Las ventanas del endpoint
     // publico de vista previa NO viven aqui a proposito (ver
-    // PublicPreviewThrottlerGuard): el guard global evalua todo lo declarado en
-    // esta lista para TODAS las rutas.
+    // PublicPreviewThrottlerGuard): la ruta publica omite este guard global con
+    // @SkipThrottle y conserva su guard propio con storage acotado.
     ThrottlerModule.forRoot([
       {
         name: 'default',
