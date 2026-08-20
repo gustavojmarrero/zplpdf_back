@@ -87,11 +87,12 @@ Lógica en `src/modules/users/account-deletion.service.ts`. Encadena, **en este 
 5. Borra `usage`, el perfil fiscal (`tax_profiles`) y cancela los emails en cola.
 6. Anonimiza lo que se conserva: los `cfdis`, los registros contables
    (`stripe_transactions`, `subscription_events`) y los de actividad (`email_queue`,
-   `email_events`, `feedback`) pasan a `userId: 'deleted_user'` con `userEmail` vacío,
+   `email_events`, `feedback`, `error_logs`) pasan a `userId: 'deleted_user'` con `userEmail` vacío,
    y el customer de Stripe pierde nombre, email, teléfono, domicilio, metadata y sus
    tax IDs. El XML/PDF timbrado NO se toca: es el documento fiscal. Tras borrar el
-   perfil se repite el barrido contable, porque el webhook de cancelación puede
-   escribir un `subscription_event` con PII mientras la baja avanza.
+   perfil —y antes de borrar Firebase Auth— se repite el barrido, porque el webhook
+   de cancelación puede escribir un `subscription_event` con PII mientras la baja
+   avanza.
 7. Borra el doc de `users` y, por último, la cuenta de Firebase Auth — **solo si
    ningún paso anterior falló**. Con datos o archivos pendientes, la identidad se
    conserva: es lo único que permite reintentar la baja, y sin ella esos restos
@@ -117,7 +118,8 @@ afirmar que la cuenta ya no existe cuando sigue existiendo.
 `{ notifications: { product, billing, usageReminders } }`, guardadas en el doc de
 `users` (`notificationPreferences`). Ausente equivale a todo activado. El `PUT` es
 parcial: las claves que no vengan conservan su valor, y la respuesta trae siempre las
-tres resueltas.
+tres resueltas. Se escriben con ruta anidada (`notificationPreferences.product`) para
+que dos clics seguidos en la pantalla de ajustes no se pisen.
 
 `EmailService.processQueue` las comprueba **justo antes de enviar** —no solo al
 encolar, porque las secuencias se programan con días de antelación— usando el mapa

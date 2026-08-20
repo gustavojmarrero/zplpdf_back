@@ -2009,14 +2009,16 @@ describe('UsersService — foto de perfil', () => {
  */
 describe('UsersService — preferencias de notificación', () => {
   function buildService(user: Record<string, unknown> | null) {
-    const updateUser = jest.fn().mockResolvedValue(undefined);
+    const updateNotificationPreferences = jest
+      .fn()
+      .mockResolvedValue(undefined);
     const service: any = Object.create(UsersService.prototype);
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.firestoreService = {
       getUserById: jest.fn().mockResolvedValue(user),
-      updateUser,
+      updateNotificationPreferences,
     };
-    return { service, updateUser };
+    return { service, updateNotificationPreferences };
   }
 
   it('devuelve todo activado para una cuenta que nunca tocó sus preferencias', async () => {
@@ -2043,7 +2045,7 @@ describe('UsersService — preferencias de notificación', () => {
   });
 
   it('fusiona la actualización parcial sin tocar los interruptores ausentes', async () => {
-    const { service, updateUser } = buildService({
+    const { service, updateNotificationPreferences } = buildService({
       id: 'uid-1',
       notificationPreferences: { product: false, billing: true },
     });
@@ -2057,13 +2059,26 @@ describe('UsersService — preferencias de notificación', () => {
       billing: true,
       usageReminders: false,
     });
-    // Se persisten siempre las tres claves resueltas.
-    expect(updateUser).toHaveBeenCalledWith('uid-1', {
-      notificationPreferences: {
-        product: false,
-        billing: true,
-        usageReminders: false,
-      },
+    // Solo se escribe la clave que vino: escribir el objeto entero haría que dos
+    // cambios simultáneos se pisaran.
+    expect(updateNotificationPreferences).toHaveBeenCalledWith('uid-1', {
+      usageReminders: false,
+    });
+  });
+
+  it('no escribe nada si la petición no trae ningún interruptor', async () => {
+    const { service, updateNotificationPreferences } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    const result = await service.updateNotificationPreferences('uid-1', {});
+
+    expect(updateNotificationPreferences).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      product: false,
+      billing: true,
+      usageReminders: true,
     });
   });
 

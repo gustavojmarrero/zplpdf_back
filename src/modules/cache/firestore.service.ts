@@ -7645,6 +7645,30 @@ export class FirestoreService {
   /** Tope de documentos por lote en los borrados de la baja de cuenta. */
   private static readonly DELETION_BATCH_SIZE = 400;
 
+  /**
+   * Escribe solo los interruptores que vengan, con rutas de campo anidadas.
+   *
+   * Firestore fusiona `notificationPreferences.product` sin releer el resto del
+   * objeto, así que dos cambios simultáneos —dos clics seguidos en la pantalla
+   * de ajustes— ya no se pisan: escribir el objeto entero haría que el segundo
+   * revirtiera el interruptor del primero con el valor que leyó antes.
+   */
+  async updateNotificationPreferences(
+    userId: string,
+    changes: Record<string, boolean>,
+  ): Promise<void> {
+    const updates: Record<string, any> = { updatedAt: new Date() };
+
+    for (const [key, value] of Object.entries(changes)) {
+      updates[`notificationPreferences.${key}`] = value;
+    }
+
+    await this.firestore
+      .collection(this.usersCollection)
+      .doc(userId)
+      .update(updates);
+  }
+
   /** Borra el documento de `users`. */
   async deleteUser(userId: string): Promise<void> {
     try {
@@ -7768,11 +7792,12 @@ export class FirestoreService {
    * Desvincula del usuario la cola de emails, sus eventos y su feedback.
    *
    * `email_queue` guarda `userEmail` y la metadata con la que se compuso cada
-   * envío (nombre incluido); `email_events` y `feedback` guardan `userId` y
-   * `userEmail`, y el feedback además texto libre. Se anonimizan en vez de
-   * borrarse porque las métricas de email y el feedback del producto se
-   * calculan sobre ellos y borrarlos falsearía la serie histórica: lo que
-   * desaparece es a quién pertenecen.
+   * envío (nombre incluido); `email_events`, `feedback` y `error_logs` guardan
+   * `userId` y `userEmail`, y los dos últimos además texto libre y contexto del
+   * fallo. Se anonimizan en vez de borrarse porque las métricas de email, el
+   * feedback del producto y el dashboard de errores se calculan sobre ellos y
+   * borrarlos falsearía la serie histórica: lo que desaparece es a quién
+   * pertenecen.
    *
    * @returns cuántos documentos se anonimizaron entre las tres colecciones.
    */
@@ -7784,6 +7809,10 @@ export class FirestoreService {
       { collection: this.emailQueueCollection, clearMetadata: true },
       { collection: this.emailEventsCollection, clearMetadata: true },
       { collection: this.feedbackCollection, clearMetadata: false },
+      // `error_logs` guarda `userEmail` y un `context` que puede arrastrar lo
+      // que el usuario tecleó al fallar. Los errores se conservan porque el
+      // dashboard vive de ellos, pero dejan de apuntar a nadie.
+      { collection: this.errorLogsCollection, clearMetadata: true },
     ];
 
     for (const { collection, clearMetadata } of targets) {
@@ -7813,9 +7842,15 @@ export class FirestoreService {
           }
 
           // La metadata del email lleva el nombre con el que se personalizó el
-          // envío. El feedback conserva la suya: es contenido de producto.
-          if (clearMetadata && doc.get('metadata') !== undefined) {
-            updates.metadata = FieldValue.delete();
+          // envío, y el `context` de un error puede arrastrar el contenido que
+          // lo provocó. El feedback conserva la suya: es contenido de producto.
+          if (clearMetadata) {
+            if (doc.get('metadata') !== undefined) {
+              updates.metadata = FieldValue.delete();
+            }
+            if (doc.get('context') !== undefined) {
+              updates.context = FieldValue.delete();
+            }
           }
 
           batch.update(doc.ref, updates);

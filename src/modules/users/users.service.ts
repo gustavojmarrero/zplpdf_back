@@ -405,18 +405,31 @@ export class UsersService {
     // presente con valor `undefined`, y el spread la impondría sobre la
     // preferencia guardada, desactivando de vuelta un interruptor que el usuario
     // no ha tocado en esta petición.
+    const applied: Record<string, boolean> = {};
+    for (const key of [
+      'product',
+      'billing',
+      'usageReminders',
+    ] as (keyof NotificationPreferences)[]) {
+      if (typeof changes[key] === 'boolean') {
+        applied[key] = changes[key];
+      }
+    }
+
     const current = resolveNotificationPreferences(
       user.notificationPreferences,
     );
-    const updated: NotificationPreferences = {
-      product: changes.product ?? current.product,
-      billing: changes.billing ?? current.billing,
-      usageReminders: changes.usageReminders ?? current.usageReminders,
-    };
+    const updated = resolveNotificationPreferences({ ...current, ...applied });
 
-    await this.firestoreService.updateUser(userId, {
-      notificationPreferences: updated,
-    });
+    if (Object.keys(applied).length > 0) {
+      // Solo las claves que vienen, con ruta anidada: escribir el objeto entero
+      // haría que dos cambios simultáneos se pisaran, revirtiendo el interruptor
+      // que el otro acabara de mover.
+      await this.firestoreService.updateNotificationPreferences(
+        userId,
+        applied,
+      );
+    }
 
     return updated;
   }

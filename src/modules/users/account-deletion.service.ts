@@ -225,6 +225,26 @@ export class AccountDeletionService {
     }
 
     if (accountDeleted) {
+      // Segundo pase, idempotente y normalmente vacío. La cancelación de la
+      // suscripción dispara `customer.subscription.deleted`, cuyo manejador
+      // puede escribir un `subscription_event` con el email del titular mientras
+      // esta baja avanza. En cuanto el documento de `users` desaparece, ese
+      // manejador sale sin escribir —busca al usuario por customer y no lo
+      // encuentra—, así que barrer aquí cierra la ventana en la que el webhook
+      // pudo colarse entre la anonimización y el borrado.
+      //
+      // Va ANTES de borrar Firebase Auth: si falla, el usuario conserva las
+      // credenciales con las que reintentar la baja y terminar la limpieza.
+      try {
+        await this.firestoreService.anonymizeUserFinancialRecords(userId);
+        await this.firestoreService.anonymizeUserActivityRecords(userId);
+      } catch (error) {
+        failed('retainedRecords', error);
+        accountDeleted = false;
+      }
+    }
+
+    if (accountDeleted) {
       try {
         await this.firebaseAdminService.deleteUser(userId);
       } catch (error) {
@@ -242,22 +262,6 @@ export class AccountDeletionService {
         `Baja de cuenta ${userId}: no se borra la cuenta de Firebase Auth porque el ` +
           'perfil no llegó a borrarse; sin ella el usuario no podría reintentar',
       );
-    }
-
-    if (accountDeleted) {
-      // Segundo pase, idempotente y normalmente vacío. La cancelación de la
-      // suscripción dispara `customer.subscription.deleted`, cuyo manejador
-      // puede escribir un `subscription_event` con el email del titular mientras
-      // esta baja avanza. En cuanto el documento de `users` desaparece, ese
-      // manejador sale sin escribir —busca al usuario por customer y no lo
-      // encuentra—, así que barrer aquí cierra la ventana en la que el webhook
-      // pudo colarse entre la anonimización y el borrado.
-      try {
-        await this.firestoreService.anonymizeUserFinancialRecords(userId);
-        await this.firestoreService.anonymizeUserActivityRecords(userId);
-      } catch (error) {
-        failed('retainedRecords', error);
-      }
     }
 
     const deleted = {
@@ -350,12 +354,14 @@ export class AccountDeletionService {
     }
 
     let canceledAt: Date | null = null;
+    const cancelledIds: string[] = [];
 
     for (const subscriptionId of subscriptionIds) {
       try {
         const cancelled =
           await this.stripe.subscriptions.cancel(subscriptionId);
 
+        cancelledIds.push(subscriptionId);
         canceledAt = cancelled.canceled_at
           ? new Date(cancelled.canceled_at * 1000)
           : new Date();
@@ -363,9 +369,18 @@ export class AccountDeletionService {
         this.logger.error(
           `Baja de cuenta ${user.id}: Stripe rechazó cancelar ${subscriptionId} — ${error.message}`,
         );
+        // Lo ya cancelado no se deshace, así que la respuesta lo dice: decirle
+        // "no se ha tocado nada" a quien acaba de perder una suscripción sería
+        // un estado financiero falso, aunque no se haya borrado ningún dato.
         throw this.subscriptionCancelFailed(
           user,
           error?.code ?? 'stripe_error',
+          {
+            cancelledSubscriptions: cancelledIds,
+            pendingSubscriptions: subscriptionIds.filter(
+              (id) => !cancelledIds.includes(id),
+            ),
+          },
         );
       }
     }
@@ -393,16 +408,31 @@ export class AccountDeletionService {
     const ids = new Set<string>();
 
     if (user.stripeSubscriptionId) {
-      const current = await this.stripe.subscriptions.retrieve(
-        user.stripeSubscriptionId,
-      );
-
-      if (current.status === 'canceled') {
-        this.logger.log(
-          `Baja de cuenta ${user.id}: la suscripción ${current.id} ya estaba cancelada`,
+      try {
+        const current = await this.stripe.subscriptions.retrieve(
+          user.stripeSubscriptionId,
         );
-      } else {
-        ids.add(current.id);
+
+        if (current.status === 'canceled') {
+          this.logger.log(
+            `Baja de cuenta ${user.id}: la suscripción ${current.id} ya estaba cancelada`,
+          );
+        } else {
+          ids.add(current.id);
+        }
+      } catch (error) {
+        // Un id guardado que Stripe ya no conoce es basura de un checkout que
+        // no cuajó, no un motivo para dejar a alguien sin poder darse de baja:
+        // se sigue con las suscripciones reales del customer. Cualquier otro
+        // fallo sí aborta, porque entonces no sabemos qué hay vivo.
+        if (error?.code !== 'resource_missing') {
+          throw error;
+        }
+
+        this.logger.warn(
+          `Baja de cuenta ${user.id}: la suscripción ${user.stripeSubscriptionId} ` +
+            'ya no existe en Stripe; se comprueban las del customer',
+        );
       }
     }
 
@@ -423,7 +453,14 @@ export class AccountDeletionService {
     return [...ids];
   }
 
-  private subscriptionCancelFailed(user: User, reason: string): HttpException {
+  private subscriptionCancelFailed(
+    user: User,
+    reason: string,
+    partial?: {
+      cancelledSubscriptions: string[];
+      pendingSubscriptions: string[];
+    },
+  ): HttpException {
     return new HttpException(
       {
         error: ErrorCodes.SUBSCRIPTION_CANCEL_FAILED,
@@ -434,6 +471,10 @@ export class AccountDeletionService {
           // Código de Stripe, no frase: el frontend decide si ofrece reintentar
           // o mandar al portal de facturación.
           reason,
+          // Presentes solo cuando el customer tenía varias suscripciones y unas
+          // se cancelaron antes del rechazo: ningún dato se ha borrado, pero
+          // esas ya no vuelven.
+          ...(partial ?? {}),
         },
       },
       HttpStatus.CONFLICT,
@@ -510,11 +551,21 @@ export class AccountDeletionService {
       }
     }
 
-    incomplete = true;
-    this.logger.error(
-      `Baja de cuenta ${userId}: se agotaron las ${MAX_HISTORY_DELETION_PAGES} páginas ` +
-        'de borrado del historial y aún quedan registros',
+    // Agotar las páginas no significa que quede algo: una cuenta con un múltiplo
+    // exacto del tamaño de página se borra entera en la última vuelta. Sin esta
+    // lectura, esa baja devolvería un 500 y conservaría la identidad sin motivo.
+    const remaining = await this.firestoreService.scanUserConversionHistory(
+      userId,
+      1,
     );
+    incomplete = remaining.length > 0;
+
+    if (incomplete) {
+      this.logger.error(
+        `Baja de cuenta ${userId}: se agotaron las ${MAX_HISTORY_DELETION_PAGES} páginas ` +
+          'de borrado del historial y aún quedan registros',
+      );
+    }
 
     return { conversions, storedFiles, storageFailed, incomplete };
   }

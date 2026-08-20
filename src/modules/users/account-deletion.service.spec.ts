@@ -273,6 +273,38 @@ describe('AccountDeletionService — baja completa', () => {
     expect(result.deleted.subscription.cancelled).toBe(true);
   });
 
+  it('no se bloquea si el id de suscripción guardado ya no existe en Stripe', async () => {
+    const { service, stripe } = buildService();
+    stripe.subscriptions.retrieve.mockRejectedValue(
+      Object.assign(new Error('No such subscription'), {
+        code: 'resource_missing',
+      }),
+    );
+    stripe.subscriptions.list.mockResolvedValue({
+      data: [{ id: 'sub_real', status: 'active' }],
+    });
+
+    const result = await service.deleteAccount('uid-1');
+
+    // Un id basura de un checkout que no cuajó no puede dejar a nadie sin poder
+    // darse de baja.
+    expect(stripe.subscriptions.cancel).toHaveBeenCalledWith('sub_real');
+    expect(result.deleted.subscription.cancelled).toBe(true);
+  });
+
+  it('borra el historial completo cuando ocupa un múltiplo exacto de la página', async () => {
+    const fullPages = Array.from({ length: 40 }, (_, page) =>
+      Array.from({ length: 500 }, (_, i) => historyRecord(`p${page}-h${i}`)),
+    );
+    const { service } = buildService({ history: fullPages });
+
+    // Agotar las 40 páginas no implica que quede algo: la 41ª lectura confirma
+    // que el historial está vacío y la baja no debe declararse incompleta.
+    const result = await service.deleteAccount('uid-1');
+
+    expect(result.deleted.conversions).toBe(20000);
+  });
+
   it('conserva la fila del historial cuyo archivo no se pudo borrar', async () => {
     const { service, firestore } = buildService({
       storage: {
@@ -379,6 +411,33 @@ describe('AccountDeletionService — baja completa', () => {
 });
 
 describe('AccountDeletionService — Stripe rechaza cancelar', () => {
+  it('declara qué suscripciones sí quedaron canceladas antes del rechazo', async () => {
+    const { service, stripe } = buildService();
+    stripe.subscriptions.list.mockResolvedValue({
+      data: [
+        { id: 'sub_1', status: 'active' },
+        { id: 'sub_2', status: 'active' },
+      ],
+    });
+    stripe.subscriptions.cancel
+      .mockResolvedValueOnce({ id: 'sub_1', canceled_at: 1 })
+      .mockRejectedValueOnce(
+        Object.assign(new Error('nope'), { code: 'api_error' }),
+      );
+
+    const error: HttpException = await service
+      .deleteAccount('uid-1')
+      .catch((e: HttpException) => e);
+
+    // `sub_1` ya no vuelve: decir "no se ha tocado nada" sería falso.
+    expect(error.getResponse()).toMatchObject({
+      data: {
+        cancelledSubscriptions: ['sub_1'],
+        pendingSubscriptions: ['sub_2'],
+      },
+    });
+  });
+
   it('responde SUBSCRIPTION_CANCEL_FAILED y no borra absolutamente nada', async () => {
     const { service, firestore, storage, firebaseAdmin, stripe } =
       buildService();
@@ -455,6 +514,22 @@ describe('AccountDeletionService — borrado parcial', () => {
     // Sin cuenta de Auth el usuario no podría autenticarse para reintentar la
     // baja, y quedaría un documento huérfano en Firestore.
     expect(firebaseAdmin.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it('no borra Firebase Auth si el barrido final de PII falla', async () => {
+    const { service, firebaseAdmin, firestore } = buildService();
+    (firestore.anonymizeUserFinancialRecords as jest.Mock)
+      .mockResolvedValueOnce(3)
+      .mockRejectedValueOnce(new Error('firestore caído'));
+
+    const error: HttpException = await service
+      .deleteAccount('uid-1')
+      .catch((e: HttpException) => e);
+
+    // Quedan registros con PII: el usuario necesita sus credenciales para
+    // reintentar la limpieza.
+    expect(firebaseAdmin.deleteUser).not.toHaveBeenCalled();
+    expect((error.getResponse() as any).data.accountDeleted).toBe(false);
   });
 
   it('declara la cuenta viva si Firebase Auth no la borra, aunque el perfil sí se fuera', async () => {
