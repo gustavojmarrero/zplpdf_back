@@ -107,6 +107,11 @@ export class AccountDeletionService {
 
     const subscription = await this.cancelSubscription(user);
 
+    // Desde este punto ninguna conversión, batch ni petición nueva puede volver
+    // a escribir datos del UID. La marca se conserva tras el éxito para cubrir
+    // tokens de Firebase todavía válidos y se retira si la identidad sobrevive.
+    await this.firestoreService.markAccountDeletion(userId);
+
     const failedSteps: AccountDeletionStep[] = [];
     const failed = (step: AccountDeletionStep, error: unknown): void => {
       failedSteps.push(step);
@@ -279,6 +284,22 @@ export class AccountDeletionService {
     };
 
     if (failedSteps.length > 0) {
+      // Una baja parcial conserva Firebase Auth para que el titular pueda
+      // reintentar. La lápida también debe desaparecer: de lo contrario el
+      // guard rechazaría ese reintento y la cuenta quedaría inutilizable.
+      try {
+        await this.firestoreService.clearAccountDeletionMark(userId);
+      } catch (error) {
+        this.logger.error(
+          `Baja de cuenta ${userId}: no se pudo retirar la marca para reintentar — ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        if (!failedSteps.includes('account')) {
+          failedSteps.push('account');
+        }
+      }
+
       throw new HttpException(
         {
           error: ErrorCodes.ACCOUNT_DELETION_PARTIAL,

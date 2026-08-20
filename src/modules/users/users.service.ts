@@ -429,6 +429,16 @@ export class UsersService {
         userId,
         applied,
       );
+
+      // La lectura inicial solo sirve para validar la cuenta y completar el
+      // caso local. Otro PUT puede haber fusionado una clave distinta mientras
+      // este esperaba la escritura; responder aquel snapshot inventaría un
+      // estado que ya no es el persistido.
+      const persisted = await this.firestoreService.getUserById(userId);
+      if (!persisted) {
+        throw new ForbiddenException('User not found');
+      }
+      return resolveNotificationPreferences(persisted.notificationPreferences);
     }
 
     return updated;
@@ -1429,6 +1439,15 @@ export class UsersService {
     userId: string,
     labelCount: number,
   ): Promise<CheckCanConvertResult> {
+    if (await this.firestoreService.isAccountDeletionMarked(userId)) {
+      return {
+        allowed: false,
+        error: 'User not found',
+        errorCode: ErrorCodes.USER_NOT_FOUND,
+        userEmail: null,
+      };
+    }
+
     const user = await this.firestoreService.getUserById(userId);
 
     if (!user) {
@@ -1522,6 +1541,14 @@ export class UsersService {
     periodInfo?: PeriodInfo,
     userPlan?: PlanType,
   ): Promise<void> {
+    // Una conversión puede terminar mucho después de la request que la inició.
+    // La segunda comprobación evita que ese trabajo reanime datos ya barridos;
+    // Firestore repite la misma condición dentro de las escrituras para cerrar
+    // también la carrera entre esta lectura y el commit.
+    if (await this.firestoreService.isAccountDeletionMarked(userId)) {
+      throw new GoneException('Account deletion in progress');
+    }
+
     // Save to history (use null instead of undefined for Firestore)
     await this.firestoreService.saveConversionHistory({
       userId,

@@ -48,7 +48,12 @@ export type EmailType =
   | ReactivationEmailType
   | PaymentEmailType;
 
-export type EmailStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
+export type EmailStatus =
+  | 'pending'
+  | 'sending'
+  | 'sent'
+  | 'failed'
+  | 'cancelled';
 
 export type EmailEventType =
   | 'delivered'
@@ -74,6 +79,7 @@ export interface EmailQueue {
   language: EmailLanguage;
   metadata?: Record<string, any>;
   scheduledFor: Date;
+  sendingAt?: Date;
   sentAt?: Date;
   errorMessage?: string;
   createdAt: Date;

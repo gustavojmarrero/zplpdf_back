@@ -232,6 +232,7 @@ export class FirestoreService {
 
   private readonly collectionName = 'zpl-conversions';
   private readonly usersCollection = 'users';
+  private readonly deletedAccountsCollection = 'deleted_accounts';
   private readonly usageCollection = 'usage';
   private readonly historyCollection = 'conversion_history';
   // Finance collections
@@ -300,10 +301,20 @@ export class FirestoreService {
     status: ConversionStatus,
   ): Promise<void> {
     try {
-      await this.firestore
-        .collection(this.collectionName)
-        .doc(jobId)
-        .set(status, { merge: true });
+      const ref = this.firestore.collection(this.collectionName).doc(jobId);
+
+      if (status.userId) {
+        const deletedRef = this.firestore
+          .collection(this.deletedAccountsCollection)
+          .doc(status.userId);
+        await this.firestore.runTransaction(async (transaction) => {
+          const deleted = await transaction.get(deletedRef);
+          this.assertAccountWritable(status.userId, deleted.exists);
+          transaction.set(ref, status, { merge: true });
+        });
+      } else {
+        await ref.set(status, { merge: true });
+      }
 
       this.logger.log(`Estado de conversion actualizado para jobId: ${jobId}`);
     } catch (error) {
@@ -335,13 +346,26 @@ export class FirestoreService {
     status: Partial<ConversionStatus>,
   ): Promise<void> {
     try {
-      await this.firestore
-        .collection(this.collectionName)
-        .doc(jobId)
-        .update({
+      const ref = this.firestore.collection(this.collectionName).doc(jobId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const current = await transaction.get(ref);
+        const userId = status.userId || current.get('userId');
+
+        if (userId) {
+          const deleted = await transaction.get(
+            this.firestore
+              .collection(this.deletedAccountsCollection)
+              .doc(userId),
+          );
+          this.assertAccountWritable(userId, deleted.exists);
+        }
+
+        transaction.update(ref, {
           ...status,
           updatedAt: new Date().toISOString(),
         });
+      });
 
       this.logger.log(`Estado actualizado para jobId: ${jobId}`);
     } catch (error) {
@@ -354,14 +378,22 @@ export class FirestoreService {
 
   async createUser(user: User): Promise<void> {
     try {
-      await this.firestore
+      const userRef = this.firestore
         .collection(this.usersCollection)
-        .doc(user.id)
-        .set({
+        .doc(user.id);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(user.id);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(user.id, deleted.exists);
+        transaction.set(userRef, {
           ...user,
           createdAt: user.createdAt || new Date(),
           updatedAt: new Date(),
         });
+      });
       this.logger.log(`Usuario creado: ${user.id}`);
     } catch (error) {
       this.logger.error(`Error al crear usuario: ${error.message}`);
@@ -397,6 +429,41 @@ export class FirestoreService {
     } catch (error) {
       this.logger.error(`Error al obtener usuario: ${error.message}`);
       throw error;
+    }
+  }
+
+  /** Marca el UID antes de barrer sus datos y bloquea escrituras posteriores. */
+  async markAccountDeletion(userId: string): Promise<void> {
+    await this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(userId)
+      .set({ deletedAt: new Date() });
+  }
+
+  /** Permite reintentar una baja parcial con la identidad todavía activa. */
+  async clearAccountDeletionMark(userId: string): Promise<void> {
+    await this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(userId)
+      .delete();
+  }
+
+  async isAccountDeletionMarked(userId: string): Promise<boolean> {
+    const doc = await this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(userId)
+      .get();
+    return doc.exists;
+  }
+
+  /**
+   * Las transacciones que leen la lápida y escriben el dato forman una única
+   * frontera: si la baja gana la carrera, Firestore reintenta la transacción y
+   * esta termina aquí sin recrear restos del usuario.
+   */
+  private assertAccountWritable(userId: string, deleted: boolean): void {
+    if (deleted) {
+      throw new Error(`Account deletion in progress for user ${userId}`);
     }
   }
 
@@ -1103,21 +1170,29 @@ export class FirestoreService {
       const docRef = this.firestore
         .collection(this.usageCollection)
         .doc(usageId);
-      const doc = await docRef.get();
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
 
-      if (!doc.exists) {
-        // Create new usage period with initial counts
-        const newUsage = this.createNewUsagePeriod(userId);
-        newUsage.pdfCount = pdfCount;
-        newUsage.labelCount = labelCount;
-        await docRef.set(newUsage);
-      } else {
-        // Atomic increment to avoid race conditions
-        await docRef.update({
-          pdfCount: FieldValue.increment(pdfCount),
-          labelCount: FieldValue.increment(labelCount),
-        });
-      }
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        const doc = await transaction.get(docRef);
+        this.assertAccountWritable(userId, deleted.exists);
+
+        if (!doc.exists) {
+          // Create new usage period with initial counts
+          const newUsage = this.createNewUsagePeriod(userId);
+          newUsage.pdfCount = pdfCount;
+          newUsage.labelCount = labelCount;
+          transaction.create(docRef, newUsage);
+        } else {
+          // Atomic increment to avoid race conditions
+          transaction.update(docRef, {
+            pdfCount: FieldValue.increment(pdfCount),
+            labelCount: FieldValue.increment(labelCount),
+          });
+        }
+      });
 
       this.logger.log(`Uso incrementado para usuario: ${userId}`);
     } catch (error) {
@@ -1211,48 +1286,39 @@ export class FirestoreService {
       const docRef = this.firestore
         .collection(this.usageCollection)
         .doc(periodInfo.periodId);
-      const doc = await docRef.get();
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
 
-      if (doc.exists) {
-        const data = doc.data();
-        return {
-          ...data,
-          periodStart: data.periodStart?.toDate?.() || data.periodStart,
-          periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
-        } as Usage;
-      }
+      return await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        const doc = await transaction.get(docRef);
+        this.assertAccountWritable(userId, deleted.exists);
 
-      // Crear nuevo período de uso
-      const newUsage: Usage = {
-        odId: periodInfo.periodId,
-        userId,
-        periodStart: periodInfo.periodStart,
-        periodEnd: periodInfo.periodEnd,
-        pdfCount: 0,
-        labelCount: 0,
-      };
-
-      // create() es atómico: falla con ALREADY_EXISTS si el doc apareció entre
-      // el get() y ahora (ej. un incrementUsageWithPeriod concurrente lo creó).
-      // Eso evita que un set() con contadores en 0 pise uso ya registrado.
-      try {
-        await docRef.create(newUsage);
-        this.logger.log(
-          `Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`,
-        );
-        return newUsage;
-      } catch (createError) {
-        if (createError?.code === 6 /* ALREADY_EXISTS */) {
-          const existing = await docRef.get();
-          const data = existing.data();
+        if (doc.exists) {
+          const data = doc.data();
           return {
             ...data,
             periodStart: data.periodStart?.toDate?.() || data.periodStart,
             periodEnd: data.periodEnd?.toDate?.() || data.periodEnd,
           } as Usage;
         }
-        throw createError;
-      }
+
+        const newUsage: Usage = {
+          odId: periodInfo.periodId,
+          userId,
+          periodStart: periodInfo.periodStart,
+          periodEnd: periodInfo.periodEnd,
+          pdfCount: 0,
+          labelCount: 0,
+        };
+
+        transaction.create(docRef, newUsage);
+        this.logger.log(
+          `Nuevo periodo de uso creado para usuario: ${userId} (${periodInfo.periodId})`,
+        );
+        return newUsage;
+      });
     } catch (error) {
       this.logger.error(
         `Error al obtener/crear uso con período: ${error.message}`,
@@ -1281,17 +1347,26 @@ export class FirestoreService {
       const docRef = this.firestore
         .collection(this.usageCollection)
         .doc(periodInfo.periodId);
-      await docRef.set(
-        {
-          odId: periodInfo.periodId,
-          userId,
-          periodStart: periodInfo.periodStart,
-          periodEnd: periodInfo.periodEnd,
-          pdfCount: FieldValue.increment(pdfCount),
-          labelCount: FieldValue.increment(labelCount),
-        },
-        { merge: true },
-      );
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(userId, deleted.exists);
+        transaction.set(
+          docRef,
+          {
+            odId: periodInfo.periodId,
+            userId,
+            periodStart: periodInfo.periodStart,
+            periodEnd: periodInfo.periodEnd,
+            pdfCount: FieldValue.increment(pdfCount),
+            labelCount: FieldValue.increment(labelCount),
+          },
+          { merge: true },
+        );
+      });
       this.logger.log(
         `Uso incrementado para usuario: ${userId} (${periodInfo.periodId})`,
       );
@@ -1331,9 +1406,20 @@ export class FirestoreService {
 
   async saveConversionHistory(history: ConversionHistory): Promise<void> {
     try {
-      await this.firestore.collection(this.historyCollection).add({
-        ...history,
-        createdAt: history.createdAt || new Date(),
+      const historyRef = this.firestore
+        .collection(this.historyCollection)
+        .doc();
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(history.userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(history.userId, deleted.exists);
+        transaction.create(historyRef, {
+          ...history,
+          createdAt: history.createdAt || new Date(),
+        });
       });
       this.logger.log(`Historial guardado para usuario: ${history.userId}`);
     } catch (error) {
@@ -1509,10 +1595,15 @@ export class FirestoreService {
         .collection(this.dailyStatsCollection)
         .doc(dateKey);
       const globalRef = this.firestore.doc(this.globalTotalsDoc);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(userId);
 
       await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
         const doc = await transaction.get(docRef);
         const globalDoc = await transaction.get(globalRef);
+        this.assertAccountWritable(userId, deleted.exists);
 
         if (doc.exists) {
           const data = doc.data() as DailyStats;
@@ -1712,14 +1803,22 @@ export class FirestoreService {
 
   async saveBatchJob(batch: BatchJob): Promise<void> {
     try {
-      await this.firestore
+      const batchRef = this.firestore
         .collection(this.batchCollection)
-        .doc(batch.id)
-        .set({
+        .doc(batch.id);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(batch.userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(batch.userId, deleted.exists);
+        transaction.set(batchRef, {
           ...batch,
           createdAt: batch.createdAt || new Date(),
           updatedAt: new Date(),
         });
+      });
       this.logger.log(`Batch guardado: ${batch.id}`);
     } catch (error) {
       this.logger.error(`Error al guardar batch: ${error.message}`);
@@ -1755,13 +1854,28 @@ export class FirestoreService {
     data: Partial<BatchJob>,
   ): Promise<void> {
     try {
-      await this.firestore
+      const batchRef = this.firestore
         .collection(this.batchCollection)
-        .doc(batchId)
-        .update({
+        .doc(batchId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const batch = await transaction.get(batchRef);
+        const userId = data.userId || batch.get('userId');
+
+        if (userId) {
+          const deleted = await transaction.get(
+            this.firestore
+              .collection(this.deletedAccountsCollection)
+              .doc(userId),
+          );
+          this.assertAccountWritable(userId, deleted.exists);
+        }
+
+        transaction.update(batchRef, {
           ...data,
           updatedAt: new Date(),
         });
+      });
       this.logger.log(`Batch actualizado: ${batchId}`);
     } catch (error) {
       this.logger.error(`Error al actualizar batch: ${error.message}`);
@@ -4889,15 +5003,22 @@ export class FirestoreService {
     metadata?: Record<string, any>;
   }): Promise<string> {
     const docRef = this.firestore.collection(this.emailQueueCollection).doc();
+    const deletedRef = this.firestore
+      .collection(this.deletedAccountsCollection)
+      .doc(data.userId);
     const now = new Date();
 
-    await docRef.set({
-      ...data,
-      id: docRef.id,
-      status: 'pending',
-      scheduledFor: data.scheduledFor,
-      createdAt: now,
-      updatedAt: now,
+    await this.firestore.runTransaction(async (transaction) => {
+      const deleted = await transaction.get(deletedRef);
+      this.assertAccountWritable(data.userId, deleted.exists);
+      transaction.create(docRef, {
+        ...data,
+        id: docRef.id,
+        status: 'pending',
+        scheduledFor: data.scheduledFor,
+        createdAt: now,
+        updatedAt: now,
+      });
     });
 
     return docRef.id;
@@ -4943,6 +5064,32 @@ export class FirestoreService {
   }
 
   /**
+   * Reclama un email solo si continúa pendiente en el instante del envío.
+   * La transición condicional evita que dos workers lo manden y hace que una
+   * cancelación concurrente gane limpiamente la carrera.
+   */
+  async claimPendingEmail(emailId: string): Promise<boolean> {
+    const ref = this.firestore
+      .collection(this.emailQueueCollection)
+      .doc(emailId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const email = await transaction.get(ref);
+      if (!email.exists || email.get('status') !== 'pending') {
+        return false;
+      }
+
+      const now = new Date();
+      transaction.update(ref, {
+        status: 'sending',
+        sendingAt: now,
+        updatedAt: now,
+      });
+      return true;
+    });
+  }
+
+  /**
    * Update email queue status after sending
    */
   async updateEmailQueueStatus(
@@ -4979,15 +5126,27 @@ export class FirestoreService {
    * usuario desactivó esa categoría de notificaciones—, para que un hueco en la
    * secuencia de onboarding no parezca un fallo de entrega.
    */
-  async cancelQueuedEmail(emailId: string, skipReason: string): Promise<void> {
-    await this.firestore
+  async cancelQueuedEmail(
+    emailId: string,
+    skipReason: string,
+  ): Promise<boolean> {
+    const ref = this.firestore
       .collection(this.emailQueueCollection)
-      .doc(emailId)
-      .update({
+      .doc(emailId);
+
+    return this.firestore.runTransaction(async (transaction) => {
+      const email = await transaction.get(ref);
+      if (!email.exists || email.get('status') !== 'pending') {
+        return false;
+      }
+
+      transaction.update(ref, {
         status: 'cancelled',
         skipReason,
         updatedAt: new Date(),
       });
+      return true;
+    });
   }
 
   /**
@@ -5001,7 +5160,7 @@ export class FirestoreService {
       .collection(this.emailQueueCollection)
       .where('userId', '==', userId)
       .where('emailType', '==', emailType)
-      .where('status', 'in', ['pending', 'sent'])
+      .where('status', 'in', ['pending', 'sending', 'sent'])
       .limit(1)
       .get();
 
@@ -5021,7 +5180,7 @@ export class FirestoreService {
       .collection(this.emailQueueCollection)
       .where('userId', '==', userId)
       .where('emailType', '==', emailType)
-      .where('status', 'in', ['pending', 'sent'])
+      .where('status', 'in', ['pending', 'sending', 'sent'])
       .where('createdAt', '>=', periodStart)
       .limit(1)
       .get();
@@ -5074,16 +5233,26 @@ export class FirestoreService {
 
     const snapshot = await query.get();
 
-    const batch = this.firestore.batch();
-    snapshot.docs.forEach((doc) => {
-      batch.update(doc.ref, {
-        status: 'cancelled',
-        updatedAt: new Date(),
-      });
-    });
+    let cancelled = 0;
+    for (const doc of snapshot.docs) {
+      const didCancel = await this.firestore.runTransaction(
+        async (transaction) => {
+          const current = await transaction.get(doc.ref);
+          if (!current.exists || current.get('status') !== 'pending') {
+            return false;
+          }
 
-    await batch.commit();
-    return snapshot.size;
+          transaction.update(doc.ref, {
+            status: 'cancelled',
+            updatedAt: new Date(),
+          });
+          return true;
+        },
+      );
+      if (didCancel) cancelled++;
+    }
+
+    return cancelled;
   }
 
   // ============== Email Events Methods ==============
@@ -6258,7 +6427,7 @@ export class FirestoreService {
             'pro_inactive_14_days',
             'pro_inactive_30_days',
           ])
-          .where('status', 'in', ['pending', 'sent'])
+          .where('status', 'in', ['pending', 'sending', 'sent'])
           .get(),
       );
       const emailSnapshots = await Promise.all(emailPromises);
@@ -6582,7 +6751,7 @@ export class FirestoreService {
             'free_dormant_30d',
             'free_abandoned_60d',
           ])
-          .where('status', 'in', ['pending', 'sent'])
+          .where('status', 'in', ['pending', 'sending', 'sent'])
           .get(),
       );
       const emailSnapshots = await Promise.all(emailPromises);
@@ -7163,14 +7332,22 @@ export class FirestoreService {
     outputFormat: string;
   }): Promise<void> {
     try {
-      await this.firestore
+      const debugRef = this.firestore
         .collection(this.zplDebugCollection)
-        .doc(data.jobId)
-        .set({
+        .doc(data.jobId);
+      const deletedRef = this.firestore
+        .collection(this.deletedAccountsCollection)
+        .doc(data.userId);
+
+      await this.firestore.runTransaction(async (transaction) => {
+        const deleted = await transaction.get(deletedRef);
+        this.assertAccountWritable(data.userId, deleted.exists);
+        transaction.set(debugRef, {
           ...data,
           createdAt: new Date(),
           result: 'pending',
         });
+      });
       this.logger.debug(`ZPL debug file saved: ${data.jobId}`);
     } catch (error) {
       this.logger.error(`Error saving ZPL debug file: ${error.message}`);
@@ -7187,10 +7364,24 @@ export class FirestoreService {
       const updateData: Record<string, any> = { result };
       if (errorCode) updateData.errorCode = errorCode;
 
-      await this.firestore
+      const debugRef = this.firestore
         .collection(this.zplDebugCollection)
-        .doc(jobId)
-        .update(updateData);
+        .doc(jobId);
+      await this.firestore.runTransaction(async (transaction) => {
+        const debug = await transaction.get(debugRef);
+        const userId = debug.get('userId');
+
+        if (userId) {
+          const deleted = await transaction.get(
+            this.firestore
+              .collection(this.deletedAccountsCollection)
+              .doc(userId),
+          );
+          this.assertAccountWritable(userId, deleted.exists);
+        }
+
+        transaction.update(debugRef, updateData);
+      });
     } catch (error) {
       this.logger.warn(`Error updating ZPL debug result: ${error.message}`);
     }

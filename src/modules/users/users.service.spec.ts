@@ -2008,14 +2008,35 @@ describe('UsersService — foto de perfil', () => {
  * (issue #99).
  */
 describe('UsersService — preferencias de notificación', () => {
-  function buildService(user: Record<string, unknown> | null) {
+  function buildService(
+    user: Record<string, any> | null,
+    concurrentChanges: Record<string, boolean> = {},
+  ) {
+    const storedUser = user
+      ? {
+          ...user,
+          notificationPreferences: {
+            ...(user.notificationPreferences || {}),
+          },
+        }
+      : null;
     const updateNotificationPreferences = jest
       .fn()
-      .mockResolvedValue(undefined);
+      .mockImplementation(
+        async (_userId: string, changes: Record<string, boolean>) => {
+          if (storedUser) {
+            storedUser.notificationPreferences = {
+              ...storedUser.notificationPreferences,
+              ...changes,
+              ...concurrentChanges,
+            };
+          }
+        },
+      );
     const service: any = Object.create(UsersService.prototype);
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.firestoreService = {
-      getUserById: jest.fn().mockResolvedValue(user),
+      getUserById: jest.fn().mockImplementation(() => storedUser),
       updateNotificationPreferences,
     };
     return { service, updateNotificationPreferences };
@@ -2097,6 +2118,32 @@ describe('UsersService — preferencias de notificación', () => {
     expect(result.billing).toBe(false);
   });
 
+  it('relee el estado persistido después de una actualización concurrente', async () => {
+    const { service } = buildService(
+      {
+        id: 'uid-1',
+        notificationPreferences: {
+          product: true,
+          billing: true,
+          usageReminders: true,
+        },
+      },
+      { billing: false },
+    );
+
+    const result = await service.updateNotificationPreferences('uid-1', {
+      product: false,
+    });
+
+    // El otro PUT cambió billing durante nuestro await. Componer la respuesta
+    // con la lectura inicial lo devolvería reactivado aunque Firestore diga no.
+    expect(result).toEqual({
+      product: false,
+      billing: false,
+      usageReminders: true,
+    });
+  });
+
   it('rechaza a un usuario que no existe', async () => {
     const { service } = buildService(null);
 
@@ -2106,5 +2153,50 @@ describe('UsersService — preferencias de notificación', () => {
     await expect(
       service.updateNotificationPreferences('uid-1', { product: false }),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+/**
+ * Los trabajos asíncronos sobreviven a la request que los creó. La lápida se
+ * consulta de nuevo al autorizar y al registrar para que ese desfase no deje
+ * historial o uso bajo un UID ya dado de baja.
+ */
+describe('UsersService — marca de baja en conversiones', () => {
+  function buildMarkedService() {
+    const service: any = Object.create(UsersService.prototype);
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestoreService = {
+      isAccountDeletionMarked: jest.fn().mockResolvedValue(true),
+      getUserById: jest.fn(),
+      saveConversionHistory: jest.fn(),
+      incrementUsageWithPeriod: jest.fn(),
+    };
+    return service;
+  }
+
+  it('rechaza una autorización nueva sin volver a crear usage', async () => {
+    const service = buildMarkedService();
+
+    await expect(service.checkCanConvert('uid-1', 1)).resolves.toEqual({
+      allowed: false,
+      error: 'User not found',
+      errorCode: 'USER_NOT_FOUND',
+      userEmail: null,
+    });
+    expect(service.firestoreService.getUserById).not.toHaveBeenCalled();
+  });
+
+  it('aborta un trabajo que terminó después de iniciarse la baja', async () => {
+    const service = buildMarkedService();
+
+    await expect(
+      service.recordConversion('uid-1', 'job-1', 1, '4x6', 'completed'),
+    ).rejects.toBeInstanceOf(GoneException);
+    expect(
+      service.firestoreService.saveConversionHistory,
+    ).not.toHaveBeenCalled();
+    expect(
+      service.firestoreService.incrementUsageWithPeriod,
+    ).not.toHaveBeenCalled();
   });
 });

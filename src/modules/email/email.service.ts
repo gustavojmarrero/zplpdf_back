@@ -312,8 +312,14 @@ export class EmailService {
             continue;
           }
 
-          await this.sendEmail(email);
-          sent++;
+          const didSend = await this.sendEmail(email);
+          if (didSend) {
+            sent++;
+          } else {
+            // Otro worker pudo reclamar el documento o una baja cancelarlo
+            // después de getPendingEmails. Ninguno de los dos casos es fallo.
+            skipped++;
+          }
         } catch (error) {
           this.logger.error(
             `Failed to send email ${email.id}: ${error.message}`,
@@ -408,7 +414,7 @@ export class EmailService {
     abVariant: string;
     language: string;
     metadata?: Record<string, any>;
-  }): Promise<void> {
+  }): Promise<boolean> {
     try {
       // Get template from Firestore (required - no fallback)
       const firestoreTemplate =
@@ -455,6 +461,16 @@ export class EmailService {
         .replace(/\s+/g, ' ')
         .trim();
 
+      // La lista de pendientes es solo un snapshot. La transición atómica es
+      // la autorización real para enviar: si el documento fue cancelado o ya
+      // lo tomó otro worker, Resend no debe recibir esta llamada.
+      const claimed = await this.firestoreService.claimPendingEmail(
+        queueItem.id,
+      );
+      if (!claimed) {
+        return false;
+      }
+
       // Send via Resend
       const result = await this.resend.emails.send({
         from: this.fromEmail,
@@ -479,6 +495,7 @@ export class EmailService {
       this.logger.debug(
         `Email sent to ${queueItem.userEmail}: ${result.data?.id}`,
       );
+      return true;
     } catch (error) {
       // Update queue status with error
       await this.firestoreService.updateEmailQueueStatus(

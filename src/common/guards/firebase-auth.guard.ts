@@ -43,6 +43,16 @@ export class FirebaseAuthGuard implements CanActivate {
 
     // Lazy user creation: buscar o crear usuario en Firestore
     try {
+      // La cuenta de Auth todavía puede existir mientras la baja barre datos o
+      // si su borrado fue el último paso en fallar. La lápida de Firestore es la
+      // segunda red: bloquea tráfico nuevo y, sobre todo, impide que el camino
+      // de creación perezosa resucite el perfil entre ambos borrados.
+      if (
+        await this.firestoreService.isAccountDeletionMarked(decodedToken.uid)
+      ) {
+        throw new UnauthorizedException('Account no longer exists');
+      }
+
       let user = await this.firestoreService.getUserById(decodedToken.uid);
 
       if (!user) {

@@ -79,6 +79,8 @@ function buildService(
     deleteTaxProfile: jest.fn().mockResolvedValue(true),
     anonymizeUserCfdis: jest.fn().mockResolvedValue(3),
     cancelPendingEmails: jest.fn().mockResolvedValue(0),
+    markAccountDeletion: jest.fn().mockResolvedValue(undefined),
+    clearAccountDeletionMark: jest.fn().mockResolvedValue(undefined),
     deleteUser: jest.fn().mockResolvedValue(undefined),
     ...overrides.firestore,
   };
@@ -168,6 +170,15 @@ describe('AccountDeletionService — baja completa', () => {
     expect(firestore.deleteUsageByUserId).toHaveBeenCalledWith('uid-1');
     expect(firestore.deleteUser).toHaveBeenCalledWith('uid-1');
     expect(firebaseAdmin.deleteUser).toHaveBeenCalledWith('uid-1');
+    // La lápida queda como segunda red para los ID tokens que sigan vivos tras
+    // borrar Auth; retirarla aquí permitiría recrear el perfil.
+    expect(firestore.markAccountDeletion).toHaveBeenCalledWith('uid-1');
+    expect(firestore.clearAccountDeletionMark).not.toHaveBeenCalled();
+    expect(
+      firestore.markAccountDeletion.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      firestore.scanUserConversionHistory.mock.invocationCallOrder[0],
+    );
   });
 
   it('borra los batches del usuario y los ZIP que cuelgan de ellos', async () => {
@@ -567,6 +578,9 @@ describe('AccountDeletionService — borrado parcial', () => {
     expect(response.data.accountDeleted).toBe(false);
     expect(firestore.deleteUser).not.toHaveBeenCalled();
     expect(firebaseAdmin.deleteUser).not.toHaveBeenCalled();
+    // Con Auth conservado, mantener la lápida bloquearía precisamente el
+    // acceso que hace posible reintentar la limpieza.
+    expect(firestore.clearAccountDeletionMark).toHaveBeenCalledWith('uid-1');
     // Los pasos posteriores al que falló sí se ejecutan.
     expect(firestore.anonymizeUserCfdis).toHaveBeenCalled();
   });

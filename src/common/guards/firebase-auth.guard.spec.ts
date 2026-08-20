@@ -24,6 +24,7 @@ describe('FirebaseAuthGuard — cuentas borradas', () => {
   function buildGuard(options: {
     storedUser?: Record<string, any> | null;
     getUser?: jest.Mock;
+    deletionMarked?: boolean;
   }) {
     const createUser = jest.fn().mockResolvedValue(undefined);
     const getUser =
@@ -38,6 +39,9 @@ describe('FirebaseAuthGuard — cuentas borradas', () => {
         getUser,
       } as any,
       {
+        isAccountDeletionMarked: jest
+          .fn()
+          .mockResolvedValue(options.deletionMarked ?? false),
         getUserById: jest.fn().mockResolvedValue(options.storedUser ?? null),
         createUser,
       } as any,
@@ -60,6 +64,22 @@ describe('FirebaseAuthGuard — cuentas borradas', () => {
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it('no recrea ni admite un uid con una baja marcada aunque Auth siga vivo', async () => {
+    const { guard, createUser, getUser } = buildGuard({
+      storedUser: null,
+      deletionMarked: true,
+    });
+    const { context } = buildContext();
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    // Durante el barrido Auth existe todavía: consultarlo no puede convertir
+    // esa existencia transitoria en permiso para resucitar el perfil.
+    expect(getUser).not.toHaveBeenCalled();
     expect(createUser).not.toHaveBeenCalled();
   });
 

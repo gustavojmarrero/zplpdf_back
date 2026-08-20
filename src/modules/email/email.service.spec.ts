@@ -600,8 +600,11 @@ describe('EmailService.processQueue — preferencias de notificación', () => {
     getPendingEmails: jest.Mock;
     getUserById: jest.Mock;
     cancelQueuedEmail: jest.Mock;
+    claimPendingEmail: jest.Mock;
+    getEmailTemplateByKey: jest.Mock;
     updateEmailQueueStatus: jest.Mock;
   };
+  let sendEmailSpy: jest.SpyInstance;
 
   function queued(overrides: Record<string, any> = {}) {
     return {
@@ -621,6 +624,8 @@ describe('EmailService.processQueue — preferencias de notificación', () => {
       getPendingEmails: jest.fn().mockResolvedValue([]),
       getUserById: jest.fn().mockResolvedValue({ id: 'uid-1' }),
       cancelQueuedEmail: jest.fn().mockResolvedValue(undefined),
+      claimPendingEmail: jest.fn().mockResolvedValue(true),
+      getEmailTemplateByKey: jest.fn(),
       updateEmailQueueStatus: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -641,9 +646,9 @@ describe('EmailService.processQueue — preferencias de notificación', () => {
 
     service = module.get<EmailService>(EmailService);
     // El envío real se prueba aparte; aquí interesa quién llega a él.
-    jest
+    sendEmailSpy = jest
       .spyOn(service as any, 'sendEmail')
-      .mockResolvedValue(undefined as never);
+      .mockResolvedValue(true as never);
   });
 
   it('envía cuando la categoría del email sigue activada', async () => {
@@ -657,6 +662,30 @@ describe('EmailService.processQueue — preferencias de notificación', () => {
 
     expect((service as any).sendEmail).toHaveBeenCalled();
     expect(result).toMatchObject({ sent: 1, skipped: 0, failed: 0 });
+  });
+
+  it('no envía si el documento fue cancelado después de cargar la tanda', async () => {
+    firestore.getPendingEmails.mockResolvedValue([queued()]);
+    firestore.getEmailTemplateByKey.mockResolvedValue({
+      content: {
+        A: {
+          es: { subject: 'Asunto', body: '<p>Contenido</p>' },
+        },
+      },
+    });
+    firestore.claimPendingEmail.mockResolvedValue(false);
+    sendEmailSpy.mockRestore();
+    const resendSend = jest.fn();
+    (service as any).resend = { emails: { send: resendSend } };
+
+    const result = await service.processQueue();
+
+    // El snapshot seguía diciendo pending, pero la transacción es la autoridad
+    // final. Sobrescribir cancelled con sent reactivaría un correo de la baja.
+    expect(firestore.claimPendingEmail).toHaveBeenCalledWith('q-1');
+    expect(resendSend).not.toHaveBeenCalled();
+    expect(firestore.updateEmailQueueStatus).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ sent: 0, failed: 0, skipped: 1 });
   });
 
   it('no envía un email de producto si el usuario desactivó esa categoría', async () => {
