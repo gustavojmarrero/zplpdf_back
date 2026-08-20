@@ -1,14 +1,17 @@
 import {
   Injectable,
   Logger,
+  BadRequestException,
   ForbiddenException,
   GoneException,
   NotFoundException,
+  PayloadTooLargeException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
+import sharp from 'sharp';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { FirebaseAdminService } from '../auth/firebase-admin.service.js';
 import {
@@ -30,6 +33,7 @@ import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
+import { ProfilePhotoResponseDto } from './dto/profile-photo.dto.js';
 import {
   GetHistoryQueryDto,
   HistorySortBy,
@@ -80,6 +84,20 @@ export const MAX_HISTORY_SCAN = 1000;
  * rechace el body.
  */
 export const MAX_RECONVERTIBLE_ZPL_SIZE_BYTES = 4 * 1024 * 1024;
+
+/** Peso máximo admitido para la foto de perfil antes de normalizarla. */
+export const MAX_PROFILE_PHOTO_BYTES = 2 * 1024 * 1024;
+
+/** Lado del avatar cuadrado que se guarda en Storage. */
+export const PROFILE_PHOTO_SIZE_PX = 256;
+
+/**
+ * Formatos admitidos, decididos por el contenido real del archivo (lo que
+ * detecta sharp) y no por el `Content-Type` que declara el cliente, que es
+ * trivial de falsear. Fuera queda el SVG, que sharp también sabe leer pero que
+ * en un bucket público sería un vector de XSS.
+ */
+export const ALLOWED_PROFILE_PHOTO_FORMATS = ['jpeg', 'png', 'webp'];
 
 /** TTL de la caché en memoria del escaneo de historial. */
 const HISTORY_SCAN_CACHE_TTL_MS = 60_000;
@@ -280,9 +298,11 @@ export class UsersService {
 
     // Obtener estado fresco de emailVerified desde Firebase Auth
     let emailVerified = user.emailVerified ?? false;
+    let authPhotoURL: string | undefined;
     try {
       const firebaseUser = await this.firebaseAdminService.getUser(userId);
       emailVerified = firebaseUser.emailVerified;
+      authPhotoURL = firebaseUser.photoURL ?? undefined;
     } catch (error) {
       this.logger.warn(
         `Could not fetch Firebase user for emailVerified: ${error.message}`,
@@ -293,11 +313,31 @@ export class UsersService {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
+      photoURL: this.resolveProfilePhotoURL(user, authPhotoURL),
       emailVerified,
       plan: this.getEffectivePlan(user),
       createdAt: user.createdAt,
       hasStripeSubscription: !!user.stripeSubscriptionId,
     };
+  }
+
+  /**
+   * Decide qué foto ve el frontend.
+   *
+   * `photoURL: null` en Firestore significa que el usuario quitó la suya a
+   * propósito, y entonces no se cae en la del proveedor de acceso: la respuesta
+   * viene sin foto y el frontend pinta las iniciales. El campo ausente es otra
+   * cosa —nunca subió ninguna—, y ahí sí vale la de Google.
+   */
+  resolveProfilePhotoURL(
+    user: Pick<User, 'photoURL'>,
+    authPhotoURL?: string,
+  ): string | undefined {
+    if (user.photoURL === null) {
+      return undefined;
+    }
+
+    return user.photoURL ?? authPhotoURL;
   }
 
   async getVerificationStatus(userId: string): Promise<VerificationStatusDto> {
@@ -308,6 +348,141 @@ export class UsersService {
       emailVerified: firebaseUser.emailVerified,
       email: firebaseUser.email || '',
     };
+  }
+
+  /**
+   * Ruta del avatar en el bucket público.
+   *
+   * Fija por usuario y con extensión fija: cada subida sobrescribe la anterior,
+   * de modo que no quedan objetos huérfanos que limpiar después.
+   */
+  getProfilePhotoPath(userId: string): string {
+    return `users/${userId}/avatar.webp`;
+  }
+
+  /**
+   * Guarda la foto de perfil del usuario: valida, normaliza a un cuadrado
+   * WebP de `PROFILE_PHOTO_SIZE_PX` de lado y publica la URL en Firestore y en
+   * Firebase Auth.
+   */
+  async uploadProfilePhoto(
+    userId: string,
+    file?: Express.Multer.File,
+  ): Promise<ProfilePhotoResponseDto> {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException({
+        error: ErrorCodes.NO_FILES,
+        message: 'A photo file is required',
+      });
+    }
+
+    // `size` lo pone multer; el buffer es la fuente de verdad si no viene.
+    const size = file.size ?? file.buffer.length;
+    if (size > MAX_PROFILE_PHOTO_BYTES) {
+      throw new PayloadTooLargeException({
+        error: ErrorCodes.IMAGE_TOO_LARGE,
+        message: 'Photo exceeds the maximum allowed size',
+        data: { maxBytes: MAX_PROFILE_PHOTO_BYTES, bytes: size },
+      });
+    }
+
+    const user = await this.firestoreService.getUserById(userId);
+    if (!user) {
+      throw new NotFoundException({
+        error: ErrorCodes.USER_NOT_FOUND,
+        message: 'User not found',
+      });
+    }
+
+    const normalized = await this.normalizeProfilePhoto(file.buffer);
+
+    const baseUrl = await this.storageService.savePublicFile(
+      this.getProfilePhotoPath(userId),
+      normalized,
+      'image/webp',
+    );
+    // La ruta del objeto no cambia entre subidas, así que sin versión en la
+    // query el navegador —y cualquier caché intermedia— seguiría sirviendo la
+    // foto anterior.
+    const photoURL = `${baseUrl}?v=${Date.now()}`;
+
+    // Firebase Auth primero: es de donde sale el claim `picture` del token, que
+    // es lo que el frontend pinta nada más refrescarlo. Si esta escritura falla,
+    // el error sube y Firestore no queda apuntando a una foto que el token
+    // todavía desconoce; reintentar es idempotente porque la ruta es la misma.
+    await this.firebaseAdminService.updateUser(userId, { photoURL });
+    await this.firestoreService.updateUser(userId, { photoURL });
+
+    this.logger.log(`Foto de perfil actualizada para ${userId}`);
+
+    return { photoURL };
+  }
+
+  /**
+   * Quita la foto de perfil: borra el objeto y deja el campo a `null` en
+   * Firestore y en Firebase Auth, que es lo que devuelve al usuario a sus
+   * iniciales.
+   */
+  async deleteProfilePhoto(userId: string): Promise<void> {
+    const user = await this.firestoreService.getUserById(userId);
+    if (!user) {
+      throw new NotFoundException({
+        error: ErrorCodes.USER_NOT_FOUND,
+        message: 'User not found',
+      });
+    }
+
+    await this.storageService.deletePublicFile(
+      this.getProfilePhotoPath(userId),
+    );
+
+    await this.firebaseAdminService.updateUser(userId, { photoURL: null });
+    // `null` explícito, no borrar el campo: distingue "quitó su foto" de "nunca
+    // subió ninguna", y es esa diferencia la que decide si el perfil vuelve a
+    // caer en la foto del proveedor de acceso.
+    await this.firestoreService.updateUser(userId, { photoURL: null });
+
+    this.logger.log(`Foto de perfil eliminada para ${userId}`);
+  }
+
+  /**
+   * Valida el formato por el contenido del archivo y devuelve el avatar ya
+   * recortado a cuadrado, reescalado y convertido a WebP. Servir el original
+   * significaría mandar 8 MP para pintarlos en 64 px.
+   */
+  private async normalizeProfilePhoto(buffer: Buffer): Promise<Buffer> {
+    let format: string | undefined;
+
+    try {
+      format = (await sharp(buffer).metadata()).format;
+    } catch (error) {
+      this.logger.warn(`Foto de perfil ilegible: ${error.message}`);
+      format = undefined;
+    }
+
+    if (!format || !ALLOWED_PROFILE_PHOTO_FORMATS.includes(format)) {
+      throw new BadRequestException({
+        error: ErrorCodes.UNSUPPORTED_IMAGE_TYPE,
+        message: 'Unsupported image format',
+        data: {
+          allowed: ALLOWED_PROFILE_PHOTO_FORMATS,
+          format: format ?? null,
+        },
+      });
+    }
+
+    return (
+      sharp(buffer)
+        // La orientación EXIF se aplica antes de recortar: sin esto, una foto de
+        // móvil se recorta girada y el encuadre sale mal.
+        .rotate()
+        .resize(PROFILE_PHOTO_SIZE_PX, PROFILE_PHOTO_SIZE_PX, {
+          fit: 'cover',
+          position: 'centre',
+        })
+        .webp({ quality: 82 })
+        .toBuffer()
+    );
   }
 
   async getUserLimits(userId: string): Promise<UserLimitsDto> {

@@ -9,6 +9,14 @@ export class StorageService {
   private storage: Storage;
   private readonly logger = new Logger(StorageService.name);
   private readonly bucketName: string;
+  /**
+   * Bucket de solo lectura pública. Los avatares se sirven por URL estable —se
+   * guardan en el perfil y en el claim `picture` del token—, así que no pueden
+   * ser URLs firmadas: caducarían y la foto dejaría de cargar. El bucket
+   * principal no vale porque ahí viven los PDF y los ZPL de los usuarios, que
+   * solo se entregan firmados.
+   */
+  private readonly publicBucketName: string;
 
   constructor(
     private configService: ConfigService,
@@ -21,6 +29,9 @@ export class StorageService {
     this.bucketName =
       this.configService.get<string>('GCP_STORAGE_BUCKET') ||
       'zplpdf-app-files';
+    this.publicBucketName =
+      this.configService.get<string>('GCP_PUBLIC_BUCKET') ||
+      'zplpdf-public-assets';
     this.storage = new Storage(this.googleAuthOptions);
   }
 
@@ -154,5 +165,51 @@ export class StorageService {
     const [url] = await file.getSignedUrl(options);
 
     return url;
+  }
+
+  /** URL pública (sin firmar) de un objeto del bucket público. */
+  getPublicFileUrl(filePath: string): string {
+    return `https://storage.googleapis.com/${this.publicBucketName}/${filePath}`;
+  }
+
+  /**
+   * Guarda un archivo en el bucket de lectura pública y devuelve su URL.
+   *
+   * Sobrescribe el objeto si ya existe: los avatares usan una ruta fija por
+   * usuario para no acumular huérfanos, y quien llama añade una versión en la
+   * query para invalidar la caché.
+   */
+  async savePublicFile(
+    filePath: string,
+    content: Buffer,
+    contentType: string,
+    cacheControl = 'public, max-age=86400',
+  ): Promise<string> {
+    await this.storage
+      .bucket(this.publicBucketName)
+      .file(filePath)
+      .save(content, { metadata: { contentType, cacheControl } });
+
+    return this.getPublicFileUrl(filePath);
+  }
+
+  /**
+   * Borra un archivo del bucket público.
+   *
+   * El 404 no es un error: quitar una foto que ya no está en Storage —porque
+   * nunca se subió o porque se borró antes— debe dejar el perfil limpio igual.
+   */
+  async deletePublicFile(filePath: string): Promise<void> {
+    try {
+      await this.storage.bucket(this.publicBucketName).file(filePath).delete();
+    } catch (error) {
+      if (error?.code === 404) {
+        return;
+      }
+      this.logger.error(
+        `Error al borrar el archivo público ${filePath}: ${error.message}`,
+      );
+      throw error;
+    }
   }
 }
