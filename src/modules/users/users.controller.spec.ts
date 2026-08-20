@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { UsersController } from './users.controller.js';
-import { UsersService } from './users.service.js';
+import { UsersService, MAX_PROFILE_PHOTO_BYTES } from './users.service.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter.js';
 
@@ -129,5 +129,100 @@ describe('UsersController — rutas del historial', () => {
       .expect(404);
 
     expect(response.body.error).toBe('HISTORY_NOT_FOUND');
+  });
+});
+
+/**
+ * El contrato de la foto de perfil se apoya en dos piezas de cableado que solo
+ * fallan en HTTP real: que el multipart llegue al servicio como `file`, y que el
+ * corte por tamaño de multer salga con `IMAGE_TOO_LARGE` y no con el código
+ * genérico del filtro. El frontend está en cuatro idiomas y traduce por código.
+ */
+describe('UsersController — foto de perfil', () => {
+  const UID = 'uid-foto';
+  const PHOTO_URL =
+    'https://storage.googleapis.com/zplpdf-public-assets/users/uid-foto/avatar.webp?v=1';
+
+  let app: INestApplication;
+  let usersService: {
+    uploadProfilePhoto: jest.Mock;
+    deleteProfilePhoto: jest.Mock;
+  };
+
+  beforeEach(async () => {
+    usersService = {
+      uploadProfilePhoto: jest.fn().mockResolvedValue({ photoURL: PHOTO_URL }),
+      deleteProfilePhoto: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      controllers: [UsersController],
+      providers: [{ provide: UsersService, useValue: usersService }],
+    })
+      .overrideGuard(FirebaseAuthGuard)
+      .useValue({
+        canActivate: (context) => {
+          context.switchToHttp().getRequest().user = { uid: UID };
+          return true;
+        },
+      })
+      .compile();
+
+    app = moduleRef.createNestApplication();
+    app.useGlobalFilters(new HttpExceptionFilter());
+    await app.init();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('POST /users/me/photo pasa el archivo al servicio y devuelve { photoURL }', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/users/me/photo')
+      .attach('file', Buffer.alloc(1024), {
+        filename: 'avatar.png',
+        contentType: 'image/png',
+      })
+      .expect(200);
+
+    expect(response.body).toEqual({ photoURL: PHOTO_URL });
+    const [uid, file] = usersService.uploadProfilePhoto.mock.calls[0];
+    expect(uid).toBe(UID);
+    expect(file.originalname).toBe('avatar.png');
+    expect(file.buffer).toHaveLength(1024);
+  });
+
+  it('POST /users/me/photo corta por tamaño con IMAGE_TOO_LARGE sin llegar al servicio', async () => {
+    // Multer aborta antes que el handler: el interceptor traductor es lo único
+    // que impide que el frontend reciba el código del ZPL (FILE_TOO_LARGE) con
+    // otro límite.
+    const response = await request(app.getHttpServer())
+      .post('/users/me/photo')
+      .attach('file', Buffer.alloc(MAX_PROFILE_PHOTO_BYTES + 1024), {
+        filename: 'enorme.png',
+        contentType: 'image/png',
+      })
+      .expect(413);
+
+    expect(response.body.error).toBe('IMAGE_TOO_LARGE');
+    expect(usersService.uploadProfilePhoto).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /users/me/photo responde 204 sin cuerpo', async () => {
+    const response = await request(app.getHttpServer())
+      .delete('/users/me/photo')
+      .expect(204);
+
+    expect(usersService.deleteProfilePhoto).toHaveBeenCalledWith(UID);
+    expect(response.body).toEqual({});
+  });
+
+  it('DELETE /users/me/photo no colisiona con DELETE /users/history/:id', async () => {
+    // `history/:id` y `me/photo` conviven en el mismo controlador; si el orden
+    // de declaración fuera otro, el borrado de foto entraría por el historial.
+    await request(app.getHttpServer()).delete('/users/me/photo').expect(204);
+
+    expect(usersService.deleteProfilePhoto).toHaveBeenCalledTimes(1);
   });
 });

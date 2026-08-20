@@ -29,6 +29,12 @@ export interface User {
   id: string;
   email: string;
   displayName?: string;
+  /**
+   * Foto de perfil subida por el usuario (`POST /users/me/photo`). `null` cuando
+   * la quitó a propósito: el frontend muestra entonces las iniciales en vez de
+   * caer en la foto de la cuenta de Google.
+   */
+  photoURL?: string | null;
   emailVerified: boolean;
   plan: PlanType;
   role: UserRole;

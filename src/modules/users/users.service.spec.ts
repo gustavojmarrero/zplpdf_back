@@ -7,14 +7,20 @@ jest.mock('stripe', () => jest.fn());
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import {
+  BadRequestException,
   ForbiddenException,
   GoneException,
   NotFoundException,
+  PayloadTooLargeException,
 } from '@nestjs/common';
+import sharp from 'sharp';
 import {
   UsersService,
   MAX_HISTORY_SCAN,
+  MAX_PROFILE_PHOTO_BYTES,
+  MAX_PROFILE_PHOTO_PIXELS,
   MAX_RECONVERTIBLE_ZPL_SIZE_BYTES,
+  PROFILE_PHOTO_SIZE_PX,
 } from './users.service.js';
 import { ZPL_RETENTION_DAYS } from '../../common/interfaces/conversion-history.interface.js';
 import {
@@ -1370,6 +1376,628 @@ describe('UsersService — acciones sobre el historial', () => {
       expect(firestoreService.getSavedZplDatesByJobId).toHaveBeenCalledWith(
         Array.from({ length: 10 }, (_, i) => `job-${i}`),
       );
+    });
+  });
+});
+
+/**
+ * La foto de perfil no podía guardarse en ningún sitio (issue #106): Firebase
+ * Storage está deshabilitado en el proyecto, así que el avatar vive en el bucket
+ * público de GCS. Lo que estos tests protegen es que la imagen se valide por su
+ * contenido, que salga normalizada y que la URL llegue TAMBIÉN a Firebase Auth:
+ * sin eso el claim `picture` del token sigue sirviendo la foto de Google.
+ */
+describe('UsersService — foto de perfil', () => {
+  const UID = 'uid-foto';
+  const PUBLIC_URL = `https://storage.googleapis.com/zplpdf-public-assets/users/${UID}/avatar.webp`;
+
+  function buildService(user: Record<string, unknown> | null = { id: UID }) {
+    const firestoreService = {
+      getUserById: jest.fn().mockResolvedValue(user),
+      updateUser: jest.fn().mockResolvedValue(undefined),
+    };
+    const firebaseAdminService = {
+      updateUser: jest.fn().mockResolvedValue({}),
+      getUser: jest.fn().mockResolvedValue({ emailVerified: true }),
+    };
+    const storageService = {
+      readPublicFile: jest.fn().mockResolvedValue(null),
+      savePublicFile: jest
+        .fn()
+        .mockResolvedValue({ url: PUBLIC_URL, generation: '17' }),
+      deletePublicFile: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service: any = Object.create(UsersService.prototype);
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestoreService = firestoreService;
+    service.firebaseAdminService = firebaseAdminService;
+    service.storageService = storageService;
+    service.profilePhotoOperations = new Map<string, Promise<void>>();
+
+    return { service, firestoreService, firebaseAdminService, storageService };
+  }
+
+  function promesaControlada(): {
+    promise: Promise<void>;
+    resolve: () => void;
+  } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+
+    return { promise, resolve };
+  }
+
+  async function imagen(
+    formato: 'png' | 'jpeg' | 'webp' | 'gif',
+    width = 800,
+    height = 400,
+  ): Promise<Buffer> {
+    const base = sharp({
+      create: {
+        width,
+        height,
+        channels: 3,
+        background: { r: 10, g: 120, b: 200 },
+      },
+    });
+
+    return formato === 'gif'
+      ? base.gif().toBuffer()
+      : base.toFormat(formato).toBuffer();
+  }
+
+  function upload(buffer: Buffer): Express.Multer.File {
+    return {
+      buffer,
+      size: buffer.length,
+      mimetype: 'image/png',
+      originalname: 'avatar.png',
+    } as Express.Multer.File;
+  }
+
+  function crc32(buffer: Buffer): number {
+    let crc = 0xffffffff;
+
+    for (const byte of buffer) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) {
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      }
+    }
+
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  async function pngWithDeclaredDimensions(
+    width: number,
+    height: number,
+  ): Promise<Buffer> {
+    // Partimos de un PNG real de 1x1 y cambiamos solo su IHDR. `metadata()` lee
+    // las dimensiones declaradas sin decodificar el IDAT, de modo que podemos
+    // probar una cabecera de 42 MP con apenas unos bytes y sin agotar el runner.
+    const png = await imagen('png', 1, 1);
+    png.writeUInt32BE(width, 16);
+    png.writeUInt32BE(height, 20);
+    png.writeUInt32BE(crc32(png.subarray(12, 29)), 29);
+
+    return png;
+  }
+
+  describe('validación', () => {
+    it('rechaza la petición sin archivo con NO_FILES', async () => {
+      const { service } = buildService();
+
+      await expect(service.uploadProfilePhoto(UID, undefined)).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(
+        service.uploadProfilePhoto(UID, undefined),
+      ).rejects.toMatchObject({
+        response: { error: 'NO_FILES' },
+      });
+    });
+
+    it('rechaza por peso con IMAGE_TOO_LARGE y no toca Storage', async () => {
+      const { service, storageService } = buildService();
+      const grande = upload(Buffer.alloc(MAX_PROFILE_PHOTO_BYTES + 1));
+
+      await expect(
+        service.uploadProfilePhoto(UID, grande),
+      ).rejects.toMatchObject({
+        status: 413,
+        response: { error: 'IMAGE_TOO_LARGE' },
+      });
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un formato no admitido con UNSUPPORTED_IMAGE_TYPE', async () => {
+      // GIF: sharp sabe leerlo, así que llega hasta la lista de formatos. Es el
+      // caso que distingue "no es una imagen" de "es una imagen que no sirve".
+      const { service, storageService } = buildService();
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('gif'))),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { error: 'UNSUPPORTED_IMAGE_TYPE' },
+      });
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+    });
+
+    it('rechaza con IMAGE_TOO_LARGE una imagen de dimensiones desorbitadas', () => {
+      // El tope de 2 MB no acota el trabajo de decodificar: un PNG muy
+      // comprimido cabe de sobra declarando decenas de miles de píxeles por
+      // lado, y descomprimirlo cuesta gigabytes. Se mide antes de decodificar,
+      // así que la prueba va sobre las dimensiones y no sobre un archivo real
+      // de 40 MP, que no cabría en la memoria del runner.
+      const { service } = buildService();
+
+      expect(() =>
+        service.assertWithinPixelBudget('png', 30_000, 30_000),
+      ).toThrow(PayloadTooLargeException);
+      try {
+        service.assertWithinPixelBudget('png', 30_000, 30_000);
+      } catch (error: any) {
+        expect(error.response).toMatchObject({
+          error: 'IMAGE_TOO_LARGE',
+          data: { maxPixels: MAX_PROFILE_PHOTO_PIXELS, pixels: 900_000_000 },
+        });
+      }
+    });
+
+    it('rechaza por el camino real de upload una cabecera de más de 40 MP', async () => {
+      const { service, storageService } = buildService();
+      const width = 7000;
+      const height = 6000;
+      const png = await pngWithDeclaredDimensions(width, height);
+
+      expect(png.length).toBeLessThan(1024);
+      await expect(
+        service.uploadProfilePhoto(UID, upload(png)),
+      ).rejects.toMatchObject({
+        status: 413,
+        response: {
+          error: 'IMAGE_TOO_LARGE',
+          data: {
+            maxPixels: MAX_PROFILE_PHOTO_PIXELS,
+            pixels: width * height,
+            width,
+            height,
+          },
+        },
+      });
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+    });
+
+    it('deja pasar una foto de cámara normal', () => {
+      // 24 MP (6000x4000) es una réflex cualquiera: el tope está para las bombas
+      // de descompresión, no para las fotos de los usuarios.
+      const { service } = buildService();
+
+      expect(() =>
+        service.assertWithinPixelBudget('jpeg', 6000, 4000),
+      ).not.toThrow();
+    });
+
+    it('trata como formato inválido lo que no declara dimensiones', () => {
+      const { service } = buildService();
+
+      expect(() =>
+        service.assertWithinPixelBudget('png', undefined, 10),
+      ).toThrow(BadRequestException);
+    });
+
+    it('rechaza como 400 una imagen cuya cabecera es válida pero el cuerpo no', async () => {
+      // Un PNG truncado pasa el examen de `metadata()` y revienta al decodificar.
+      // Sigue siendo entrada inválida: como 500 diríamos que el fallo es nuestro
+      // y el frontend se quedaría sin código que traducir.
+      const { service, storageService } = buildService();
+      const png = await imagen('png');
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(png.subarray(0, 120))),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { error: 'UNSUPPORTED_IMAGE_TYPE' },
+      });
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un archivo que no es una imagen', async () => {
+      const { service } = buildService();
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(Buffer.from('no soy una foto'))),
+      ).rejects.toMatchObject({
+        response: { error: 'UNSUPPORTED_IMAGE_TYPE' },
+      });
+    });
+
+    it.each(['png', 'jpeg', 'webp'] as const)('acepta %s', async (formato) => {
+      const { service, storageService } = buildService();
+
+      await service.uploadProfilePhoto(UID, upload(await imagen(formato)));
+
+      expect(storageService.savePublicFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('responde USER_NOT_FOUND si el perfil no existe', async () => {
+      const { service, storageService } = buildService(null);
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toMatchObject({
+        status: 404,
+        response: { error: 'USER_NOT_FOUND' },
+      });
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('normalización y guardado', () => {
+    it('recorta a cuadrado y reescala a 256 px en WebP', async () => {
+      const { service, storageService } = buildService();
+
+      await service.uploadProfilePhoto(
+        UID,
+        upload(await imagen('png', 800, 400)),
+      );
+
+      const [path, buffer, contentType] =
+        storageService.savePublicFile.mock.calls[0];
+      expect(path).toBe(`users/${UID}/avatar.webp`);
+      expect(contentType).toBe('image/webp');
+
+      const meta = await sharp(buffer).metadata();
+      expect(meta.format).toBe('webp');
+      expect(meta.width).toBe(PROFILE_PHOTO_SIZE_PX);
+      expect(meta.height).toBe(PROFILE_PHOTO_SIZE_PX);
+      // El original pesa lo suyo; servirlo tal cual para pintarlo en 64 px es
+      // justo lo que el endpoint evita.
+      expect(buffer.length).toBeLessThan(MAX_PROFILE_PHOTO_BYTES);
+    });
+
+    it('guarda siempre en la misma ruta para no dejar huérfanos', async () => {
+      const { service, storageService } = buildService();
+
+      await service.uploadProfilePhoto(UID, upload(await imagen('png')));
+      await service.uploadProfilePhoto(UID, upload(await imagen('jpeg')));
+
+      const rutas = storageService.savePublicFile.mock.calls.map(
+        ([path]: [string]) => path,
+      );
+      expect(new Set(rutas).size).toBe(1);
+    });
+
+    it('devuelve la URL con versión y la escribe en Firestore y en Firebase Auth', async () => {
+      const { service, firestoreService, firebaseAdminService } =
+        buildService();
+
+      const { photoURL } = await service.uploadProfilePhoto(
+        UID,
+        upload(await imagen('png')),
+      );
+
+      expect(photoURL).toMatch(new RegExp(`^${PUBLIC_URL}\\?v=\\d+$`));
+      // Los dos destinos con la MISMA url: si Auth se queda con otra, el claim
+      // `picture` del token y el perfil muestran fotos distintas.
+      expect(firebaseAdminService.updateUser).toHaveBeenCalledWith(UID, {
+        photoURL,
+      });
+      expect(firestoreService.updateUser).toHaveBeenCalledWith(UID, {
+        photoURL,
+      });
+    });
+
+    it('no escribe en Firestore si Firebase Auth falla', async () => {
+      // Al revés dejaría el perfil apuntando a una foto que el token ignora, que
+      // es exactamente la incoherencia que este endpoint viene a cerrar.
+      const { service, firestoreService, firebaseAdminService } =
+        buildService();
+      firebaseAdminService.updateUser.mockRejectedValue(
+        new Error('auth caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('auth caído');
+      expect(firestoreService.updateUser).not.toHaveBeenCalled();
+    });
+
+    it('devuelve Firebase Auth a su foto anterior si Firestore falla', async () => {
+      // Firestore es lo que lee `GET /users/me`: sin revertir, el token pintaría
+      // la foto nueva y el perfil la vieja, y ese desajuste no se corrige solo.
+      const { service, firestoreService, firebaseAdminService } =
+        buildService();
+      firebaseAdminService.getUser.mockResolvedValue({
+        emailVerified: true,
+        photoURL: 'https://lh3.googleusercontent.com/foto-de-google',
+      });
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      expect(firebaseAdminService.updateUser).toHaveBeenLastCalledWith(UID, {
+        photoURL: 'https://lh3.googleusercontent.com/foto-de-google',
+      });
+    });
+
+    it('devuelve los bytes anteriores si el perfil no llega a confirmarse', async () => {
+      // La ruta es fija, así que la subida ya pisó la foto vieja: revertir solo
+      // la URL dejaría al usuario con la imagen nueva pese al error.
+      const { service, firestoreService, storageService } = buildService();
+      const anterior = Buffer.from('foto-anterior');
+      storageService.readPublicFile.mockResolvedValue(anterior);
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      expect(storageService.savePublicFile).toHaveBeenLastCalledWith(
+        `users/${UID}/avatar.webp`,
+        anterior,
+        'image/webp',
+        // Condicionada a la generación que escribió esta subida: si otra ya
+        // confirmó una foto más nueva, no se pisa.
+        { ifGenerationMatch: '17' },
+      );
+    });
+
+    it('borra el objeto si falla y el usuario no tenía foto antes', async () => {
+      const { service, firestoreService, storageService } = buildService();
+      storageService.readPublicFile.mockResolvedValue(null);
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      expect(storageService.deletePublicFile).toHaveBeenCalledWith(
+        `users/${UID}/avatar.webp`,
+        { ifGenerationMatch: '17' },
+      );
+    });
+
+    it('no pisa la foto que otra subida ya confirmó', async () => {
+      // El 412 de GCS es la señal de que la generación cambió: la compensación
+      // llega tarde y lo correcto es no tocar nada.
+      const { service, firestoreService, storageService } = buildService();
+      storageService.readPublicFile.mockResolvedValue(Buffer.from('anterior'));
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+      storageService.savePublicFile
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '17' })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('generation mismatch'), { code: 412 }),
+        );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+    });
+
+    it('propaga el error original aunque la restauración falle', async () => {
+      const { service, firestoreService, storageService } = buildService();
+      storageService.readPublicFile.mockResolvedValue(Buffer.from('anterior'));
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+      storageService.savePublicFile
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '17' })
+        .mockRejectedValueOnce(new Error('gcs caído'));
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+    });
+
+    it('no revierte a un valor inventado si no pudo leer la foto anterior', async () => {
+      // Revertir a `null` sin saber qué había borraría de Auth la foto del
+      // proveedor de acceso de quien nunca subió ninguna.
+      const { service, firestoreService, firebaseAdminService } =
+        buildService();
+      firebaseAdminService.getUser.mockRejectedValue(new Error('auth caído'));
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
+
+      // Solo la escritura de la foto nueva: ninguna reversión a ciegas.
+      expect(firebaseAdminService.updateUser).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('coordinación para que objeto y perfil no se contradigan', () => {
+    it('no deja que una subida publique la imagen escrita por la otra', async () => {
+      // La primera queda detenida después de guardar sus bytes. Sin una sección
+      // crítica compartida, la segunda pisaría el objeto antes de que la primera
+      // publicara su URL, dejando esa URL asociada a los bytes equivocados.
+      const { service, firestoreService, storageService } = buildService();
+      const primeraPublicando = promesaControlada();
+      const liberarPrimera = promesaControlada();
+      const segundaNormalizada = promesaControlada();
+
+      service.normalizeProfilePhoto = jest
+        .fn()
+        .mockResolvedValueOnce(Buffer.from('normalizada-1'))
+        .mockImplementationOnce(async () => {
+          segundaNormalizada.resolve();
+          return Buffer.from('normalizada-2');
+        });
+      firestoreService.updateUser.mockImplementationOnce(async () => {
+        primeraPublicando.resolve();
+        await liberarPrimera.promise;
+      });
+      storageService.savePublicFile
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '17' })
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '18' });
+
+      const primera = service.uploadProfilePhoto(
+        UID,
+        upload(Buffer.from('original-1')),
+      );
+      await primeraPublicando.promise;
+
+      const segunda = service.uploadProfilePhoto(
+        UID,
+        upload(Buffer.from('original-2')),
+      );
+      await segundaNormalizada.promise;
+      await Promise.resolve();
+
+      expect(storageService.savePublicFile).toHaveBeenCalledTimes(1);
+
+      liberarPrimera.resolve();
+      await Promise.all([primera, segunda]);
+
+      expect(storageService.savePublicFile).toHaveBeenCalledTimes(2);
+      expect(
+        firestoreService.updateUser.mock.invocationCallOrder[0],
+      ).toBeLessThan(storageService.savePublicFile.mock.invocationCallOrder[1]);
+      expect(service.profilePhotoOperations.size).toBe(0);
+    });
+
+    it('no borra la generación que una subida simultánea acaba de publicar', async () => {
+      // El borrado queda detenido después de limpiar el perfil. Sin compartir la
+      // misma cola, una subida podría guardar y publicar su foto en ese hueco y
+      // el DELETE borraría después justo el objeto que el perfil nuevo referencia.
+      const { service, firestoreService, storageService } = buildService();
+      const borradoEnStorage = promesaControlada();
+      const liberarBorrado = promesaControlada();
+      const subidaNormalizada = promesaControlada();
+
+      storageService.deletePublicFile.mockImplementationOnce(async () => {
+        borradoEnStorage.resolve();
+        await liberarBorrado.promise;
+      });
+      service.normalizeProfilePhoto = jest.fn(async () => {
+        subidaNormalizada.resolve();
+        return Buffer.from('normalizada-nueva');
+      });
+
+      const borrado = service.deleteProfilePhoto(UID);
+      await borradoEnStorage.promise;
+
+      const subida = service.uploadProfilePhoto(
+        UID,
+        upload(Buffer.from('original-nuevo')),
+      );
+      await subidaNormalizada.promise;
+      await Promise.resolve();
+
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+
+      liberarBorrado.resolve();
+      await Promise.all([borrado, subida]);
+
+      expect(
+        storageService.deletePublicFile.mock.invocationCallOrder[0],
+      ).toBeLessThan(storageService.savePublicFile.mock.invocationCallOrder[0]);
+      expect(firestoreService.updateUser).toHaveBeenLastCalledWith(UID, {
+        photoURL: expect.stringMatching(new RegExp(`^${PUBLIC_URL}\\?v=\\d+$`)),
+      });
+      expect(service.profilePhotoOperations.size).toBe(0);
+    });
+  });
+
+  describe('borrado', () => {
+    it('borra el objeto y deja photoURL a null en los dos sitios', async () => {
+      const {
+        service,
+        firestoreService,
+        firebaseAdminService,
+        storageService,
+      } = buildService();
+
+      await service.deleteProfilePhoto(UID);
+
+      expect(storageService.deletePublicFile).toHaveBeenCalledWith(
+        `users/${UID}/avatar.webp`,
+      );
+      expect(firebaseAdminService.updateUser).toHaveBeenCalledWith(UID, {
+        photoURL: null,
+      });
+      expect(firestoreService.updateUser).toHaveBeenCalledWith(UID, {
+        photoURL: null,
+      });
+    });
+
+    it('limpia el perfil antes de borrar el objeto', async () => {
+      // Borrar el archivo es el único paso irreversible: hacerlo primero dejaría
+      // —si luego falla una escritura— un perfil apuntando a un 404.
+      const { service, firestoreService, storageService } = buildService();
+
+      await service.deleteProfilePhoto(UID);
+
+      expect(
+        firestoreService.updateUser.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        storageService.deletePublicFile.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('no borra el objeto si el perfil no llegó a limpiarse', async () => {
+      const { service, firestoreService, storageService } = buildService();
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+
+      await expect(service.deleteProfilePhoto(UID)).rejects.toThrow(
+        'firestore caído',
+      );
+      expect(storageService.deletePublicFile).not.toHaveBeenCalled();
+    });
+
+    it('responde USER_NOT_FOUND si el perfil no existe', async () => {
+      const { service, storageService } = buildService(null);
+
+      await expect(service.deleteProfilePhoto(UID)).rejects.toMatchObject({
+        status: 404,
+        response: { error: 'USER_NOT_FOUND' },
+      });
+      expect(storageService.deletePublicFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resolveProfilePhotoURL', () => {
+    it('prefiere la foto subida sobre la del proveedor', () => {
+      const { service } = buildService();
+
+      expect(
+        service.resolveProfilePhotoURL({ photoURL: 'propia' }, 'google'),
+      ).toBe('propia');
+    });
+
+    it('cae en la del proveedor si el usuario nunca subió ninguna', () => {
+      const { service } = buildService();
+
+      expect(service.resolveProfilePhotoURL({}, 'google')).toBe('google');
+    });
+
+    it('no resucita la de Google cuando el usuario borró la suya', () => {
+      // `null` es "la quitó a propósito": devolver la de Google haría que el
+      // DELETE pareciera no haber hecho nada.
+      const { service } = buildService();
+
+      expect(
+        service.resolveProfilePhotoURL({ photoURL: null }, 'google'),
+      ).toBeUndefined();
     });
   });
 });

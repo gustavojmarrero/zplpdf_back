@@ -15,6 +15,18 @@ export const ErrorCodes = {
   MONTHLY_LIMIT_EXCEEDED: 'MONTHLY_LIMIT_EXCEEDED',
   BATCH_LIMIT_EXCEEDED: 'BATCH_LIMIT_EXCEEDED',
   FILE_TOO_LARGE: 'FILE_TOO_LARGE',
+  /**
+   * La imagen de perfil pesa más de lo admitido. Va aparte de FILE_TOO_LARGE
+   * porque el frontend traduce el mensaje a partir del código y el límite de la
+   * foto (2 MB) no es el del ZPL.
+   */
+  IMAGE_TOO_LARGE: 'IMAGE_TOO_LARGE',
+  /**
+   * El archivo subido como foto de perfil no es JPEG, PNG ni WebP. Se decide
+   * por el contenido real del archivo, no por el `Content-Type` que declara el
+   * cliente.
+   */
+  UNSUPPORTED_IMAGE_TYPE: 'UNSUPPORTED_IMAGE_TYPE',
 
   // Errores de permisos (403)
   IMAGE_FORMAT_PRO_ONLY: 'IMAGE_FORMAT_PRO_ONLY',
@@ -73,6 +85,7 @@ export const ErrorHttpStatus: Record<ErrorCode, number> = {
   [ErrorCodes.INVALID_INPUT]: 400,
   [ErrorCodes.NO_FILES]: 400,
   [ErrorCodes.LABEL_LIMIT_EXCEEDED]: 400,
+  [ErrorCodes.UNSUPPORTED_IMAGE_TYPE]: 400,
   [ErrorCodes.BATCH_PROCESSING]: 400,
   [ErrorCodes.JOB_NOT_COMPLETE]: 400,
 
@@ -100,6 +113,7 @@ export const ErrorHttpStatus: Record<ErrorCode, number> = {
 
   // 413 Payload Too Large
   [ErrorCodes.FILE_TOO_LARGE]: 413,
+  [ErrorCodes.IMAGE_TOO_LARGE]: 413,
 
   // 500 Internal Server Error
   [ErrorCodes.SERVER_ERROR]: 500,
@@ -127,6 +141,9 @@ export const ErrorMessagesEs: Record<ErrorCode, string> = {
   [ErrorCodes.BATCH_LIMIT_EXCEEDED]:
     'Se excedió el límite de archivos por batch',
   [ErrorCodes.FILE_TOO_LARGE]: 'El archivo excede el tamaño máximo permitido',
+  [ErrorCodes.IMAGE_TOO_LARGE]: 'La imagen excede el tamaño máximo permitido',
+  [ErrorCodes.UNSUPPORTED_IMAGE_TYPE]:
+    'El formato de imagen no está soportado. Usa JPEG, PNG o WebP',
   [ErrorCodes.IMAGE_FORMAT_PRO_ONLY]:
     'El formato de imagen seleccionado requiere plan Pro',
   [ErrorCodes.BATCH_NOT_ALLOWED]: 'El procesamiento batch requiere plan Pro',
@@ -163,6 +180,9 @@ export const ErrorMessagesEn: Record<ErrorCode, string> = {
   [ErrorCodes.MONTHLY_LIMIT_EXCEEDED]: 'Monthly conversion quota exhausted',
   [ErrorCodes.BATCH_LIMIT_EXCEEDED]: 'Batch file limit exceeded',
   [ErrorCodes.FILE_TOO_LARGE]: 'File exceeds maximum allowed size',
+  [ErrorCodes.IMAGE_TOO_LARGE]: 'Image exceeds maximum allowed size',
+  [ErrorCodes.UNSUPPORTED_IMAGE_TYPE]:
+    'Unsupported image format. Use JPEG, PNG or WebP',
   [ErrorCodes.IMAGE_FORMAT_PRO_ONLY]: 'Selected image format requires Pro plan',
   [ErrorCodes.BATCH_NOT_ALLOWED]: 'Batch processing requires Pro plan',
   [ErrorCodes.ACCESS_DENIED]: 'Access denied to this resource',

@@ -54,4 +54,22 @@ export class FirebaseAdminService implements OnModuleInit {
     }
     return this.app.auth().getUser(uid);
   }
+
+  /**
+   * Actualiza el registro del usuario en Firebase Auth.
+   *
+   * Necesario para la foto de perfil: el token trae el claim `picture` de Auth,
+   * así que guardar la URL solo en Firestore dejaría al frontend mostrando la
+   * foto de Google mientras el perfil ya apunta a otra. `photoURL: null` la
+   * borra.
+   */
+  async updateUser(
+    uid: string,
+    properties: admin.auth.UpdateRequest,
+  ): Promise<admin.auth.UserRecord> {
+    if (!this.app) {
+      throw new Error('Firebase Admin SDK not initialized');
+    }
+    return this.app.auth().updateUser(uid, properties);
+  }
 }

@@ -5,17 +5,22 @@ import {
   Param,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
   HttpCode,
   HttpStatus,
   Req,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiParam,
   ApiQuery,
 } from '@nestjs/swagger';
@@ -23,6 +28,9 @@ import {
   UsersService,
   DEFAULT_HISTORY_LIMIT,
   MAX_HISTORY_SCAN,
+  MAX_PROFILE_PHOTO_BYTES,
+  PROFILE_PHOTO_SIZE_PX,
+  ALLOWED_PROFILE_PHOTO_FORMATS,
 } from './users.service.js';
 import { FirebaseAuthGuard } from '../../common/guards/firebase-auth.guard.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
@@ -30,6 +38,8 @@ import type { FirebaseUser } from '../../common/decorators/current-user.decorato
 import { UserProfileDto } from './dto/user-profile.dto.js';
 import { UserLimitsDto } from './dto/user-limits.dto.js';
 import { VerificationStatusDto } from './dto/verification-status.dto.js';
+import { ProfilePhotoResponseDto } from './dto/profile-photo.dto.js';
+import { PhotoUploadErrorInterceptor } from './interceptors/photo-upload-error.interceptor.js';
 import { ZPL_RETENTION_DAYS } from '../../common/interfaces/conversion-history.interface.js';
 import {
   GetHistoryQueryDto,
@@ -76,6 +86,10 @@ export class UsersController {
       emailVerified: syncedUser.emailVerified ?? false,
       plan: this.usersService.getEffectivePlan(syncedUser),
       createdAt: syncedUser.createdAt,
+      photoURL: this.usersService.resolveProfilePhotoURL(
+        syncedUser,
+        user.picture,
+      ),
       hasStripeSubscription: !!syncedUser.stripeSubscriptionId,
     };
   }
@@ -121,6 +135,74 @@ export class UsersController {
   })
   async getProfile(@CurrentUser() user: FirebaseUser): Promise<UserProfileDto> {
     return this.usersService.getUserProfile(user.uid);
+  }
+
+  @Post('me/photo')
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(
+    // El traductor de errores va primero para poder envolver al de subida: es
+    // multer quien corta por tamaño, y su excepción genérica no trae el código
+    // que el frontend necesita.
+    PhotoUploadErrorInterceptor,
+    FileInterceptor('file', { limits: { fileSize: MAX_PROFILE_PHOTO_BYTES } }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Upload the profile photo',
+    description:
+      `Acepta ${ALLOWED_PROFILE_PHOTO_FORMATS.join(', ').toUpperCase()} de hasta ` +
+      `${MAX_PROFILE_PHOTO_BYTES / (1024 * 1024)} MB. La imagen se recorta a ` +
+      `cuadrado y se reescala a ${PROFILE_PHOTO_SIZE_PX} px antes de guardarla en ` +
+      'WebP, siempre en la misma ruta del usuario: cada subida sustituye a la ' +
+      'anterior. La URL se guarda en el perfil y en Firebase Auth, de modo que el ' +
+      'claim `picture` del token deja de apuntar a la foto del proveedor de acceso.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+          description: 'Imagen JPEG, PNG o WebP (max 2MB)',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Photo stored',
+    type: ProfilePhotoResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Sin archivo (`NO_FILES`) o formato no admitido (`UNSUPPORTED_IMAGE_TYPE`). ' +
+      'El formato se decide por el contenido del archivo, no por su Content-Type',
+  })
+  @ApiResponse({
+    status: 413,
+    description: 'La imagen supera el máximo permitido (`IMAGE_TOO_LARGE`)',
+  })
+  async uploadPhoto(
+    @CurrentUser() user: FirebaseUser,
+    @UploadedFile() file?: Express.Multer.File,
+  ): Promise<ProfilePhotoResponseDto> {
+    return this.usersService.uploadProfilePhoto(user.uid, file);
+  }
+
+  @Delete('me/photo')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Remove the profile photo',
+    description:
+      'Borra el objeto de Storage y deja el perfil sin foto, también en Firebase ' +
+      'Auth. Es la forma de volver a las iniciales sin subir otra imagen. ' +
+      'Idempotente: quitar una foto que ya no existe responde igualmente 204.',
+  })
+  @ApiResponse({ status: 204, description: 'Photo removed' })
+  async deletePhoto(@CurrentUser() user: FirebaseUser): Promise<void> {
+    await this.usersService.deleteProfilePhoto(user.uid);
   }
 
   @Get('verification-status')

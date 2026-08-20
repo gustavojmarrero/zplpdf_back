@@ -26,3 +26,137 @@ describe('StorageService — resolución del bucket', () => {
     expect(buildService(undefined).bucketName).toBe('zplpdf-app-files');
   });
 });
+
+/**
+ * Los avatares no pueden servirse con URL firmada: la URL se guarda en el perfil
+ * y en el claim `picture` del token, así que caducaría y la foto dejaría de
+ * cargar. Van a un bucket aparte, de lectura pública, porque el principal
+ * guarda los PDF y los ZPL de los usuarios.
+ */
+describe('StorageService — bucket público', () => {
+  function buildService(config: Record<string, string | undefined> = {}) {
+    const file = {
+      metadata: { generation: '17' },
+      save: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
+      download: jest.fn().mockResolvedValue([Buffer.from('imagen')]),
+    };
+    const bucket = jest.fn().mockReturnValue({ file: () => file });
+    const configService: any = {
+      get: jest.fn((key: string) => config[key]),
+    };
+
+    const service = new StorageService(configService, {}) as any;
+    service.storage = { bucket };
+
+    return { service, bucket, file };
+  }
+
+  it('usa el bucket público configurado y, si falta, el de assets', () => {
+    expect(
+      buildService({ GCP_PUBLIC_BUCKET: 'otro-bucket' }).service
+        .publicBucketName,
+    ).toBe('otro-bucket');
+    expect(buildService().service.publicBucketName).toBe(
+      'zplpdf-public-assets',
+    );
+  });
+
+  it('guarda en el bucket público y devuelve la URL sin firmar', async () => {
+    const { service, bucket, file } = buildService();
+
+    const { url, generation } = await service.savePublicFile(
+      'users/uid-1/avatar.webp',
+      Buffer.from('imagen'),
+      'image/webp',
+    );
+
+    expect(bucket).toHaveBeenCalledWith('zplpdf-public-assets');
+    expect(url).toBe(
+      'https://storage.googleapis.com/zplpdf-public-assets/users/uid-1/avatar.webp',
+    );
+    // La generación es lo que permite condicionar una compensación posterior.
+    expect(generation).toBe('17');
+    expect(file.save).toHaveBeenCalledWith(Buffer.from('imagen'), {
+      metadata: {
+        contentType: 'image/webp',
+        cacheControl: 'public, max-age=86400',
+      },
+    });
+  });
+
+  it('devuelve null al leer un objeto que ya no está', async () => {
+    // Quien llama usa esa ausencia para saber que no hay bytes que restaurar; un
+    // throw convertiría la primera subida de un usuario en un 500.
+    const { service, file } = buildService();
+    file.download.mockRejectedValue(
+      Object.assign(new Error('No such object'), { code: 404 }),
+    );
+
+    await expect(
+      service.readPublicFile('users/uid-1/avatar.webp'),
+    ).resolves.toBeNull();
+  });
+
+  it('devuelve los bytes del objeto público', async () => {
+    const { service } = buildService();
+
+    await expect(
+      service.readPublicFile('users/uid-1/avatar.webp'),
+    ).resolves.toEqual(Buffer.from('imagen'));
+  });
+
+  it('condiciona la escritura a la generación cuando se le pide', async () => {
+    const { service, file } = buildService();
+
+    await service.savePublicFile(
+      'users/uid-1/avatar.webp',
+      Buffer.from('imagen'),
+      'image/webp',
+      { ifGenerationMatch: '17' },
+    );
+
+    expect(file.save.mock.calls[0][1]).toMatchObject({
+      preconditionOpts: { ifGenerationMatch: '17' },
+    });
+  });
+
+  it('trata el 412 al borrar como éxito: el objeto ya no es el nuestro', async () => {
+    const { service, file } = buildService();
+    file.delete.mockRejectedValue(
+      Object.assign(new Error('generation mismatch'), { code: 412 }),
+    );
+
+    await expect(
+      service.deletePublicFile('users/uid-1/avatar.webp', {
+        ifGenerationMatch: '17',
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('trata el 404 al borrar como éxito', async () => {
+    // Quitar una foto que ya no está en Storage tiene que dejar el perfil
+    // limpio igual; convertirlo en 500 dejaría al usuario sin poder borrarla.
+    const { service, file } = buildService();
+    file.delete.mockRejectedValue(
+      Object.assign(new Error('No such object'), {
+        code: 404,
+      }),
+    );
+
+    await expect(
+      service.deletePublicFile('users/uid-1/avatar.webp'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('propaga cualquier otro error al borrar', async () => {
+    const { service, file } = buildService();
+    file.delete.mockRejectedValue(
+      Object.assign(new Error('permiso denegado'), { code: 403 }),
+    );
+
+    await expect(
+      service.deletePublicFile('users/uid-1/avatar.webp'),
+    ).rejects.toThrow('permiso denegado');
+  });
+});

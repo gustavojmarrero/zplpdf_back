@@ -31,6 +31,8 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 |--------|------|------|------------|-------------|
 | POST | /users/sync | User | UsersController.syncUser | Sync Firebase user with Firestore |
 | GET | /users/me | User | UsersController.getUserProfile | Get current user profile |
+| POST | /users/me/photo | User | UsersController.uploadPhoto | Upload the profile photo (multipart, campo `file`) |
+| DELETE | /users/me/photo | User | UsersController.deletePhoto | Remove the profile photo (204) |
 | GET | /users/verification-status | User | UsersController.getVerificationStatus | Check email verification status |
 | GET | /users/limits | User | UsersController.getUserLimits | Get plan limits and current usage |
 | GET | /users/history | User | UsersController.getUserHistory | Get conversion history (Pro+ only) |
@@ -38,6 +40,28 @@ All endpoints are prefixed with `/api` (configured in `main.ts`).
 | GET | /users/history/:id/zpl | User | UsersController.getHistoryZpl | Get the original ZPL to reconvert (Pro+ only) |
 
 **File:** `src/modules/users/users.controller.ts`
+
+### Foto de perfil
+
+`POST /users/me/photo` recibe `multipart/form-data` con el campo `file` y responde
+`{ photoURL }`. Acepta JPEG, PNG y WebP —decidido por el contenido del archivo, no
+por el `Content-Type`— hasta 2 MB (`IMAGE_TOO_LARGE`, 413); el resto se rechaza con
+`UNSUPPORTED_IMAGE_TYPE` (400).
+
+La imagen se recorta a cuadrado y se reescala a 256 px en WebP, y se guarda siempre
+en `users/<uid>/avatar.webp` del bucket **público** (`GCP_PUBLIC_BUCKET`, por defecto
+`zplpdf-public-assets`): la ruta fija evita huérfanos y el bucket público evita las
+URLs firmadas, que caducarían. La URL devuelta lleva `?v=<timestamp>` para invalidar
+la caché del navegador.
+
+La URL se escribe en Firestore **y** en Firebase Auth (`updateUser`), en ese orden
+inverso —Auth primero—: el claim `picture` del token es lo que pinta el frontend, y
+si solo se guardara en Firestore seguiría mostrando la foto de Google.
+
+`DELETE /users/me/photo` borra el objeto y deja `photoURL: null` en ambos sitios, que
+es lo que devuelve al usuario a sus iniciales; `null` (y no el campo ausente) es lo
+que distingue "la quitó" de "nunca subió ninguna", el caso en que `GET /users/me` sí
+cae en la foto del proveedor de acceso.
 
 ### Acciones sobre el historial
 

@@ -4,11 +4,31 @@ import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { Inject } from '@nestjs/common';
 
+export interface PublicFileWriteOptions {
+  cacheControl?: string;
+  /** Escribe solo si el objeto sigue en esta generación (CAS de GCS). */
+  ifGenerationMatch?: number | string;
+}
+
+export interface PublicFileWriteResult {
+  url: string;
+  /** Generación resultante, para condicionar escrituras posteriores. */
+  generation?: string;
+}
+
 @Injectable()
 export class StorageService {
   private storage: Storage;
   private readonly logger = new Logger(StorageService.name);
   private readonly bucketName: string;
+  /**
+   * Bucket de solo lectura pública. Los avatares se sirven por URL estable —se
+   * guardan en el perfil y en el claim `picture` del token—, así que no pueden
+   * ser URLs firmadas: caducarían y la foto dejaría de cargar. El bucket
+   * principal no vale porque ahí viven los PDF y los ZPL de los usuarios, que
+   * solo se entregan firmados.
+   */
+  private readonly publicBucketName: string;
 
   constructor(
     private configService: ConfigService,
@@ -21,6 +41,9 @@ export class StorageService {
     this.bucketName =
       this.configService.get<string>('GCP_STORAGE_BUCKET') ||
       'zplpdf-app-files';
+    this.publicBucketName =
+      this.configService.get<string>('GCP_PUBLIC_BUCKET') ||
+      'zplpdf-public-assets';
     this.storage = new Storage(this.googleAuthOptions);
   }
 
@@ -154,5 +177,109 @@ export class StorageService {
     const [url] = await file.getSignedUrl(options);
 
     return url;
+  }
+
+  /** URL pública (sin firmar) de un objeto del bucket público. */
+  getPublicFileUrl(filePath: string): string {
+    return `https://storage.googleapis.com/${this.publicBucketName}/${filePath}`;
+  }
+
+  /**
+   * Guarda un archivo en el bucket de lectura pública.
+   *
+   * Sobrescribe el objeto si ya existe: los avatares usan una ruta fija por
+   * usuario para no acumular huérfanos, y quien llama añade una versión en la
+   * query para invalidar la caché.
+   *
+   * Devuelve también la generación escrita, que es lo que permite condicionar
+   * una escritura posterior a que nadie haya sustituido el objeto entretanto
+   * (`ifGenerationMatch`): sin esa precondición, una compensación tardía podría
+   * pisar una foto más reciente ya confirmada.
+   */
+  async savePublicFile(
+    filePath: string,
+    content: Buffer,
+    contentType: string,
+    options: PublicFileWriteOptions = {},
+  ): Promise<PublicFileWriteResult> {
+    const file = this.storage.bucket(this.publicBucketName).file(filePath);
+
+    await file.save(content, {
+      metadata: {
+        contentType,
+        cacheControl: options.cacheControl ?? 'public, max-age=86400',
+      },
+      ...(options.ifGenerationMatch !== undefined
+        ? { preconditionOpts: { ifGenerationMatch: options.ifGenerationMatch } }
+        : {}),
+    });
+
+    return {
+      url: this.getPublicFileUrl(filePath),
+      generation: file.metadata?.generation?.toString(),
+    };
+  }
+
+  /**
+   * Lee un archivo del bucket público, o `null` si ya no está.
+   *
+   * Sirve para conservar los bytes de un objeto que se va a sobrescribir y poder
+   * devolverlos si el resto de la operación no llega a confirmarse.
+   */
+  async readPublicFile(filePath: string): Promise<Buffer | null> {
+    try {
+      const [contents] = await this.storage
+        .bucket(this.publicBucketName)
+        .file(filePath)
+        .download();
+
+      return contents;
+    } catch (error) {
+      if (error?.code === 404) {
+        return null;
+      }
+      this.logger.error(
+        `Error al leer el archivo público ${filePath}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Borra un archivo del bucket público.
+   *
+   * El 404 no es un error: quitar una foto que ya no está en Storage —porque
+   * nunca se subió o porque se borró antes— debe dejar el perfil limpio igual.
+   *
+   * Con `ifGenerationMatch` el borrado solo ocurre si el objeto sigue siendo el
+   * que vio quien llama; si otro lo sustituyó, GCS responde 412 y aquí se trata
+   * como el 404: no hay nada que borrar que sea nuestro.
+   */
+  async deletePublicFile(
+    filePath: string,
+    options: { ifGenerationMatch?: number | string } = {},
+  ): Promise<void> {
+    try {
+      await this.storage
+        .bucket(this.publicBucketName)
+        .file(filePath)
+        // La precondición no está en el tipo de `DeleteFileOptions`, pero la
+        // librería la reenvía como query param y GCS la aplica.
+        .delete(options as any);
+    } catch (error) {
+      if (error?.code === 412) {
+        this.logger.warn(
+          `No se borró ${filePath}: otra escritura más reciente lo sustituyó`,
+        );
+        return;
+      }
+      if (error?.code === 404) {
+        return;
+      }
+      this.logger.error(
+        `Error al borrar el archivo público ${filePath}: ${error.message}`,
+      );
+      throw error;
+    }
   }
 }
