@@ -42,6 +42,10 @@ import {
   BatchDownloadResponseDto,
 } from './dto/batch.dto.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
+import {
+  getClientDeclaredIp,
+  getTrustedHopIp,
+} from '../../common/utils/request-ip.js';
 import { FontPreviewPublicDto } from './dto/font-preview-public.dto.js';
 import {
   PublicPreviewDto,
@@ -767,9 +771,38 @@ export class ZplController {
   // quien paga (que ademas comparte IP con toda su oficina detras del NAT).
   @Post('public-preview')
   @HttpCode(HttpStatus.OK)
+  // Dos identidades, porque ninguna sirve sola:
+  //
+  // - La IP que declara el cliente segmenta bien el trafico legitimo (todos los
+  //   visitantes entran por el rewrite del frontend y comparten salto), pero es
+  //   falsificable: quien llame directo al servicio de Cloud Run puede mandar
+  //   un `X-Forwarded-For` distinto en cada peticion y estrenar contador.
+  // - La IP del salto de confianza no se puede falsificar, pero agrupa a todos
+  //   los visitantes que comparten edge.
+  //
+  // Asi que la primera lleva el tope por visitante y la segunda el tope
+  // agregado que de verdad protege el techo compartido de Labelary.
   @Throttle({
-    default: { limit: 10, ttl: 60000 },
-    hourly: { limit: 30, ttl: 3600000 },
+    default: {
+      limit: 10,
+      ttl: 60000,
+      getTracker: (req) => `public-preview:client:${getClientDeclaredIp(req)}`,
+    },
+    hourly: {
+      limit: 30,
+      ttl: 3600000,
+      getTracker: (req) => `public-preview:client:${getClientDeclaredIp(req)}`,
+    },
+    peerMinute: {
+      limit: 60,
+      ttl: 60000,
+      getTracker: (req) => `public-preview:hop:${getTrustedHopIp(req)}`,
+    },
+    peerHourly: {
+      limit: 600,
+      ttl: 3600000,
+      getTracker: (req) => `public-preview:hop:${getTrustedHopIp(req)}`,
+    },
   })
   @ApiOperation({
     summary: 'Vista previa publica de etiquetas ZPL (sin autenticacion)',
@@ -778,7 +811,8 @@ export class ZplController {
       'con la misma forma de respuesta que POST /zpl/preview. ' +
       `Renderiza como mucho ${PUBLIC_PREVIEW_MAX_UNIQUE_LABELS} etiquetas unicas por peticion ` +
       '(el recorte se aplica antes de llamar a Labelary; el archivo completo requiere cuenta). ' +
-      'Rate limit por IP: 10 peticiones/minuto y 30/hora. No requiere autenticacion.',
+      'Rate limit por IP del visitante: 10 peticiones/minuto y 30/hora, mas un tope agregado ' +
+      'por IP de origen real (60/minuto, 600/hora). No requiere autenticacion.',
   })
   @ApiBody({ type: PublicPreviewDto })
   @ApiResponse({
@@ -820,7 +854,9 @@ export class ZplController {
   })
   @ApiResponse({
     status: HttpStatus.TOO_MANY_REQUESTS,
-    description: 'Rate limit por IP superado (10 req/min o 30 req/hora)',
+    description:
+      'Rate limit superado: por visitante (10 req/min, 30 req/hora) o agregado por origen ' +
+      '(60 req/min, 600 req/hora)',
   })
   async publicPreview(
     @Body() dto: PublicPreviewDto,

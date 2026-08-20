@@ -47,6 +47,20 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
         ttl: 3600000,
         limit: 100000,
       },
+      // Ventanas por IP de origen real (el salto que no se puede falsificar).
+      // Mismo motivo y mismo limite inerte que 'hourly': solo existen para que
+      // las rutas publicas puedan bajarlas con @Throttle, ya que el guard solo
+      // evalua los throttlers declarados aqui.
+      {
+        name: 'peerMinute',
+        ttl: 60000,
+        limit: 100000,
+      },
+      {
+        name: 'peerHourly',
+        ttl: 3600000,
+        limit: 100000,
+      },
     ]),
     AuthModule,
     UsersModule,

@@ -23,6 +23,7 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants.js';
 import {
   THROTTLER_LIMIT,
+  THROTTLER_TRACKER,
   THROTTLER_TTL,
 } from '@nestjs/throttler/dist/throttler.constants.js';
 import { ZplController } from './zpl.controller.js';
@@ -154,7 +155,7 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
       ).toBeUndefined();
     });
 
-    it('lleva rate limit por IP por minuto y por hora', () => {
+    it('lleva rate limit por visitante, por minuto y por hora', () => {
       expect(
         Reflect.getMetadata(THROTTLER_LIMIT + 'default', publicPreview),
       ).toBe(10);
@@ -167,6 +168,40 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
       expect(Reflect.getMetadata(THROTTLER_TTL + 'hourly', publicPreview)).toBe(
         3600000,
       );
+    });
+
+    it('lleva ademas un tope agregado por IP de origen real', () => {
+      expect(
+        Reflect.getMetadata(THROTTLER_LIMIT + 'peerMinute', publicPreview),
+      ).toBe(60);
+      expect(
+        Reflect.getMetadata(THROTTLER_LIMIT + 'peerHourly', publicPreview),
+      ).toBe(600);
+    });
+
+    // La ventana por visitante se puede esquivar variando el X-Forwarded-For;
+    // la agregada no, porque se cuenta sobre el salto que anade Cloud Run.
+    it('separa la identidad por visitante de la identidad por origen', () => {
+      const conXffFalso = {
+        headers: { 'x-forwarded-for': '9.9.9.9, 198.51.100.7' },
+        socket: { remoteAddress: '10.0.0.1' },
+      };
+      const conOtroXffFalso = {
+        headers: { 'x-forwarded-for': '8.8.8.8, 198.51.100.7' },
+        socket: { remoteAddress: '10.0.0.1' },
+      };
+      const porVisitante = Reflect.getMetadata(
+        THROTTLER_TRACKER + 'default',
+        publicPreview,
+      );
+      const porOrigen = Reflect.getMetadata(
+        THROTTLER_TRACKER + 'peerMinute',
+        publicPreview,
+      );
+
+      expect(porVisitante(conXffFalso)).not.toBe(porVisitante(conOtroXffFalso));
+      expect(porOrigen(conXffFalso)).toBe(porOrigen(conOtroXffFalso));
+      expect(porOrigen(conXffFalso)).toContain('198.51.100.7');
     });
   });
 
@@ -187,6 +222,9 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
       ).toBeUndefined();
       expect(
         Reflect.getMetadata(THROTTLER_LIMIT + 'hourly', previewZpl),
+      ).toBeUndefined();
+      expect(
+        Reflect.getMetadata(THROTTLER_LIMIT + 'peerMinute', previewZpl),
       ).toBeUndefined();
     });
   });
