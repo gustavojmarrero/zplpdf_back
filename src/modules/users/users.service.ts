@@ -92,6 +92,17 @@ export const MAX_PROFILE_PHOTO_BYTES = 2 * 1024 * 1024;
 export const PROFILE_PHOTO_SIZE_PX = 256;
 
 /**
+ * Tope de píxeles de la imagen de entrada.
+ *
+ * El límite de 2 MB no acota el trabajo de decodificar: un PNG o un WebP muy
+ * comprimidos caben de sobra en 2 MB declarando decenas de miles de píxeles por
+ * lado, y descomprimirlos cuesta gigabytes de RAM —el techo por defecto de sharp
+ * son 268 MP—. Con varias peticiones a la vez eso tumba la instancia. 40 MP deja
+ * pasar cualquier foto de cámara real y corta las bombas de descompresión.
+ */
+export const MAX_PROFILE_PHOTO_PIXELS = 40_000_000;
+
+/**
  * Formatos admitidos, decididos por el contenido real del archivo (lo que
  * detecta sharp) y no por el `Content-Type` que declara el cliente, que es
  * trivial de falsear. Fuera queda el SVG, que sharp también sabe leer pero que
@@ -404,7 +415,7 @@ export class UsersService {
     // cuanto caducara la caché. Es un WebP de unos pocos KB.
     const previousBytes = await this.storageService.readPublicFile(path);
 
-    const baseUrl = await this.storageService.savePublicFile(
+    const { url, generation } = await this.storageService.savePublicFile(
       path,
       normalized,
       'image/webp',
@@ -412,12 +423,12 @@ export class UsersService {
     // La ruta del objeto no cambia entre subidas, así que sin versión en la
     // query el navegador —y cualquier caché intermedia— seguiría sirviendo la
     // foto anterior.
-    const photoURL = `${baseUrl}?v=${Date.now()}`;
+    const photoURL = `${url}?v=${Date.now()}`;
 
     try {
       await this.applyProfilePhotoURL(userId, photoURL);
     } catch (error) {
-      await this.restoreProfilePhotoObject(path, previousBytes);
+      await this.restoreProfilePhotoObject(path, previousBytes, generation);
       throw error;
     }
 
@@ -462,12 +473,19 @@ export class UsersService {
    * Devuelve el objeto del avatar a como estaba antes de una subida que no llegó
    * a confirmarse: sus bytes anteriores, o ninguno si el usuario no tenía foto.
    *
-   * Un fallo aquí no se propaga: el error que interesa al cliente es el que
+   * La restauración va condicionada a la generación que escribió esa subida. Sin
+   * esa precondición, dos subidas solapadas se pisan: si la segunda confirma y la
+   * primera falla después, la primera restauraría su foto vieja encima de la que
+   * el perfil ya da por buena. Con la precondición, GCS responde 412 y aquí no se
+   * toca nada.
+   *
+   * Un fallo tampoco se propaga: el error que le interesa al cliente es el que
    * abortó la subida, no el de una compensación. Queda en el log.
    */
   private async restoreProfilePhotoObject(
     path: string,
     previousBytes: Buffer | null,
+    generation?: string,
   ): Promise<void> {
     try {
       if (previousBytes) {
@@ -475,11 +493,21 @@ export class UsersService {
           path,
           previousBytes,
           'image/webp',
+          { ifGenerationMatch: generation },
         );
       } else {
-        await this.storageService.deletePublicFile(path);
+        await this.storageService.deletePublicFile(path, {
+          ifGenerationMatch: generation,
+        });
       }
     } catch (error) {
+      if (error?.code === 412) {
+        this.logger.warn(
+          `No se restauró la foto anterior en ${path}: otra subida más reciente ya está confirmada`,
+        );
+        return;
+      }
+
       this.logger.error(
         `No se pudo restaurar la foto anterior en ${path}: ${error.message}`,
       );
@@ -547,21 +575,28 @@ export class UsersService {
    * significaría mandar 8 MP para pintarlos en 64 px.
    */
   private async normalizeProfilePhoto(buffer: Buffer): Promise<Buffer> {
-    let format: string | undefined;
+    let metadata: sharp.Metadata | undefined;
 
     try {
-      format = (await sharp(buffer).metadata()).format;
+      metadata = await sharp(buffer, {
+        limitInputPixels: MAX_PROFILE_PHOTO_PIXELS,
+      }).metadata();
     } catch (error) {
       this.logger.warn(`Foto de perfil ilegible: ${error.message}`);
-      format = undefined;
     }
 
+    const format = metadata?.format;
     if (!format || !ALLOWED_PROFILE_PHOTO_FORMATS.includes(format)) {
       throw this.unsupportedImageError(format);
     }
 
+    this.assertWithinPixelBudget(format, metadata?.width, metadata?.height);
+
     try {
-      return await sharp(buffer)
+      // El tope va también aquí, no solo en la comprobación de arriba: es la
+      // decodificación —no la lectura de la cabecera— la que reserva la memoria,
+      // y así el límite se respeta aunque alguien añada otro camino de entrada.
+      return await sharp(buffer, { limitInputPixels: MAX_PROFILE_PHOTO_PIXELS })
         // La orientación EXIF se aplica antes de recortar: sin esto, una foto de
         // móvil se recorta girada y el encuadre sale mal.
         .rotate()
@@ -578,6 +613,32 @@ export class UsersService {
       // fallo es nuestro, y sin el código que el frontend traduce.
       this.logger.warn(`Foto de perfil no decodificable: ${error.message}`);
       throw this.unsupportedImageError(format);
+    }
+  }
+
+  /**
+   * Rechaza lo que no cabe en el presupuesto de píxeles antes de decodificar.
+   *
+   * Sin dimensiones no hay nada que medir, y una imagen cuya cabecera no las
+   * declara no es una imagen que sepamos tratar: eso es formato inválido, no
+   * exceso de tamaño.
+   */
+  private assertWithinPixelBudget(
+    format: string,
+    width?: number,
+    height?: number,
+  ): void {
+    if (!width || !height) {
+      throw this.unsupportedImageError(format);
+    }
+
+    const pixels = width * height;
+    if (pixels > MAX_PROFILE_PHOTO_PIXELS) {
+      throw new PayloadTooLargeException({
+        error: ErrorCodes.IMAGE_TOO_LARGE,
+        message: 'Image dimensions exceed the maximum allowed',
+        data: { maxPixels: MAX_PROFILE_PHOTO_PIXELS, pixels, width, height },
+      });
     }
   }
 

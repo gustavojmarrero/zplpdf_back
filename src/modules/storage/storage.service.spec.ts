@@ -36,6 +36,7 @@ describe('StorageService — resolución del bucket', () => {
 describe('StorageService — bucket público', () => {
   function buildService(config: Record<string, string | undefined> = {}) {
     const file = {
+      metadata: { generation: '17' },
       save: jest.fn().mockResolvedValue(undefined),
       delete: jest.fn().mockResolvedValue(undefined),
       download: jest.fn().mockResolvedValue([Buffer.from('imagen')]),
@@ -64,7 +65,7 @@ describe('StorageService — bucket público', () => {
   it('guarda en el bucket público y devuelve la URL sin firmar', async () => {
     const { service, bucket, file } = buildService();
 
-    const url = await service.savePublicFile(
+    const { url, generation } = await service.savePublicFile(
       'users/uid-1/avatar.webp',
       Buffer.from('imagen'),
       'image/webp',
@@ -74,6 +75,8 @@ describe('StorageService — bucket público', () => {
     expect(url).toBe(
       'https://storage.googleapis.com/zplpdf-public-assets/users/uid-1/avatar.webp',
     );
+    // La generación es lo que permite condicionar una compensación posterior.
+    expect(generation).toBe('17');
     expect(file.save).toHaveBeenCalledWith(Buffer.from('imagen'), {
       metadata: {
         contentType: 'image/webp',
@@ -101,6 +104,34 @@ describe('StorageService — bucket público', () => {
     await expect(
       service.readPublicFile('users/uid-1/avatar.webp'),
     ).resolves.toEqual(Buffer.from('imagen'));
+  });
+
+  it('condiciona la escritura a la generación cuando se le pide', async () => {
+    const { service, file } = buildService();
+
+    await service.savePublicFile(
+      'users/uid-1/avatar.webp',
+      Buffer.from('imagen'),
+      'image/webp',
+      { ifGenerationMatch: '17' },
+    );
+
+    expect(file.save.mock.calls[0][1]).toMatchObject({
+      preconditionOpts: { ifGenerationMatch: '17' },
+    });
+  });
+
+  it('trata el 412 al borrar como éxito: el objeto ya no es el nuestro', async () => {
+    const { service, file } = buildService();
+    file.delete.mockRejectedValue(
+      Object.assign(new Error('generation mismatch'), { code: 412 }),
+    );
+
+    await expect(
+      service.deletePublicFile('users/uid-1/avatar.webp', {
+        ifGenerationMatch: '17',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('trata el 404 al borrar como éxito', async () => {

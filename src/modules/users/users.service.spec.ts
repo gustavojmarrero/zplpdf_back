@@ -11,12 +11,14 @@ import {
   ForbiddenException,
   GoneException,
   NotFoundException,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import sharp from 'sharp';
 import {
   UsersService,
   MAX_HISTORY_SCAN,
   MAX_PROFILE_PHOTO_BYTES,
+  MAX_PROFILE_PHOTO_PIXELS,
   MAX_RECONVERTIBLE_ZPL_SIZE_BYTES,
   PROFILE_PHOTO_SIZE_PX,
 } from './users.service.js';
@@ -1400,7 +1402,9 @@ describe('UsersService — foto de perfil', () => {
     };
     const storageService = {
       readPublicFile: jest.fn().mockResolvedValue(null),
-      savePublicFile: jest.fn().mockResolvedValue(PUBLIC_URL),
+      savePublicFile: jest
+        .fn()
+        .mockResolvedValue({ url: PUBLIC_URL, generation: '17' }),
       deletePublicFile: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -1480,6 +1484,45 @@ describe('UsersService — foto de perfil', () => {
         response: { error: 'UNSUPPORTED_IMAGE_TYPE' },
       });
       expect(storageService.savePublicFile).not.toHaveBeenCalled();
+    });
+
+    it('rechaza con IMAGE_TOO_LARGE una imagen de dimensiones desorbitadas', () => {
+      // El tope de 2 MB no acota el trabajo de decodificar: un PNG muy
+      // comprimido cabe de sobra declarando decenas de miles de píxeles por
+      // lado, y descomprimirlo cuesta gigabytes. Se mide antes de decodificar,
+      // así que la prueba va sobre las dimensiones y no sobre un archivo real
+      // de 40 MP, que no cabría en la memoria del runner.
+      const { service } = buildService();
+
+      expect(() =>
+        service.assertWithinPixelBudget('png', 30_000, 30_000),
+      ).toThrow(PayloadTooLargeException);
+      try {
+        service.assertWithinPixelBudget('png', 30_000, 30_000);
+      } catch (error: any) {
+        expect(error.response).toMatchObject({
+          error: 'IMAGE_TOO_LARGE',
+          data: { maxPixels: MAX_PROFILE_PHOTO_PIXELS, pixels: 900_000_000 },
+        });
+      }
+    });
+
+    it('deja pasar una foto de cámara normal', () => {
+      // 24 MP (6000x4000) es una réflex cualquiera: el tope está para las bombas
+      // de descompresión, no para las fotos de los usuarios.
+      const { service } = buildService();
+
+      expect(() =>
+        service.assertWithinPixelBudget('jpeg', 6000, 4000),
+      ).not.toThrow();
+    });
+
+    it('trata como formato inválido lo que no declara dimensiones', () => {
+      const { service } = buildService();
+
+      expect(() =>
+        service.assertWithinPixelBudget('png', undefined, 10),
+      ).toThrow(BadRequestException);
     });
 
     it('rechaza como 400 una imagen cuya cabecera es válida pero el cuerpo no', async () => {
@@ -1639,6 +1682,9 @@ describe('UsersService — foto de perfil', () => {
         `users/${UID}/avatar.webp`,
         anterior,
         'image/webp',
+        // Condicionada a la generación que escribió esta subida: si otra ya
+        // confirmó una foto más nueva, no se pisa.
+        { ifGenerationMatch: '17' },
       );
     });
 
@@ -1655,7 +1701,27 @@ describe('UsersService — foto de perfil', () => {
 
       expect(storageService.deletePublicFile).toHaveBeenCalledWith(
         `users/${UID}/avatar.webp`,
+        { ifGenerationMatch: '17' },
       );
+    });
+
+    it('no pisa la foto que otra subida ya confirmó', async () => {
+      // El 412 de GCS es la señal de que la generación cambió: la compensación
+      // llega tarde y lo correcto es no tocar nada.
+      const { service, firestoreService, storageService } = buildService();
+      storageService.readPublicFile.mockResolvedValue(Buffer.from('anterior'));
+      firestoreService.updateUser.mockRejectedValue(
+        new Error('firestore caído'),
+      );
+      storageService.savePublicFile
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '17' })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('generation mismatch'), { code: 412 }),
+        );
+
+      await expect(
+        service.uploadProfilePhoto(UID, upload(await imagen('png'))),
+      ).rejects.toThrow('firestore caído');
     });
 
     it('propaga el error original aunque la restauración falle', async () => {
@@ -1665,7 +1731,7 @@ describe('UsersService — foto de perfil', () => {
         new Error('firestore caído'),
       );
       storageService.savePublicFile
-        .mockResolvedValueOnce(PUBLIC_URL)
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '17' })
         .mockRejectedValueOnce(new Error('gcs caído'));
 
       await expect(

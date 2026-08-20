@@ -4,6 +4,18 @@ import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { Inject } from '@nestjs/common';
 
+export interface PublicFileWriteOptions {
+  cacheControl?: string;
+  /** Escribe solo si el objeto sigue en esta generación (CAS de GCS). */
+  ifGenerationMatch?: number | string;
+}
+
+export interface PublicFileWriteResult {
+  url: string;
+  /** Generación resultante, para condicionar escrituras posteriores. */
+  generation?: string;
+}
+
 @Injectable()
 export class StorageService {
   private storage: Storage;
@@ -173,24 +185,39 @@ export class StorageService {
   }
 
   /**
-   * Guarda un archivo en el bucket de lectura pública y devuelve su URL.
+   * Guarda un archivo en el bucket de lectura pública.
    *
    * Sobrescribe el objeto si ya existe: los avatares usan una ruta fija por
    * usuario para no acumular huérfanos, y quien llama añade una versión en la
    * query para invalidar la caché.
+   *
+   * Devuelve también la generación escrita, que es lo que permite condicionar
+   * una escritura posterior a que nadie haya sustituido el objeto entretanto
+   * (`ifGenerationMatch`): sin esa precondición, una compensación tardía podría
+   * pisar una foto más reciente ya confirmada.
    */
   async savePublicFile(
     filePath: string,
     content: Buffer,
     contentType: string,
-    cacheControl = 'public, max-age=86400',
-  ): Promise<string> {
-    await this.storage
-      .bucket(this.publicBucketName)
-      .file(filePath)
-      .save(content, { metadata: { contentType, cacheControl } });
+    options: PublicFileWriteOptions = {},
+  ): Promise<PublicFileWriteResult> {
+    const file = this.storage.bucket(this.publicBucketName).file(filePath);
 
-    return this.getPublicFileUrl(filePath);
+    await file.save(content, {
+      metadata: {
+        contentType,
+        cacheControl: options.cacheControl ?? 'public, max-age=86400',
+      },
+      ...(options.ifGenerationMatch !== undefined
+        ? { preconditionOpts: { ifGenerationMatch: options.ifGenerationMatch } }
+        : {}),
+    });
+
+    return {
+      url: this.getPublicFileUrl(filePath),
+      generation: file.metadata?.generation?.toString(),
+    };
   }
 
   /**
@@ -223,11 +250,29 @@ export class StorageService {
    *
    * El 404 no es un error: quitar una foto que ya no está en Storage —porque
    * nunca se subió o porque se borró antes— debe dejar el perfil limpio igual.
+   *
+   * Con `ifGenerationMatch` el borrado solo ocurre si el objeto sigue siendo el
+   * que vio quien llama; si otro lo sustituyó, GCS responde 412 y aquí se trata
+   * como el 404: no hay nada que borrar que sea nuestro.
    */
-  async deletePublicFile(filePath: string): Promise<void> {
+  async deletePublicFile(
+    filePath: string,
+    options: { ifGenerationMatch?: number | string } = {},
+  ): Promise<void> {
     try {
-      await this.storage.bucket(this.publicBucketName).file(filePath).delete();
+      await this.storage
+        .bucket(this.publicBucketName)
+        .file(filePath)
+        // La precondición no está en el tipo de `DeleteFileOptions`, pero la
+        // librería la reenvía como query param y GCS la aplica.
+        .delete(options as any);
     } catch (error) {
+      if (error?.code === 412) {
+        this.logger.warn(
+          `No se borró ${filePath}: otra escritura más reciente lo sustituyó`,
+        );
+        return;
+      }
       if (error?.code === 404) {
         return;
       }
