@@ -1812,70 +1812,96 @@ export class ZplService {
   }
 
   /**
+   * Agrupa las etiquetas únicas del ZPL con su número de copias.
+   *
+   * Normaliza cada bloque `^XA…^XZ` (sin saltos de línea, espacios colapsados
+   * y sin `^PQ`) para que dos etiquetas idénticas cuenten como una sola: cada
+   * etiqueta única es una petición a Labelary, las copias no cuestan nada.
+   *
+   * @param zplContent Contenido ZPL a analizar
+   * @returns Etiquetas únicas normalizadas, en orden de aparición, con su qty
+   */
+  extractUniqueLabels(zplContent: string): { zpl: string; qty: number }[] {
+    const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
+    if (!labelMatches) {
+      throw new HttpException(
+        'No se encontraron etiquetas válidas en el contenido ZPL',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const uniqueLabels = new Map<string, number>();
+
+    for (const label of labelMatches) {
+      let normalized = label
+        .replace(/[\r\n]+/g, '') // Eliminar saltos de línea
+        .replace(/\s+/g, ' ') // Normalizar espacios
+        .trim();
+
+      // Extraer y eliminar ^PQ para contar copias
+      const pqMatch = normalized.match(/\^PQ(\d+)/);
+      const copies = pqMatch ? parseInt(pqMatch[1], 10) : 1;
+      normalized = normalized.replace(/\^PQ\d+,?\d*,?\d*,?\d*/g, '');
+
+      // Asegurar formato ZPL correcto
+      if (!normalized.startsWith('^XA')) normalized = '^XA' + normalized;
+      if (!normalized.endsWith('^XZ')) normalized += '^XZ';
+
+      uniqueLabels.set(
+        normalized,
+        (uniqueLabels.get(normalized) || 0) + copies,
+      );
+    }
+
+    return Array.from(uniqueLabels.entries()).map(([zpl, qty]) => ({
+      zpl,
+      qty,
+    }));
+  }
+
+  /**
    * Obtiene las previsualizaciones de las etiquetas únicas con sus cantidades
    * @param zplContent Contenido ZPL a analizar
    * @param labelSize Tamaño de la etiqueta
+   * @param options.maxUniqueLabels Renderiza como mucho N etiquetas únicas.
+   *   El recorte ocurre ANTES de llamar a Labelary (plan free: 1 req/s para
+   *   toda la plataforma), así que acota el gasto real, no solo la respuesta.
    * @returns Array de objetos con imagen y cantidad de cada etiqueta única
    */
   async getLabelsPreview(
     zplContent: string,
     labelSize: LabelSize,
+    options?: { maxUniqueLabels?: number },
   ): Promise<ZplPreviewItemDto[]> {
     try {
-      // 1. Extraer etiquetas individuales (separar por ^XA...^XZ)
-      const labelMatches = zplContent.match(/\^XA.*?\^XZ/gs);
-      if (!labelMatches) {
-        throw new HttpException(
-          'No se encontraron etiquetas válidas en el contenido ZPL',
-          HttpStatus.BAD_REQUEST,
+      // 1. Extraer etiquetas únicas normalizadas con sus copias
+      const uniqueLabels = this.extractUniqueLabels(zplContent);
+
+      this.logger.debug(`Total de etiquetas únicas: ${uniqueLabels.length}`);
+
+      // 2. Recortar antes de tocar Labelary si el llamador puso un tope
+      const maxUniqueLabels = options?.maxUniqueLabels;
+      const labelsToRender =
+        maxUniqueLabels && maxUniqueLabels > 0
+          ? uniqueLabels.slice(0, maxUniqueLabels)
+          : uniqueLabels;
+
+      if (labelsToRender.length < uniqueLabels.length) {
+        this.logger.debug(
+          `Vista previa acotada a ${labelsToRender.length} de ${uniqueLabels.length} etiquetas únicas`,
         );
       }
-
-      // 2. Procesar etiquetas y contar duplicados
-      const uniqueLabels = new Map<string, number>();
-      const normalizedLabels: string[] = [];
-
-      for (const label of labelMatches) {
-        let normalized = label
-          .replace(/[\r\n]+/g, '') // Eliminar saltos de línea
-          .replace(/\s+/g, ' ') // Normalizar espacios
-          .trim();
-
-        // Extraer y eliminar ^PQ para contar copias
-        const pqMatch = normalized.match(/\^PQ(\d+)/);
-        const copies = pqMatch ? parseInt(pqMatch[1], 10) : 1;
-        normalized = normalized.replace(/\^PQ\d+,?\d*,?\d*,?\d*/g, '');
-
-        // Asegurar formato ZPL correcto
-        if (!normalized.startsWith('^XA')) normalized = '^XA' + normalized;
-        if (!normalized.endsWith('^XZ')) normalized += '^XZ';
-
-        uniqueLabels.set(
-          normalized,
-          (uniqueLabels.get(normalized) || 0) + copies,
-        );
-        if (!normalizedLabels.includes(normalized)) {
-          normalizedLabels.push(normalized);
-        }
-      }
-
-      this.logger.debug(
-        `Total de etiquetas encontradas: ${labelMatches.length}`,
-      );
-      this.logger.debug(
-        `Total de etiquetas únicas: ${normalizedLabels.length}`,
-      );
 
       // 3. Procesar etiquetas y generar previsualizaciones
       const labelPreviews: ZplPreviewItemDto[] = [];
 
       // Procesar cada etiqueta única individualmente, pero secuencialmente para evitar errores de rate limit
-      for (const zpl of normalizedLabels) {
+      for (const { zpl, qty } of labelsToRender) {
         try {
           const buffer = await this.getSingleLabelaryPngImage(zpl, labelSize);
           labelPreviews.push({
             img: `data:image/png;base64,${buffer.toString('base64')}`,
-            qty: uniqueLabels.get(zpl) || 0,
+            qty,
           });
         } catch (error) {
           this.logger.error(`Error al procesar etiqueta: ${error.message}`);

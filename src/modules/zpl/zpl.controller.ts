@@ -14,7 +14,7 @@ import {
   HttpException,
   UseGuards,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { v4 as uuidv4 } from 'uuid';
 import { ZplService } from './zpl.service.js';
 import { ConvertZplDto } from './dto/convert-zpl.dto.js';
@@ -42,7 +42,15 @@ import {
   BatchDownloadResponseDto,
 } from './dto/batch.dto.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
+import {
+  PublicPreviewThrottlerGuard,
+  PUBLIC_PREVIEW_THROTTLERS,
+} from '../../common/guards/public-preview-throttler.guard.js';
 import { FontPreviewPublicDto } from './dto/font-preview-public.dto.js';
+import {
+  PublicPreviewDto,
+  PUBLIC_PREVIEW_MAX_UNIQUE_LABELS,
+} from './dto/public-preview.dto.js';
 
 interface ProcessZplDto {
   zplContent: string;
@@ -754,6 +762,114 @@ export class ZplController {
 
     const labelSize = dto.labelSize || LabelSize.FOUR_BY_SIX;
     return this.zplService.getPublicFontPreview(dto.zplContent, labelSize);
+  }
+
+  // ============== PUBLIC PREVIEW ENDPOINT (VISOR ZPL) ==============
+
+  // Endpoint aparte y no `POST /zpl/preview` sin guard a proposito: el rate
+  // limit por IP y el tope de etiquetas son para el visitante anonimo, no para
+  // quien paga (que ademas comparte IP con toda su oficina detras del NAT).
+  @Post('public-preview')
+  @HttpCode(HttpStatus.OK)
+  // Omite solo el throttler global `default`, cuyo storage no esta acotado.
+  // Los nombres del guard propio son distintos, asi que este sigue activo.
+  @SkipThrottle()
+  // El rate limit por IP vive en el guard, con opciones y storage propios (ver
+  // PublicPreviewThrottlerGuard): declararlo en el ThrottlerModule global
+  // habria anadido esas ventanas a TODAS las rutas del API.
+  @UseGuards(PublicPreviewThrottlerGuard)
+  @ApiOperation({
+    summary: 'Vista previa publica de etiquetas ZPL (sin autenticacion)',
+    description:
+      'Recibe codigo ZPL y devuelve imagenes PNG de las etiquetas unicas con sus cantidades, ' +
+      'con la misma forma de respuesta que POST /zpl/preview. ' +
+      `Renderiza como mucho ${PUBLIC_PREVIEW_MAX_UNIQUE_LABELS} etiquetas unicas por peticion ` +
+      '(el recorte se aplica antes de llamar a Labelary; el archivo completo requiere cuenta). ' +
+      `Rate limit por IP del visitante: ${PUBLIC_PREVIEW_THROTTLERS.clientMinute.limit} peticiones/minuto ` +
+      `y ${PUBLIC_PREVIEW_THROTTLERS.clientHourly.limit}/hora, mas un tope agregado por IP de origen real ` +
+      `(${PUBLIC_PREVIEW_THROTTLERS.peerMinute.limit}/minuto, ${PUBLIC_PREVIEW_THROTTLERS.peerHourly.limit}/hora). ` +
+      'No requiere autenticacion.',
+  })
+  @ApiBody({ type: PublicPreviewDto })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Vista previa generada correctamente',
+    schema: {
+      properties: {
+        success: { type: 'boolean', example: true },
+        message: {
+          type: 'string',
+          example: 'Vista previa generada correctamente',
+        },
+        data: {
+          type: 'array',
+          description: `Como mucho ${PUBLIC_PREVIEW_MAX_UNIQUE_LABELS} elementos`,
+          items: {
+            type: 'object',
+            properties: {
+              img: {
+                type: 'string',
+                description: 'Imagen PNG en base64',
+                example: 'data:image/png;base64,...',
+              },
+              qty: {
+                type: 'number',
+                description:
+                  'Cantidad real de copias de la etiqueta en el archivo (^PQ incluido)',
+                example: 5,
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Contenido ZPL invalido (INVALID_ZPL) o demasiado grande',
+  })
+  @ApiResponse({
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    description:
+      'Rate limit superado, por visitante o agregado por IP de origen real',
+  })
+  @ApiResponse({
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    description:
+      'No se pudo renderizar ninguna etiqueta (Labelary no responde)',
+  })
+  async publicPreview(
+    @Body() dto: PublicPreviewDto,
+  ): Promise<ZplPreviewResponseDto> {
+    this.validateZplContent(dto.zplContent);
+
+    const size = dto.labelSize || LabelSize.TWO_BY_ONE;
+    const previews = await this.zplService.getLabelsPreview(
+      dto.zplContent,
+      size,
+      { maxUniqueLabels: PUBLIC_PREVIEW_MAX_UNIQUE_LABELS },
+    );
+
+    // `getLabelsPreview` se traga el fallo de cada etiqueta para seguir con las
+    // demas, asi que si Labelary esta caido o devolviendo 429 la lista llega
+    // vacia. Devolver 200 con `data: []` le pintaria al visitante un lienzo en
+    // blanco sin explicacion; el frontend sabe distinguir un error.
+    if (previews.length === 0) {
+      throw new HttpException(
+        {
+          error: ErrorCodes.SERVICE_UNAVAILABLE,
+          message:
+            'No se pudo generar la vista previa en este momento. Intenta de nuevo en unos segundos.',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    return {
+      success: true,
+      message: 'Vista previa generada correctamente',
+      data: previews,
+    };
   }
 
   // ============== BATCH PROCESSING ENDPOINTS ==============
