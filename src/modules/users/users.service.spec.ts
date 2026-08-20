@@ -1413,8 +1413,21 @@ describe('UsersService — foto de perfil', () => {
     service.firestoreService = firestoreService;
     service.firebaseAdminService = firebaseAdminService;
     service.storageService = storageService;
+    service.profilePhotoOperations = new Map<string, Promise<void>>();
 
     return { service, firestoreService, firebaseAdminService, storageService };
+  }
+
+  function promesaControlada(): {
+    promise: Promise<void>;
+    resolve: () => void;
+  } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+
+    return { promise, resolve };
   }
 
   async function imagen(
@@ -1755,6 +1768,99 @@ describe('UsersService — foto de perfil', () => {
 
       // Solo la escritura de la foto nueva: ninguna reversión a ciegas.
       expect(firebaseAdminService.updateUser).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('coordinación para que objeto y perfil no se contradigan', () => {
+    it('no deja que una subida publique la imagen escrita por la otra', async () => {
+      // La primera queda detenida después de guardar sus bytes. Sin una sección
+      // crítica compartida, la segunda pisaría el objeto antes de que la primera
+      // publicara su URL, dejando esa URL asociada a los bytes equivocados.
+      const { service, firestoreService, storageService } = buildService();
+      const primeraPublicando = promesaControlada();
+      const liberarPrimera = promesaControlada();
+      const segundaNormalizada = promesaControlada();
+
+      service.normalizeProfilePhoto = jest
+        .fn()
+        .mockResolvedValueOnce(Buffer.from('normalizada-1'))
+        .mockImplementationOnce(async () => {
+          segundaNormalizada.resolve();
+          return Buffer.from('normalizada-2');
+        });
+      firestoreService.updateUser.mockImplementationOnce(async () => {
+        primeraPublicando.resolve();
+        await liberarPrimera.promise;
+      });
+      storageService.savePublicFile
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '17' })
+        .mockResolvedValueOnce({ url: PUBLIC_URL, generation: '18' });
+
+      const primera = service.uploadProfilePhoto(
+        UID,
+        upload(Buffer.from('original-1')),
+      );
+      await primeraPublicando.promise;
+
+      const segunda = service.uploadProfilePhoto(
+        UID,
+        upload(Buffer.from('original-2')),
+      );
+      await segundaNormalizada.promise;
+      await Promise.resolve();
+
+      expect(storageService.savePublicFile).toHaveBeenCalledTimes(1);
+
+      liberarPrimera.resolve();
+      await Promise.all([primera, segunda]);
+
+      expect(storageService.savePublicFile).toHaveBeenCalledTimes(2);
+      expect(
+        firestoreService.updateUser.mock.invocationCallOrder[0],
+      ).toBeLessThan(storageService.savePublicFile.mock.invocationCallOrder[1]);
+      expect(service.profilePhotoOperations.size).toBe(0);
+    });
+
+    it('no borra la generación que una subida simultánea acaba de publicar', async () => {
+      // El borrado queda detenido después de limpiar el perfil. Sin compartir la
+      // misma cola, una subida podría guardar y publicar su foto en ese hueco y
+      // el DELETE borraría después justo el objeto que el perfil nuevo referencia.
+      const { service, firestoreService, storageService } = buildService();
+      const borradoEnStorage = promesaControlada();
+      const liberarBorrado = promesaControlada();
+      const subidaNormalizada = promesaControlada();
+
+      storageService.deletePublicFile.mockImplementationOnce(async () => {
+        borradoEnStorage.resolve();
+        await liberarBorrado.promise;
+      });
+      service.normalizeProfilePhoto = jest.fn(async () => {
+        subidaNormalizada.resolve();
+        return Buffer.from('normalizada-nueva');
+      });
+
+      const borrado = service.deleteProfilePhoto(UID);
+      await borradoEnStorage.promise;
+
+      const subida = service.uploadProfilePhoto(
+        UID,
+        upload(Buffer.from('original-nuevo')),
+      );
+      await subidaNormalizada.promise;
+      await Promise.resolve();
+
+      expect(storageService.savePublicFile).not.toHaveBeenCalled();
+
+      liberarBorrado.resolve();
+      await Promise.all([borrado, subida]);
+
+      expect(
+        storageService.deletePublicFile.mock.invocationCallOrder[0],
+      ).toBeLessThan(storageService.savePublicFile.mock.invocationCallOrder[0]);
+      expect(firestoreService.updateUser).toHaveBeenLastCalledWith(UID, {
+        photoURL: expect.stringMatching(new RegExp(`^${PUBLIC_URL}\\?v=\\d+$`)),
+      });
+      expect(service.profilePhotoOperations.size).toBe(0);
     });
   });
 

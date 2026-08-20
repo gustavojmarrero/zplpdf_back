@@ -134,6 +134,14 @@ export class UsersService {
   private readonly historyScanCache = new Map<string, HistoryScanCacheEntry>();
 
   /**
+   * Cola por usuario para que el objeto del avatar y la URL del perfil cambien
+   * como una sola operación. La instancia de Cloud Run está limitada a una, de
+   * modo que esta coordinación en memoria cubre todas las peticiones que pueden
+   * competir por la ruta fija de un usuario.
+   */
+  private readonly profilePhotoOperations = new Map<string, Promise<void>>();
+
+  /**
    * Contador monótono de invalidaciones. Permite detectar que se registró una
    * conversión mientras un escaneo estaba en vuelo y descartar su resultado.
    *
@@ -408,33 +416,35 @@ export class UsersService {
     const normalized = await this.normalizeProfilePhoto(file.buffer);
     const path = this.getProfilePhotoPath(userId);
 
-    // Los bytes anteriores se guardan antes de pisarlos. El objeto vive en una
-    // ruta fija —para no acumular huérfanos—, así que la subida es destructiva y
-    // `applyProfilePhotoURL` solo sabe revertir la URL, no la imagen: sin esto,
-    // una petición que termina en error acabaría mostrando la foto nueva en
-    // cuanto caducara la caché. Es un WebP de unos pocos KB.
-    const previousBytes = await this.storageService.readPublicFile(path);
+    return this.serializeProfilePhotoOperation(userId, async () => {
+      // Los bytes anteriores se guardan antes de pisarlos. El objeto vive en una
+      // ruta fija —para no acumular huérfanos—, así que la subida es destructiva
+      // y `applyProfilePhotoURL` solo sabe revertir la URL, no la imagen: sin
+      // esto, una petición que termina en error acabaría mostrando la foto nueva
+      // en cuanto caducara la caché. Es un WebP de unos pocos KB.
+      const previousBytes = await this.storageService.readPublicFile(path);
 
-    const { url, generation } = await this.storageService.savePublicFile(
-      path,
-      normalized,
-      'image/webp',
-    );
-    // La ruta del objeto no cambia entre subidas, así que sin versión en la
-    // query el navegador —y cualquier caché intermedia— seguiría sirviendo la
-    // foto anterior.
-    const photoURL = `${url}?v=${Date.now()}`;
+      const { url, generation } = await this.storageService.savePublicFile(
+        path,
+        normalized,
+        'image/webp',
+      );
+      // La ruta del objeto no cambia entre subidas, así que sin versión en la
+      // query el navegador —y cualquier caché intermedia— seguiría sirviendo la
+      // foto anterior.
+      const photoURL = `${url}?v=${Date.now()}`;
 
-    try {
-      await this.applyProfilePhotoURL(userId, photoURL);
-    } catch (error) {
-      await this.restoreProfilePhotoObject(path, previousBytes, generation);
-      throw error;
-    }
+      try {
+        await this.applyProfilePhotoURL(userId, photoURL);
+      } catch (error) {
+        await this.restoreProfilePhotoObject(path, previousBytes, generation);
+        throw error;
+      }
 
-    this.logger.log(`Foto de perfil actualizada para ${userId}`);
+      this.logger.log(`Foto de perfil actualizada para ${userId}`);
 
-    return { photoURL };
+      return { photoURL };
+    });
   }
 
   /**
@@ -460,13 +470,42 @@ export class UsersService {
     // `null` explícito, no borrar el campo: distingue "quitó su foto" de "nunca
     // subió ninguna", y es esa diferencia la que decide si el perfil vuelve a
     // caer en la foto del proveedor de acceso.
-    await this.applyProfilePhotoURL(userId, null);
+    await this.serializeProfilePhotoOperation(userId, async () => {
+      await this.applyProfilePhotoURL(userId, null);
 
-    await this.storageService.deletePublicFile(
-      this.getProfilePhotoPath(userId),
+      await this.storageService.deletePublicFile(
+        this.getProfilePhotoPath(userId),
+      );
+
+      this.logger.log(`Foto de perfil eliminada para ${userId}`);
+    });
+  }
+
+  /**
+   * Encadena las mutaciones del avatar de un usuario sin bloquear las de los
+   * demás. La cola conserva una promesa siempre resuelta para que un fallo no
+   * impida ejecutar la siguiente operación y elimina la entrada al vaciarse.
+   */
+  private async serializeProfilePhotoOperation<T>(
+    userId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.profilePhotoOperations.get(userId);
+    const result = (previous ?? Promise.resolve()).then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
     );
 
-    this.logger.log(`Foto de perfil eliminada para ${userId}`);
+    this.profilePhotoOperations.set(userId, tail);
+
+    try {
+      return await result;
+    } finally {
+      if (this.profilePhotoOperations.get(userId) === tail) {
+        this.profilePhotoOperations.delete(userId);
+      }
+    }
   }
 
   /**
