@@ -1459,3 +1459,199 @@ describe('FirestoreService — anonimiza UIDs en agregados y auditoría', () => 
     expect(anonymized).toBe(2);
   });
 });
+
+/**
+ * La cola de emails ya costó una tanda de avisos sin enviar por un índice que
+ * faltaba, así que sus consultas se mantienen a un solo filtro y el resto se
+ * descarta en memoria. Lo que estos tests protegen es eso y el ciclo del lease:
+ * un envío reclamado por un proceso que muere no puede quedarse en `sending`
+ * para siempre, ni reenviarse mientras otro worker lo está mandando.
+ */
+describe('FirestoreService — lease de la cola de emails', () => {
+  function emailDoc(
+    id: string,
+    data: Record<string, unknown>,
+  ): Record<string, any> {
+    return {
+      id,
+      exists: true,
+      get: (field: string) => data[field],
+      data: () => data,
+      ref: { id },
+    };
+  }
+
+  function buildService(options: {
+    pending?: Record<string, any>[];
+    sending?: Record<string, any>[];
+    doc?: Record<string, unknown> | null;
+    deletionMarked?: boolean;
+  }) {
+    const queries: Array<Record<string, any>> = [];
+    const update = jest.fn();
+
+    function makeQuery(collection: string, filters: Record<string, any>) {
+      const query: any = {
+        collection,
+        filters,
+        where: (field: string, _op: string, value: unknown) =>
+          makeQuery(collection, { ...filters, [field]: value }),
+        orderBy: () => query,
+        limit: () => query,
+        get: async () => {
+          queries.push({ collection, filters });
+          const docs =
+            filters.status === 'sending'
+              ? (options.sending ?? [])
+              : (options.pending ?? []);
+          return { docs, size: docs.length, empty: docs.length === 0 };
+        },
+      };
+      return query;
+    }
+
+    const service: any = Object.create(FirestoreService.prototype);
+    service.emailQueueCollection = 'email_queue';
+    service.deletedAccountsCollection = 'deleted_accounts';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestore = {
+      collection: (name: string) => ({
+        ...makeQuery(name, {}),
+        doc: (id: string) => ({ id, collection: name }),
+      }),
+      runTransaction: (fn: (t: unknown) => Promise<boolean>) =>
+        fn({
+          get: async (ref: any) =>
+            ref.collection === 'deleted_accounts'
+              ? { exists: !!options.deletionMarked }
+              : options.doc
+                ? emailDoc(ref.id, options.doc)
+                : { exists: false, get: () => undefined },
+          update,
+        }),
+    };
+
+    return { service, update, queries };
+  }
+
+  const HACE_UNA_HORA = new Date(Date.now() - 60 * 60 * 1000);
+  const HACE_UN_SEGUNDO = new Date(Date.now() - 1000);
+
+  it('devuelve al ciclo los envíos que llevan demasiado en sending', async () => {
+    const { service } = buildService({
+      pending: [],
+      sending: [
+        emailDoc('abandonado', {
+          userId: 'uid-1',
+          userEmail: 'a@example.com',
+          emailType: 'welcome',
+          abVariant: 'A',
+          language: 'es',
+          sendingAt: HACE_UNA_HORA,
+        }),
+      ],
+    });
+
+    const result = await service.getPendingEmails(50);
+
+    expect(result.map((e: any) => e.id)).toEqual(['abandonado']);
+  });
+
+  it('no toca el envío que otro worker acaba de reclamar', async () => {
+    const { service } = buildService({
+      pending: [],
+      sending: [
+        emailDoc('en-vuelo', {
+          userId: 'uid-1',
+          sendingAt: HACE_UN_SEGUNDO,
+        }),
+      ],
+    });
+
+    await expect(service.getPendingEmails(50)).resolves.toEqual([]);
+  });
+
+  it('consulta los sending con un solo filtro, sin índice compuesto', async () => {
+    const { service, queries } = buildService({ pending: [], sending: [] });
+
+    await service.getPendingEmails(50);
+    await service.countInFlightEmails('uid-1');
+
+    // Un `where` extra sobre sendingAt o userId exigiría un índice compuesto que
+    // no existe en `email_queue`, y la query fallaría en producción con
+    // FAILED_PRECONDITION.
+    for (const query of queries.filter((q) => q.filters.status === 'sending')) {
+      expect(Object.keys(query.filters)).toEqual(['status']);
+    }
+  });
+
+  it('cuenta solo los envíos en vuelo del usuario que se da de baja', async () => {
+    const { service } = buildService({
+      sending: [
+        emailDoc('suyo', { userId: 'uid-1', sendingAt: HACE_UN_SEGUNDO }),
+        emailDoc('ajeno', { userId: 'uid-2', sendingAt: HACE_UN_SEGUNDO }),
+      ],
+    });
+
+    await expect(service.countInFlightEmails('uid-1')).resolves.toBe(1);
+  });
+
+  it('reclama un email pendiente', async () => {
+    const { service, update } = buildService({
+      doc: { status: 'pending', userId: 'uid-1' },
+    });
+
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(true);
+    expect(update).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: 'sending' }),
+    );
+  });
+
+  it('no reclama un email cuya cuenta está marcada para borrado', async () => {
+    const { service, update } = buildService({
+      doc: { status: 'pending', userId: 'uid-1' },
+      deletionMarked: true,
+    });
+
+    // La marca se escribe antes de barrer nada: el destinatario ya pidió que su
+    // dirección se olvidara, así que el correo no puede salir.
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(
+      false,
+    );
+    expect(update).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        status: 'cancelled',
+        skipReason: 'account_deleted',
+      }),
+    );
+  });
+
+  it('readmite un sending con el lease vencido', async () => {
+    const { service } = buildService({
+      doc: { status: 'sending', userId: 'uid-1', sendingAt: HACE_UNA_HORA },
+    });
+
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(true);
+  });
+
+  it('no readmite un sending que sigue dentro de su lease', async () => {
+    const { service } = buildService({
+      doc: { status: 'sending', userId: 'uid-1', sendingAt: HACE_UN_SEGUNDO },
+    });
+
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(
+      false,
+    );
+  });
+
+  it('no reclama lo que ya se envió o se canceló', async () => {
+    for (const status of ['sent', 'cancelled', 'failed']) {
+      const { service } = buildService({ doc: { status, userId: 'uid-1' } });
+      await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(
+        false,
+      );
+    }
+  });
+});

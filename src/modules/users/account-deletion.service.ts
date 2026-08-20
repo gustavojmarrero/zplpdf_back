@@ -26,6 +26,7 @@ export type AccountDeletionStep =
   | 'batches'
   | 'usage'
   | 'taxProfile'
+  | 'pendingEmails'
   | 'retainedRecords'
   | 'account'
   | 'auth';
@@ -39,6 +40,20 @@ const HISTORY_DELETION_PAGE_SIZE = 500;
  * que acumula la cuenta más activa.
  */
 const MAX_HISTORY_DELETION_PAGES = 40;
+
+/**
+ * Vueltas y espera entre ellas para los correos que un worker ya reclamó. Tres
+ * segundos en total: un envío por Resend se resuelve en mucho menos, y alargarlo
+ * solo haría esperar al usuario ante un worker que ya murió —ese caso lo
+ * recupera el lease de la cola, no esta espera—.
+ */
+const IN_FLIGHT_EMAIL_ATTEMPTS = 6;
+const IN_FLIGHT_EMAIL_POLL_MS = 500;
+
+/** Páginas de suscripciones que se recorren al buscar las que siguen vivas. */
+const MAX_SUBSCRIPTION_PAGES = 10;
+
+const SUBSCRIPTION_PAGE_SIZE = 100;
 
 /** Páginas de facturas que se recorren al contar lo que se conserva. */
 const MAX_INVOICE_PAGES = 10;
@@ -217,10 +232,9 @@ export class AccountDeletionService {
     // el barrido de cancelación ya no encontraría sus documentos por `userId`.
     try {
       await this.firestoreService.cancelPendingEmails(userId);
+      await this.waitForInFlightEmails(userId);
     } catch (error) {
-      this.logger.warn(
-        `Baja de cuenta ${userId}: no se pudieron cancelar los emails pendientes — ${error.message}`,
-      );
+      failed('pendingEmails', error);
     }
 
     try {
@@ -483,17 +497,40 @@ export class AccountDeletionService {
     }
 
     if (user.stripeCustomerId) {
-      const subscriptions = await this.stripe.subscriptions.list({
-        customer: user.stripeCustomerId,
-        status: 'all',
-        limit: 100,
-      });
+      let startingAfter: string | undefined;
 
-      for (const subscription of subscriptions.data) {
-        if (subscription.status !== 'canceled') {
-          ids.add(subscription.id);
+      // Se recorren todas las páginas, como en el conteo de facturas: quedarse
+      // en la primera dejaría suscripciones vivas cobrando a una cuenta ya
+      // borrada, que es justo lo que esta búsqueda existe para evitar.
+      for (let page = 0; page < MAX_SUBSCRIPTION_PAGES; page++) {
+        const subscriptions = await this.stripe.subscriptions.list({
+          customer: user.stripeCustomerId,
+          status: 'all',
+          limit: SUBSCRIPTION_PAGE_SIZE,
+          ...(startingAfter && { starting_after: startingAfter }),
+        });
+
+        for (const subscription of subscriptions.data) {
+          if (subscription.status !== 'canceled') {
+            ids.add(subscription.id);
+          }
         }
+
+        if (!subscriptions.has_more || subscriptions.data.length === 0) {
+          return [...ids];
+        }
+
+        startingAfter = subscriptions.data[subscriptions.data.length - 1].id;
       }
+
+      // Un customer con más suscripciones que este tope no existe en este
+      // producto, pero dar la baja por buena sin haberlas mirado todas sería
+      // afirmar algo que no se comprobó.
+      throw new Error(
+        `El customer ${user.stripeCustomerId} tiene más de ` +
+          `${MAX_SUBSCRIPTION_PAGES * SUBSCRIPTION_PAGE_SIZE} suscripciones; ` +
+          'no se puede garantizar que no quede ninguna activa',
+      );
     }
 
     return [...ids];
@@ -614,6 +651,53 @@ export class AccountDeletionService {
     }
 
     return { conversions, storedFiles, storageFailed, incomplete };
+  }
+
+  /**
+   * Espera a que no quede ningún correo suyo a medio enviar.
+   *
+   * `cancelPendingEmails` solo alcanza a los `pending`. El que un worker ya
+   * reclamó está en `sending` con el destinatario cargado en memoria, y va a
+   * llamar a Resend de todas formas: lo único que se puede hacer es no dar la
+   * baja por terminada hasta que se resuelva. Confirmarle a alguien que su
+   * cuenta ya no existe y mandarle a continuación un correo a la dirección que
+   * acabamos de prometer olvidar es precisamente lo que se denuncia como
+   * incumplimiento.
+   *
+   * La marca de baja ya impide que se reclamen nuevos —`claimPendingEmail` la
+   * lee dentro de su transacción—, así que esta espera solo cubre los que
+   * salieron antes y termina en cuanto el worker escribe su resultado.
+   *
+   * Si al agotar la espera sigue habiendo alguno, se lanza: el paso cuenta como
+   * fallido, la identidad no se borra y la respuesta lo declara, en vez de
+   * afirmar un borrado que aún puede producir un envío.
+   */
+  private async waitForInFlightEmails(userId: string): Promise<void> {
+    for (let attempt = 0; attempt < IN_FLIGHT_EMAIL_ATTEMPTS; attempt++) {
+      const inFlight = await this.firestoreService.countInFlightEmails(userId);
+
+      if (inFlight === 0) {
+        return;
+      }
+
+      this.logger.warn(
+        `Baja de cuenta ${userId}: ${inFlight} email(s) en vuelo; se espera a que terminen`,
+      );
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, IN_FLIGHT_EMAIL_POLL_MS),
+      );
+    }
+
+    const remaining = await this.firestoreService.countInFlightEmails(userId);
+
+    if (remaining > 0) {
+      throw new Error(
+        `${remaining} email(s) siguen en vuelo tras esperar ${
+          (IN_FLIGHT_EMAIL_ATTEMPTS * IN_FLIGHT_EMAIL_POLL_MS) / 1000
+        }s`,
+      );
+    }
   }
 
   /**

@@ -466,24 +466,31 @@ export class EmailService {
       // lo tomó otro worker, Resend no debe recibir esta llamada.
       const claimed = await this.firestoreService.claimPendingEmail(
         queueItem.id,
+        queueItem.userId,
       );
       if (!claimed) {
         return false;
       }
 
       // Send via Resend
-      const result = await this.resend.emails.send({
-        from: this.fromEmail,
-        to: queueItem.userEmail,
-        subject,
-        html,
-        text,
-        tags: [
-          { name: 'email_type', value: queueItem.emailType },
-          { name: 'ab_variant', value: queueItem.abVariant },
-          { name: 'user_id', value: queueItem.userId },
-        ],
-      });
+      const result = await this.resend.emails.send(
+        {
+          from: this.fromEmail,
+          to: queueItem.userEmail,
+          subject,
+          html,
+          text,
+          tags: [
+            { name: 'email_type', value: queueItem.emailType },
+            { name: 'ab_variant', value: queueItem.abVariant },
+            { name: 'user_id', value: queueItem.userId },
+          ],
+        },
+        // El id de la cola como clave de idempotencia: un envío que quedó en
+        // `sending` porque el proceso murió se puede reintentar sin arriesgar
+        // que al destinatario le llegue dos veces el mismo correo.
+        { idempotencyKey: queueItem.id },
+      );
 
       // Update queue status
       await this.firestoreService.updateEmailQueueStatus(

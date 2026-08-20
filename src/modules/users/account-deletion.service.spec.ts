@@ -79,6 +79,7 @@ function buildService(
     deleteTaxProfile: jest.fn().mockResolvedValue(true),
     anonymizeUserCfdis: jest.fn().mockResolvedValue(3),
     cancelPendingEmails: jest.fn().mockResolvedValue(0),
+    countInFlightEmails: jest.fn().mockResolvedValue(0),
     markAccountDeletion: jest.fn().mockResolvedValue(undefined),
     clearAccountDeletionMark: jest.fn().mockResolvedValue(undefined),
     deleteUser: jest.fn().mockResolvedValue(undefined),
@@ -349,6 +350,68 @@ describe('AccountDeletionService — baja completa', () => {
     const result = await service.deleteAccount('uid-1');
 
     expect(result.deleted.conversions).toBe(20000);
+  });
+
+  it('espera a que salgan los correos ya reclamados antes de dar la baja por buena', async () => {
+    const countInFlightEmails = jest
+      .fn()
+      .mockResolvedValueOnce(1)
+      .mockResolvedValue(0);
+    const { service, firestore } = buildService({
+      firestore: { countInFlightEmails },
+    });
+
+    const result = await service.deleteAccount('uid-1');
+
+    // Confirmar el borrado y mandar después un correo a la dirección que se
+    // acaba de prometer olvidar es el incumplimiento que esta espera evita.
+    expect(countInFlightEmails).toHaveBeenCalledWith('uid-1');
+    expect(countInFlightEmails.mock.calls.length).toBeGreaterThan(1);
+    expect(firestore.deleteUser).toHaveBeenCalled();
+    expect(result.deleted.subscription.cancelled).toBe(true);
+  });
+
+  it('no confirma la baja si un correo sigue en vuelo tras la espera', async () => {
+    const { service, firestore } = buildService({
+      firestore: { countInFlightEmails: jest.fn().mockResolvedValue(1) },
+    });
+
+    const error: HttpException = await service
+      .deleteAccount('uid-1')
+      .catch((e: HttpException) => e);
+
+    const response = error.getResponse() as any;
+    expect(response.data.failedSteps).toContain('pendingEmails');
+    expect(response.data.accountDeleted).toBe(false);
+    expect(firestore.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it('cancela las suscripciones de todas las páginas del customer', async () => {
+    const { service, stripe } = buildService({
+      user: { ...baseUser, stripeSubscriptionId: undefined },
+    });
+    stripe.subscriptions.list
+      .mockResolvedValueOnce({
+        data: Array.from({ length: 100 }, (_, i) => ({
+          id: `sub_${i}`,
+          status: 'active',
+        })),
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: 'sub_ultima', status: 'active' }],
+        has_more: false,
+      });
+
+    await service.deleteAccount('uid-1');
+
+    // Quedarse en la primera página dejaría suscripciones vivas cobrando a una
+    // cuenta ya borrada.
+    expect(stripe.subscriptions.cancel).toHaveBeenCalledWith('sub_ultima');
+    expect(stripe.subscriptions.cancel).toHaveBeenCalledTimes(101);
+    expect(stripe.subscriptions.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ starting_after: 'sub_99' }),
+    );
   });
 
   it('conserva la fila del historial cuyo archivo no se pudo borrar', async () => {

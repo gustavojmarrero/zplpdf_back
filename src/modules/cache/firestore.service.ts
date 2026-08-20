@@ -51,6 +51,21 @@ import type {
   HighUsageUsersResult,
 } from '../email/interfaces/email.interface.js';
 
+/**
+ * Tiempo que un worker puede tener un email en `sending` antes de que se
+ * considere abandonado y otro pueda retomarlo. Holgado a propósito: reintentar
+ * un envío que sigue en vuelo cuesta una entrega duplicada, mientras que esperar
+ * de más solo retrasa un correo que ya se perdió.
+ */
+export const EMAIL_SEND_LEASE_MS = 10 * 60 * 1000;
+
+/**
+ * Tope de documentos en `sending` que se leen de una vez. Son los envíos en
+ * vuelo más los abandonados: si alguna vez hubiera más, sobra con tratarlos en
+ * varias vueltas del cron.
+ */
+const MAX_SENDING_SCAN = 200;
+
 // ============== Daily Stats (Aggregated Metrics) ==============
 
 export interface DailyStats {
@@ -5035,7 +5050,7 @@ export class FirestoreService {
       .limit(limit)
       .get();
 
-    return snapshot.docs.map((doc) => {
+    const toQueueItem = (doc: FirebaseFirestore.DocumentSnapshot) => {
       const data = doc.data();
       return {
         id: doc.id,
@@ -5047,7 +5062,91 @@ export class FirestoreService {
         scheduledFor: data.scheduledFor?.toDate?.() || data.scheduledFor,
         metadata: data.metadata,
       };
+    };
+
+    const pending = snapshot.docs.map(toQueueItem);
+
+    if (pending.length >= limit) {
+      return pending;
+    }
+
+    const abandoned = await this.getAbandonedSendingEmails(
+      limit - pending.length,
+    );
+
+    return [...pending, ...abandoned.map(toQueueItem)];
+  }
+
+  /**
+   * Envíos que se quedaron en `sending` porque el proceso murió entre la
+   * reclamación y la escritura del resultado.
+   *
+   * Sin esto el documento se queda en ese estado para siempre —`getPendingEmails`
+   * solo mira `pending`— y el correo se pierde en silencio, avisos de facturación
+   * incluidos. Reenviarlos es seguro porque el envío va con `idempotencyKey`: si
+   * el proceso murió después de que Resend lo aceptara, el segundo intento no
+   * entrega un duplicado.
+   *
+   * La antigüedad se filtra en memoria, no con `where('sendingAt','<=',...)`:
+   * combinarlo con el filtro de estado exigiría un índice compuesto nuevo, y en
+   * esta colección una consulta sin su índice ya costó una tanda de emails sin
+   * enviar. Los documentos en `sending` son un puñado por definición.
+   */
+  private async getAbandonedSendingEmails(
+    limit: number,
+  ): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+    if (limit <= 0) {
+      return [];
+    }
+
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'sending')
+      .limit(MAX_SENDING_SCAN)
+      .get();
+
+    const expiredBefore = Date.now() - EMAIL_SEND_LEASE_MS;
+
+    const abandoned = snapshot.docs.filter((doc) => {
+      const sendingAt =
+        doc.get('sendingAt')?.toDate?.() ?? doc.get('sendingAt');
+      // Sin `sendingAt` no se puede saber si sigue en vuelo; se deja estar, que
+      // es el lado seguro: reenviar lo que otro worker está mandando ahora mismo
+      // gasta una entrega de más.
+      return sendingAt instanceof Date && sendingAt.getTime() <= expiredBefore;
     });
+
+    if (abandoned.length > 0) {
+      this.logger.warn(
+        `${abandoned.length} emails llevaban más de ${
+          EMAIL_SEND_LEASE_MS / 60000
+        } minutos en 'sending'; se reintentan`,
+      );
+    }
+
+    return abandoned.slice(0, limit);
+  }
+
+  /**
+   * Emails de un usuario que un worker ya reclamó y todavía no ha resuelto.
+   *
+   * La baja de cuenta los consulta para no confirmar el borrado mientras puede
+   * salir un correo: `cancelPendingEmails` solo alcanza a los `pending`, y quien
+   * ya pasó a `sending` tiene el destinatario cargado en memoria.
+   */
+  async countInFlightEmails(userId: string): Promise<number> {
+    // Un solo filtro y el usuario se compara en memoria, igual que el barrido de
+    // abandonados: los índices compuestos de esta colección son los que son, y
+    // una query sin el suyo falla en producción con FAILED_PRECONDITION. Los
+    // documentos en `sending` son un puñado en todo el sistema, así que filtrar
+    // aquí no cuesta nada.
+    const snapshot = await this.firestore
+      .collection(this.emailQueueCollection)
+      .where('status', '==', 'sending')
+      .limit(MAX_SENDING_SCAN)
+      .get();
+
+    return snapshot.docs.filter((doc) => doc.get('userId') === userId).length;
   }
 
   /**
@@ -5055,18 +5154,60 @@ export class FirestoreService {
    * La transición condicional evita que dos workers lo manden y hace que una
    * cancelación concurrente gane limpiamente la carrera.
    */
-  async claimPendingEmail(emailId: string): Promise<boolean> {
+  async claimPendingEmail(emailId: string, userId?: string): Promise<boolean> {
     const ref = this.firestore
       .collection(this.emailQueueCollection)
       .doc(emailId);
 
     return this.firestore.runTransaction(async (transaction) => {
       const email = await transaction.get(ref);
-      if (!email.exists || email.get('status') !== 'pending') {
+      if (!email.exists) {
         return false;
       }
 
+      const status = email.get('status');
       const now = new Date();
+
+      // `sending` solo se readmite cuando el lease venció: es el envío que dejó
+      // colgado un proceso muerto, no uno que otro worker esté haciendo ahora.
+      if (status !== 'pending') {
+        if (status !== 'sending') {
+          return false;
+        }
+
+        const sendingAt =
+          email.get('sendingAt')?.toDate?.() ?? email.get('sendingAt');
+
+        if (
+          !(sendingAt instanceof Date) ||
+          sendingAt.getTime() > now.getTime() - EMAIL_SEND_LEASE_MS
+        ) {
+          return false;
+        }
+      }
+
+      // La baja de cuenta marca el UID antes de barrer nada, y esta lectura
+      // dentro de la transacción es lo que impide que un envío se cuele entre
+      // esa marca y la cancelación de la cola: el destinatario ya pidió que su
+      // dirección se olvidara.
+      const ownerId = userId ?? email.get('userId');
+      if (ownerId) {
+        const deleted = await transaction.get(
+          this.firestore
+            .collection(this.deletedAccountsCollection)
+            .doc(ownerId),
+        );
+
+        if (deleted.exists) {
+          transaction.update(ref, {
+            status: 'cancelled',
+            skipReason: 'account_deleted',
+            updatedAt: now,
+          });
+          return false;
+        }
+      }
+
       transaction.update(ref, {
         status: 'sending',
         sendingAt: now,

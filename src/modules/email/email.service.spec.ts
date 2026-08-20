@@ -682,7 +682,9 @@ describe('EmailService.processQueue — preferencias de notificación', () => {
 
     // El snapshot seguía diciendo pending, pero la transacción es la autoridad
     // final. Sobrescribir cancelled con sent reactivaría un correo de la baja.
-    expect(firestore.claimPendingEmail).toHaveBeenCalledWith('q-1');
+    // El userId viaja con el claim: la transacción comprueba la lápida de la
+    // baja de cuenta antes de autorizar el envío.
+    expect(firestore.claimPendingEmail).toHaveBeenCalledWith('q-1', 'uid-1');
     expect(resendSend).not.toHaveBeenCalled();
     expect(firestore.updateEmailQueueStatus).not.toHaveBeenCalled();
     expect(result).toMatchObject({ sent: 0, failed: 0, skipped: 1 });

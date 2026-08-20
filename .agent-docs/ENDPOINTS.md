@@ -134,6 +134,13 @@ que dos clics seguidos en la pantalla de ajustes no se pisen; después se relee 
 documento y se devuelve el estado completo realmente persistido, incluidos cambios
 concurrentes en otras claves.
 
+Un envío que ya está en `sending` cuando empieza una baja no se puede abortar —el
+worker tiene el destinatario en memoria—, así que la baja espera a que se resuelva
+(hasta 3 s) antes de confirmar nada; si sigue en vuelo, responde
+`ACCOUNT_DELETION_PARTIAL` con `failedSteps: ['pendingEmails']` en vez de afirmar un
+borrado que todavía puede producir un correo. Los nuevos ya no salen: el claim lee la
+lápida de `deleted_accounts` dentro de su transacción.
+
 `EmailService.processQueue` las comprueba **justo antes de enviar** —no solo al
 encolar, porque las secuencias se programan con días de antelación— usando el mapa
 `EMAIL_NOTIFICATION_CATEGORY` (`src/modules/email/email-categories.ts`). Lo que no
@@ -141,6 +148,15 @@ sale se marca `cancelled` con su `skipReason` y cuenta en `skipped`, no en `fail
 Justo antes de llamar a Resend, el worker reclama atómicamente el documento con
 `pending -> sending`; si una baja u otro worker cambió ya su estado, no envía ni lo
 sobrescribe a `sent`, y ese elemento también cuenta en `skipped`.
+
+Ese `sending` es un **lease de 10 minutos** (`EMAIL_SEND_LEASE_MS`), no un estado
+final: si el proceso muere entre la reclamación y la escritura del resultado, el
+siguiente ciclo lo retoma en vez de perderlo para siempre. El reintento es seguro
+porque el envío lleva `idempotencyKey` con el id de la cola. El barrido consulta
+`status == 'sending'` con **un solo filtro** y descarta por antigüedad en memoria: en
+`email_queue` solo existen los índices compuestos `emailType+status+userId+createdAt`
+y `status+scheduledFor`, y una consulta sin su índice ya costó una tanda de avisos sin
+enviar.
 
 ### Acciones sobre el historial
 
