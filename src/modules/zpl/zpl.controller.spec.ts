@@ -176,7 +176,7 @@ describe('ZplController — POST /zpl/public-preview (issue #108)', () => {
 
     it('limita por visitante por minuto y por hora, y agrega por origen', () => {
       expect(PUBLIC_PREVIEW_THROTTLERS.clientMinute).toEqual({
-        limit: 10,
+        limit: 6,
         ttl: 60000,
       });
       expect(PUBLIC_PREVIEW_THROTTLERS.clientHourly).toEqual({

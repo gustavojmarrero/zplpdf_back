@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Provider } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerStorageService } from '@nestjs/throttler';
+import { ThrottlerGuard } from '@nestjs/throttler';
+import { BoundedThrottlerStorage } from './bounded-throttler.storage.js';
 // Son interfaces: en ESM hay que importarlas como tipo o el arranque muere con
 // "does not provide an export named ...".
 import type {
@@ -23,13 +24,21 @@ import { getClientDeclaredIp, getTrustedHopIp } from '../utils/request-ip.js';
  *
  * Asi que la primera lleva el tope por visitante y la segunda el tope agregado,
  * que es el que de verdad protege el techo compartido de Labelary (plan free:
- * 1 req/s para toda la plataforma).
+ * 1 req/s para toda la plataforma, o sea 60 llamadas/minuto).
+ *
+ * Los numeros del tope agregado se cuentan en LLAMADAS A LABELARY, no en
+ * peticiones: cada peticion anonima renderiza hasta
+ * `PUBLIC_PREVIEW_MAX_UNIQUE_LABELS` (2) etiquetas unicas, y cada etiqueta es
+ * una llamada. 15 peticiones/minuto son como mucho 30 llamadas/minuto — la
+ * mitad del techo — para que el trafico anonimo nunca pueda dejar sin cola a
+ * las conversiones de quien paga. En la hora, 300 peticiones son como mucho
+ * 600 llamadas, un 17% del techo sostenido.
  */
 export const PUBLIC_PREVIEW_THROTTLERS = {
-  clientMinute: { limit: 10, ttl: 60000 },
+  clientMinute: { limit: 6, ttl: 60000 },
   clientHourly: { limit: 30, ttl: 3600000 },
-  peerMinute: { limit: 60, ttl: 60000 },
-  peerHourly: { limit: 600, ttl: 3600000 },
+  peerMinute: { limit: 15, ttl: 60000 },
+  peerHourly: { limit: 300, ttl: 3600000 },
 } as const;
 
 /** Token de las opciones del guard. */
@@ -78,6 +87,12 @@ export const publicPreviewThrottlerOptions: ThrottlerModuleOptions = {
  * borra keys del Map (ver `CustomThrottlerGuard`). Con storage propio, el coste
  * se queda en las IPs que usan esta ruta.
  *
+ * El orden de evaluacion tambien importa: `ThrottlerGuard` recorre los
+ * throttlers y lanza en el primero que se pase, asi que las ventanas por
+ * identidad NO falsificable van delante. Quien rote el `X-Forwarded-For` recibe
+ * su 429 antes de que la identidad que se acaba de inventar llegue a ocupar
+ * sitio en el storage.
+ *
  * Los `@Inject` explicitos NO son decorativos: `ThrottlerGuard` decora sus dos
  * primeros parametros con los tokens del modulo global, y esa metadata se
  * hereda. Sin sobrescribirla, Nest inyecta aqui las opciones globales y el
@@ -93,6 +108,21 @@ export class PublicPreviewThrottlerGuard extends ThrottlerGuard {
   ) {
     super(options, storage, reflector);
   }
+
+  async onModuleInit(): Promise<void> {
+    await super.onModuleInit();
+
+    // super ordena por ttl y deja el criterio sin definir entre ventanas con el
+    // mismo ttl. Las que cuentan sobre la identidad no falsificable van
+    // primero: ver el comentario de la clase.
+    this.throttlers.sort(
+      (a, b) => Number(isPeerThrottler(b)) - Number(isPeerThrottler(a)),
+    );
+  }
+}
+
+function isPeerThrottler(throttler: { name?: string }): boolean {
+  return throttler.name?.includes('Peer') ?? false;
 }
 
 export const publicPreviewThrottlerProviders: Provider[] = [
@@ -104,7 +134,7 @@ export const publicPreviewThrottlerProviders: Provider[] = [
   // `onApplicationShutdown` y limpia los timers de expiracion al cerrar.
   {
     provide: PUBLIC_PREVIEW_THROTTLER_STORAGE,
-    useClass: ThrottlerStorageService,
+    useClass: BoundedThrottlerStorage,
   },
   PublicPreviewThrottlerGuard,
 ];
