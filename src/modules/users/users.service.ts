@@ -52,6 +52,11 @@ import { EmailService } from '../email/email.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { normalizeLabelSize } from '../zpl/enums/label-size.enum.js';
 import { normalizeOutputFormat } from '../zpl/enums/output-format.enum.js';
+import { extractStoragePathFromSignedUrl } from '../../common/utils/storage-url.util.js';
+import {
+  resolveNotificationPreferences,
+  type NotificationPreferences,
+} from '../../common/interfaces/notification-preferences.interface.js';
 
 export interface CheckCanConvertResult {
   allowed: boolean;
@@ -357,6 +362,86 @@ export class UsersService {
     }
 
     return user.photoURL ?? authPhotoURL;
+  }
+
+  /**
+   * Preferencias de notificación del usuario, siempre con las tres claves.
+   *
+   * Una cuenta anterior a esta feature no tiene el campo guardado y recibe todo
+   * en `true`: nunca pidió dejar de recibir nada.
+   */
+  async getNotificationPreferences(
+    userId: string,
+  ): Promise<NotificationPreferences> {
+    const user = await this.firestoreService.getUserById(userId);
+
+    if (!user) {
+      throw new ForbiddenException('User not found');
+    }
+
+    return resolveNotificationPreferences(user.notificationPreferences);
+  }
+
+  /**
+   * Guarda las preferencias que vengan y devuelve el estado completo resultante.
+   *
+   * La actualización es parcial a propósito —la pantalla de ajustes cambia un
+   * interruptor cada vez—, pero lo que se persiste son siempre las tres claves
+   * resueltas: así el documento no depende de en qué orden se tocaron, y una
+   * clave que el cliente no envía no se queda a medio camino entre "sin definir"
+   * y "desactivada".
+   */
+  async updateNotificationPreferences(
+    userId: string,
+    changes: Partial<NotificationPreferences>,
+  ): Promise<NotificationPreferences> {
+    const user = await this.firestoreService.getUserById(userId);
+
+    if (!user) {
+      throw new ForbiddenException('User not found');
+    }
+
+    // Clave a clave y no con un spread: un DTO parcial puede traer la clave
+    // presente con valor `undefined`, y el spread la impondría sobre la
+    // preferencia guardada, desactivando de vuelta un interruptor que el usuario
+    // no ha tocado en esta petición.
+    const applied: Record<string, boolean> = {};
+    for (const key of [
+      'product',
+      'billing',
+      'usageReminders',
+    ] as (keyof NotificationPreferences)[]) {
+      if (typeof changes[key] === 'boolean') {
+        applied[key] = changes[key];
+      }
+    }
+
+    const current = resolveNotificationPreferences(
+      user.notificationPreferences,
+    );
+    const updated = resolveNotificationPreferences({ ...current, ...applied });
+
+    if (Object.keys(applied).length > 0) {
+      // Solo las claves que vienen, con ruta anidada: escribir el objeto entero
+      // haría que dos cambios simultáneos se pisaran, revirtiendo el interruptor
+      // que el otro acabara de mover.
+      await this.firestoreService.updateNotificationPreferences(
+        userId,
+        applied,
+      );
+
+      // La lectura inicial solo sirve para validar la cuenta y completar el
+      // caso local. Otro PUT puede haber fusionado una clave distinta mientras
+      // este esperaba la escritura; responder aquel snapshot inventaría un
+      // estado que ya no es el persistido.
+      const persisted = await this.firestoreService.getUserById(userId);
+      if (!persisted) {
+        throw new ForbiddenException('User not found');
+      }
+      return resolveNotificationPreferences(persisted.notificationPreferences);
+    }
+
+    return updated;
   }
 
   async getVerificationStatus(userId: string): Promise<VerificationStatusDto> {
@@ -1324,8 +1409,7 @@ export class UsersService {
     downloadFilename: string | null;
   } {
     // Extraer path: https://storage.googleapis.com/bucket/label-xxx.pdf?X-Goog-...
-    const pathMatch = signedUrl.match(/googleapis\.com\/[^/]+\/([^?]+)/);
-    const storagePath = pathMatch ? pathMatch[1] : null;
+    const storagePath = extractStoragePathFromSignedUrl(signedUrl);
 
     // Extraer nombre de descarga del parámetro response-content-disposition
     // Formato: ...&response-content-disposition=attachment%3B%20filename%3D%22nombre.pdf%22&...
@@ -1355,6 +1439,15 @@ export class UsersService {
     userId: string,
     labelCount: number,
   ): Promise<CheckCanConvertResult> {
+    if (await this.firestoreService.isAccountDeletionMarked(userId)) {
+      return {
+        allowed: false,
+        error: 'User not found',
+        errorCode: ErrorCodes.USER_NOT_FOUND,
+        userEmail: null,
+      };
+    }
+
     const user = await this.firestoreService.getUserById(userId);
 
     if (!user) {
@@ -1448,6 +1541,14 @@ export class UsersService {
     periodInfo?: PeriodInfo,
     userPlan?: PlanType,
   ): Promise<void> {
+    // Una conversión puede terminar mucho después de la request que la inició.
+    // La segunda comprobación evita que ese trabajo reanime datos ya barridos;
+    // Firestore repite la misma condición dentro de las escrituras para cerrar
+    // también la carrera entre esta lectura y el commit.
+    if (await this.firestoreService.isAccountDeletionMarked(userId)) {
+      throw new GoneException('Account deletion in progress');
+    }
+
     // Save to history (use null instead of undefined for Firestore)
     await this.firestoreService.saveConversionHistory({
       userId,

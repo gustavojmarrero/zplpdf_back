@@ -150,6 +150,60 @@ export class StorageService {
   }
 
   /**
+   * Borra un objeto del bucket.
+   *
+   * Devuelve `false` si el objeto ya no estaba (404 de GCS) en vez de lanzar: al
+   * dar de baja una cuenta se recorren registros de conversiones antiguas cuyo
+   * PDF pudo caducar hace meses, y esa ausencia es el estado deseado, no un
+   * fallo que deba abortar el borrado.
+   */
+  async deleteFile(filePath: string): Promise<boolean> {
+    try {
+      await this.storage.bucket(this.bucketName).file(filePath).delete();
+      return true;
+    } catch (error) {
+      if (error?.code === 404) {
+        return false;
+      }
+      this.logger.error(
+        `Error al borrar el archivo ${filePath}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Borra todos los objetos que cuelgan de un prefijo y devuelve cuántos había.
+   *
+   * `deleteFiles` no informa de cuántos borró, así que se listan antes: la baja
+   * de cuenta tiene que poder decirle al usuario cuántos archivos suyos se
+   * eliminaron, y un número inventado sería peor que no darlo.
+   *
+   * El prefijo debe terminar en `/`: sin la barra, `debug-zpl/uid1` también
+   * casaría con `debug-zpl/uid10/...` y se llevaría por delante los archivos de
+   * otro usuario.
+   */
+  async deleteByPrefix(prefix: string): Promise<number> {
+    if (!prefix.endsWith('/')) {
+      throw new Error(`El prefijo de borrado debe terminar en "/": ${prefix}`);
+    }
+
+    const [files] = await this.storage
+      .bucket(this.bucketName)
+      .getFiles({ prefix });
+
+    if (files.length === 0) {
+      return 0;
+    }
+
+    await this.storage
+      .bucket(this.bucketName)
+      .deleteFiles({ prefix, force: true });
+
+    return files.length;
+  }
+
+  /**
    * Genera una URL firmada para cualquier archivo en el bucket
    * @param filePath Path del archivo en el bucket (ej: label-xxx.pdf)
    * @param downloadFilename Nombre del archivo para descarga (opcional)

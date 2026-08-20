@@ -20,6 +20,7 @@ jest.mock('@google-cloud/storage', () => ({
 
 import { HttpException } from '@nestjs/common';
 import { ZplService, LabelSize } from './zpl.service.js';
+import { OutputFormat } from './enums/output-format.enum.js';
 
 /**
  * Regresión: una etiqueta de envío real (Amazon Logistics) que empieza con un
@@ -224,6 +225,102 @@ describe('ZplService — generateFilenames (issue #100: timestamp truncado)', ()
     );
 
     expect(downloadFilename).toBe('zplpdf_50x80mm_20260819T1542.pdf');
+  });
+});
+
+/**
+ * Un worker puede seguir convirtiendo cuando la baja ya barrió Firestore y
+ * Storage. La comprobación debe vivir justo junto a la subida: el guard de la
+ * request original ocurrió demasiado pronto para proteger este punto.
+ */
+describe('ZplService — la lápida bloquea subidas tardías', () => {
+  function buildUploadService(marks: boolean[]) {
+    const save = jest.fn().mockResolvedValue(undefined);
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const file = jest.fn().mockReturnValue({ save, delete: remove });
+    const isAccountDeletionMarked = jest
+      .fn()
+      .mockImplementation(async () => marks.shift() ?? false);
+    const saveZplDebugFile = jest.fn().mockResolvedValue(undefined);
+
+    const service = Object.create(ZplService.prototype) as any;
+    Object.assign(service, {
+      logger: {
+        log: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      },
+      bucket: 'test-bucket',
+      jobs: new Map(),
+      storage: { bucket: () => ({ file }) },
+      firestoreService: {
+        isAccountDeletionMarked,
+        saveZplDebugFile,
+        updateConversionStatus: jest.fn().mockResolvedValue(undefined),
+      },
+      usersService: {},
+      logError: jest.fn().mockResolvedValue(true),
+    });
+
+    return {
+      service,
+      save,
+      remove,
+      isAccountDeletionMarked,
+      saveZplDebugFile,
+    };
+  }
+
+  it('no sube el PDF si la cuenta ya estaba marcada al llegar a GCS', async () => {
+    const { service, save, isAccountDeletionMarked } = buildUploadService([
+      true,
+    ]);
+    service.jobs.set('job-1', {
+      id: 'job-1',
+      zplContent: '^XA^FDhola^FS^XZ',
+      labelSize: LabelSize.FOUR_BY_SIX,
+      outputFormat: OutputFormat.PDF,
+      status: 'pending',
+      progress: 0,
+      createdAt: new Date(),
+      userPlan: 'pro',
+    });
+    service.convertZplToPdf = jest.fn().mockResolvedValue(Buffer.from('pdf'));
+
+    await service.processZplConversion(
+      '^XA^FDhola^FS^XZ',
+      '4x6',
+      'job-1',
+      OutputFormat.PDF,
+      'uid-1',
+      'pro',
+    );
+
+    expect(isAccountDeletionMarked).toHaveBeenCalledWith('uid-1');
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('retira el ZPL si la baja empieza mientras GCS termina la subida', async () => {
+    const { service, save, remove, saveZplDebugFile } = buildUploadService([
+      false,
+      true,
+    ]);
+
+    await service.saveZplForDebug(
+      '^XA^FDhola^FS^XZ',
+      'job-1',
+      'uid-1',
+      'user@example.com',
+      '4x6',
+      1,
+      OutputFormat.PDF,
+    );
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledTimes(1);
+    // No queda metadata apuntando a un objeto que la propia carrera retiró.
+    expect(saveZplDebugFile).not.toHaveBeenCalled();
   });
 });
 
@@ -672,6 +769,7 @@ describe('ZplService — el batch deja el ZPL disponible para reconvertir', () =
       },
       firestoreService: {
         getBatchJob: jest.fn().mockResolvedValue({ userId: 'uid-pro' }),
+        isAccountDeletionMarked: jest.fn().mockResolvedValue(false),
         updateZplDebugResult,
       },
       usersService: {

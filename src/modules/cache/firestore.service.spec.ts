@@ -1337,3 +1337,321 @@ describe('FirestoreService — la inactividad no depende del historial', () => {
     expect(resultado.users.map((u: any) => u.userId)).toEqual(['uid-inactivo']);
   });
 });
+
+/**
+ * Las actualizaciones de progreso son muy frecuentes y solo modifican
+ * documentos ya creados. `update()` no resucita un documento borrado, por lo
+ * que releer estado + lápida en una transacción era coste sin protección extra.
+ */
+describe('FirestoreService — progreso sin transacciones de lápida', () => {
+  function buildService() {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const runTransaction = jest.fn();
+    const service: any = Object.create(FirestoreService.prototype);
+    Object.assign(service, {
+      collectionName: 'zpl-conversions',
+      batchCollection: 'zpl-batches',
+      zplDebugCollection: 'zpl_debug_files',
+      logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+      firestore: {
+        collection: () => ({ doc: () => ({ update }) }),
+        runTransaction,
+      },
+    });
+    return { service, update, runTransaction };
+  }
+
+  it('actualiza el progreso de conversión con una sola escritura', async () => {
+    const { service, update, runTransaction } = buildService();
+
+    await service.updateConversionStatus('job-1', { progress: 50 });
+
+    expect(update).toHaveBeenCalledWith({
+      progress: 50,
+      updatedAt: expect.any(String),
+    });
+    expect(runTransaction).not.toHaveBeenCalled();
+  });
+
+  it('no relee el batch ni la lápida para cada archivo procesado', async () => {
+    const { service, update, runTransaction } = buildService();
+
+    await service.updateBatchJob('batch-1', { completedFiles: 3 });
+
+    expect(update).toHaveBeenCalledWith({
+      completedFiles: 3,
+      updatedAt: expect.any(Date),
+    });
+    expect(runTransaction).not.toHaveBeenCalled();
+  });
+
+  it('marca el resultado debug sin convertirlo en una transacción', async () => {
+    const { service, update, runTransaction } = buildService();
+
+    await service.updateZplDebugResult('job-1', 'success');
+
+    expect(update).toHaveBeenCalledWith({ result: 'success' });
+    expect(runTransaction).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * La baja conserva las series históricas, pero no sus identificadores
+ * auxiliares. Los contadores diarios y los datos del cambio de plan deben
+ * sobrevivir exactamente iguales salvo por el UID.
+ */
+describe('FirestoreService — anonimiza UIDs en agregados y auditoría', () => {
+  it('quita el UID sin reescribir totales ni el resto de requestParams', async () => {
+    const dailyRef = { path: 'daily_stats/2026-08-19' };
+    const auditRef = { path: 'admin_audit_log/audit-1' };
+    const dailyDoc = {
+      ref: dailyRef,
+      get: (field: string) =>
+        field === 'activeUserIds' ? ['uid-1', 'uid-2'] : undefined,
+    };
+    const auditDoc = { ref: auditRef };
+    const update = jest.fn();
+    const commit = jest.fn().mockResolvedValue(undefined);
+
+    const service: any = Object.create(FirestoreService.prototype);
+    Object.assign(service, {
+      emailQueueCollection: 'email_queue',
+      emailEventsCollection: 'email_events',
+      feedbackCollection: 'feedback',
+      errorLogsCollection: 'error_logs',
+      dailyStatsCollection: 'daily_stats',
+      adminAuditCollection: 'admin_audit_log',
+      firestore: {
+        collection: (collection: string) => ({
+          where: (field: string) => ({
+            get: async () => {
+              if (collection === 'daily_stats' && field === 'activeUserIds') {
+                return { docs: [dailyDoc], empty: false };
+              }
+              if (
+                collection === 'admin_audit_log' &&
+                field === 'requestParams.userId'
+              ) {
+                return { docs: [auditDoc], empty: false };
+              }
+              return { docs: [], empty: true };
+            },
+          }),
+        }),
+        batch: () => ({ update, commit }),
+      },
+    });
+
+    const anonymized = await service.anonymizeUserActivityRecords('uid-1');
+
+    expect(update).toHaveBeenCalledWith(dailyRef, {
+      activeUserIds: ['uid-2'],
+    });
+    expect(update).toHaveBeenCalledWith(
+      auditRef,
+      expect.objectContaining({
+        'requestParams.userId': FirestoreService.ANONYMIZED_USER_ID,
+        anonymizedAt: expect.any(Date),
+      }),
+    );
+    // Solo se escriben los campos identificadores: ningún contador histórico
+    // ni los planes guardados en requestParams aparecen en los updates.
+    expect(anonymized).toBe(2);
+  });
+});
+
+/**
+ * La cola de emails ya costó una tanda de avisos sin enviar por un índice que
+ * faltaba, así que sus consultas se mantienen a un solo filtro y el resto se
+ * descarta en memoria. Lo que estos tests protegen es eso y el ciclo del lease:
+ * un envío reclamado por un proceso que muere no puede quedarse en `sending`
+ * para siempre, ni reenviarse mientras otro worker lo está mandando.
+ */
+describe('FirestoreService — lease de la cola de emails', () => {
+  function emailDoc(
+    id: string,
+    data: Record<string, unknown>,
+  ): Record<string, any> {
+    return {
+      id,
+      exists: true,
+      get: (field: string) => data[field],
+      data: () => data,
+      ref: { id },
+    };
+  }
+
+  function buildService(options: {
+    pending?: Record<string, any>[];
+    sending?: Record<string, any>[];
+    doc?: Record<string, unknown> | null;
+    deletionMarked?: boolean;
+  }) {
+    const queries: Array<Record<string, any>> = [];
+    const update = jest.fn();
+
+    function makeQuery(collection: string, filters: Record<string, any>) {
+      const query: any = {
+        collection,
+        filters,
+        where: (field: string, _op: string, value: unknown) =>
+          makeQuery(collection, { ...filters, [field]: value }),
+        orderBy: () => query,
+        limit: () => query,
+        get: async () => {
+          queries.push({ collection, filters });
+          const docs =
+            filters.status === 'sending'
+              ? (options.sending ?? [])
+              : (options.pending ?? []);
+          return { docs, size: docs.length, empty: docs.length === 0 };
+        },
+      };
+      return query;
+    }
+
+    const service: any = Object.create(FirestoreService.prototype);
+    service.emailQueueCollection = 'email_queue';
+    service.deletedAccountsCollection = 'deleted_accounts';
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestore = {
+      collection: (name: string) => ({
+        ...makeQuery(name, {}),
+        doc: (id: string) => ({ id, collection: name }),
+      }),
+      runTransaction: (fn: (t: unknown) => Promise<boolean>) =>
+        fn({
+          get: async (ref: any) =>
+            ref.collection === 'deleted_accounts'
+              ? { exists: !!options.deletionMarked }
+              : options.doc
+                ? emailDoc(ref.id, options.doc)
+                : { exists: false, get: () => undefined },
+          update,
+        }),
+    };
+
+    return { service, update, queries };
+  }
+
+  const HACE_UNA_HORA = new Date(Date.now() - 60 * 60 * 1000);
+  const HACE_UN_SEGUNDO = new Date(Date.now() - 1000);
+
+  it('devuelve al ciclo los envíos que llevan demasiado en sending', async () => {
+    const { service } = buildService({
+      pending: [],
+      sending: [
+        emailDoc('abandonado', {
+          userId: 'uid-1',
+          userEmail: 'a@example.com',
+          emailType: 'welcome',
+          abVariant: 'A',
+          language: 'es',
+          sendingAt: HACE_UNA_HORA,
+        }),
+      ],
+    });
+
+    const result = await service.getPendingEmails(50);
+
+    expect(result.map((e: any) => e.id)).toEqual(['abandonado']);
+  });
+
+  it('no toca el envío que otro worker acaba de reclamar', async () => {
+    const { service } = buildService({
+      pending: [],
+      sending: [
+        emailDoc('en-vuelo', {
+          userId: 'uid-1',
+          sendingAt: HACE_UN_SEGUNDO,
+        }),
+      ],
+    });
+
+    await expect(service.getPendingEmails(50)).resolves.toEqual([]);
+  });
+
+  it('consulta los sending con un solo filtro, sin índice compuesto', async () => {
+    const { service, queries } = buildService({ pending: [], sending: [] });
+
+    await service.getPendingEmails(50);
+    await service.countInFlightEmails('uid-1');
+
+    // Un `where` extra sobre sendingAt o userId exigiría un índice compuesto que
+    // no existe en `email_queue`, y la query fallaría en producción con
+    // FAILED_PRECONDITION.
+    for (const query of queries.filter((q) => q.filters.status === 'sending')) {
+      expect(Object.keys(query.filters)).toEqual(['status']);
+    }
+  });
+
+  it('cuenta solo los envíos en vuelo del usuario que se da de baja', async () => {
+    const { service } = buildService({
+      sending: [
+        emailDoc('suyo', { userId: 'uid-1', sendingAt: HACE_UN_SEGUNDO }),
+        emailDoc('ajeno', { userId: 'uid-2', sendingAt: HACE_UN_SEGUNDO }),
+      ],
+    });
+
+    await expect(service.countInFlightEmails('uid-1')).resolves.toBe(1);
+  });
+
+  it('reclama un email pendiente', async () => {
+    const { service, update } = buildService({
+      doc: { status: 'pending', userId: 'uid-1' },
+    });
+
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(true);
+    expect(update).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: 'sending' }),
+    );
+  });
+
+  it('no reclama un email cuya cuenta está marcada para borrado', async () => {
+    const { service, update } = buildService({
+      doc: { status: 'pending', userId: 'uid-1' },
+      deletionMarked: true,
+    });
+
+    // La marca se escribe antes de barrer nada: el destinatario ya pidió que su
+    // dirección se olvidara, así que el correo no puede salir.
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(
+      false,
+    );
+    expect(update).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        status: 'cancelled',
+        skipReason: 'account_deleted',
+      }),
+    );
+  });
+
+  it('readmite un sending con el lease vencido', async () => {
+    const { service } = buildService({
+      doc: { status: 'sending', userId: 'uid-1', sendingAt: HACE_UNA_HORA },
+    });
+
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(true);
+  });
+
+  it('no readmite un sending que sigue dentro de su lease', async () => {
+    const { service } = buildService({
+      doc: { status: 'sending', userId: 'uid-1', sendingAt: HACE_UN_SEGUNDO },
+    });
+
+    await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(
+      false,
+    );
+  });
+
+  it('no reclama lo que ya se envió o se canceló', async () => {
+    for (const status of ['sent', 'cancelled', 'failed']) {
+      const { service } = buildService({ doc: { status, userId: 'uid-1' } });
+      await expect(service.claimPendingEmail('q-1', 'uid-1')).resolves.toBe(
+        false,
+      );
+    }
+  });
+});

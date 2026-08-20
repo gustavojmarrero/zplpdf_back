@@ -1,3 +1,5 @@
+import type { NotificationPreferences } from './notification-preferences.interface.js';
+
 export type PlanType = 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
 export type UserRole = 'user' | 'admin';
 export type CountrySource = 'ip' | 'stripe' | 'manual';
@@ -73,6 +75,11 @@ export interface User {
   city?: string;
   countrySource?: CountrySource;
   countryDetectedAt?: Date;
+  /**
+   * Preferencias de notificación por email. Ausente = todo activado; ver
+   * `resolveNotificationPreferences`.
+   */
+  notificationPreferences?: Partial<NotificationPreferences>;
   // Campos de actividad e inactividad (para GA4)
   lastActivityAt?: Date;
   notifiedInactive7Days?: boolean;

@@ -2001,3 +2001,202 @@ describe('UsersService — foto de perfil', () => {
     });
   });
 });
+
+/**
+ * Sin persistencia, los interruptores de la pantalla de ajustes serían
+ * decorativos: el frontend no los pinta hasta que estos dos métodos existen
+ * (issue #99).
+ */
+describe('UsersService — preferencias de notificación', () => {
+  function buildService(
+    user: Record<string, any> | null,
+    concurrentChanges: Record<string, boolean> = {},
+  ) {
+    const storedUser = user
+      ? {
+          ...user,
+          notificationPreferences: {
+            ...(user.notificationPreferences || {}),
+          },
+        }
+      : null;
+    const updateNotificationPreferences = jest
+      .fn()
+      .mockImplementation(
+        async (_userId: string, changes: Record<string, boolean>) => {
+          if (storedUser) {
+            storedUser.notificationPreferences = {
+              ...storedUser.notificationPreferences,
+              ...changes,
+              ...concurrentChanges,
+            };
+          }
+        },
+      );
+    const service: any = Object.create(UsersService.prototype);
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestoreService = {
+      getUserById: jest.fn().mockImplementation(() => storedUser),
+      updateNotificationPreferences,
+    };
+    return { service, updateNotificationPreferences };
+  }
+
+  it('devuelve todo activado para una cuenta que nunca tocó sus preferencias', async () => {
+    const { service } = buildService({ id: 'uid-1' });
+
+    await expect(service.getNotificationPreferences('uid-1')).resolves.toEqual({
+      product: true,
+      billing: true,
+      usageReminders: true,
+    });
+  });
+
+  it('completa las claves que falten en el documento guardado', async () => {
+    const { service } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    await expect(service.getNotificationPreferences('uid-1')).resolves.toEqual({
+      product: false,
+      billing: true,
+      usageReminders: true,
+    });
+  });
+
+  it('fusiona la actualización parcial sin tocar los interruptores ausentes', async () => {
+    const { service, updateNotificationPreferences } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false, billing: true },
+    });
+
+    const result = await service.updateNotificationPreferences('uid-1', {
+      usageReminders: false,
+    });
+
+    expect(result).toEqual({
+      product: false,
+      billing: true,
+      usageReminders: false,
+    });
+    // Solo se escribe la clave que vino: escribir el objeto entero haría que dos
+    // cambios simultáneos se pisaran.
+    expect(updateNotificationPreferences).toHaveBeenCalledWith('uid-1', {
+      usageReminders: false,
+    });
+  });
+
+  it('no escribe nada si la petición no trae ningún interruptor', async () => {
+    const { service, updateNotificationPreferences } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    const result = await service.updateNotificationPreferences('uid-1', {});
+
+    expect(updateNotificationPreferences).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      product: false,
+      billing: true,
+      usageReminders: true,
+    });
+  });
+
+  it('una clave presente con valor undefined no revierte la preferencia guardada', async () => {
+    const { service } = buildService({
+      id: 'uid-1',
+      notificationPreferences: { product: false },
+    });
+
+    const result = await service.updateNotificationPreferences('uid-1', {
+      product: undefined,
+      billing: false,
+    });
+
+    expect(result.product).toBe(false);
+    expect(result.billing).toBe(false);
+  });
+
+  it('relee el estado persistido después de una actualización concurrente', async () => {
+    const { service } = buildService(
+      {
+        id: 'uid-1',
+        notificationPreferences: {
+          product: true,
+          billing: true,
+          usageReminders: true,
+        },
+      },
+      { billing: false },
+    );
+
+    const result = await service.updateNotificationPreferences('uid-1', {
+      product: false,
+    });
+
+    // El otro PUT cambió billing durante nuestro await. Componer la respuesta
+    // con la lectura inicial lo devolvería reactivado aunque Firestore diga no.
+    expect(result).toEqual({
+      product: false,
+      billing: false,
+      usageReminders: true,
+    });
+  });
+
+  it('rechaza a un usuario que no existe', async () => {
+    const { service } = buildService(null);
+
+    await expect(
+      service.getNotificationPreferences('uid-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.updateNotificationPreferences('uid-1', { product: false }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+/**
+ * Los trabajos asíncronos sobreviven a la request que los creó. La lápida se
+ * consulta de nuevo al autorizar y al registrar para que ese desfase no deje
+ * historial o uso bajo un UID ya dado de baja.
+ */
+describe('UsersService — marca de baja en conversiones', () => {
+  function buildMarkedService() {
+    const service: any = Object.create(UsersService.prototype);
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    service.firestoreService = {
+      isAccountDeletionMarked: jest.fn().mockResolvedValue(true),
+      getUserById: jest.fn(),
+      saveConversionHistory: jest.fn(),
+      incrementUsageWithPeriod: jest.fn(),
+    };
+    return service;
+  }
+
+  it('rechaza una autorización nueva sin volver a crear usage', async () => {
+    const service = buildMarkedService();
+
+    await expect(service.checkCanConvert('uid-1', 1)).resolves.toEqual({
+      allowed: false,
+      error: 'User not found',
+      errorCode: 'USER_NOT_FOUND',
+      userEmail: null,
+    });
+    expect(service.firestoreService.getUserById).not.toHaveBeenCalled();
+  });
+
+  it('aborta un trabajo que terminó después de iniciarse la baja', async () => {
+    const service = buildMarkedService();
+
+    await expect(
+      service.recordConversion('uid-1', 'job-1', 1, '4x6', 'completed'),
+    ).rejects.toBeInstanceOf(GoneException);
+    expect(
+      service.firestoreService.saveConversionHistory,
+    ).not.toHaveBeenCalled();
+    expect(
+      service.firestoreService.incrementUsageWithPeriod,
+    ).not.toHaveBeenCalled();
+  });
+});

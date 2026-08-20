@@ -19,6 +19,11 @@ import type {
   ProPowerUser,
   EmailSkipReasons,
 } from './interfaces/email.interface.js';
+import { getEmailNotificationCategory } from './email-categories.js';
+import {
+  resolveNotificationPreferences,
+  type NotificationPreferences,
+} from '../../common/interfaces/notification-preferences.interface.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
 @Injectable()
@@ -275,21 +280,46 @@ export class EmailService {
    */
   async processQueue(): Promise<ProcessQueueResult> {
     if (!this.isEnabled) {
-      return { sent: 0, failed: 0, executedAt: new Date() };
+      return { sent: 0, failed: 0, skipped: 0, executedAt: new Date() };
     }
 
     const startTime = Date.now();
     let sent = 0;
     let failed = 0;
+    let skipped = 0;
 
     try {
       const pendingEmails = await this.firestoreService.getPendingEmails(50);
       this.logger.log(`Processing ${pendingEmails.length} pending emails`);
 
+      // Una lectura por usuario y no por email: un mismo usuario puede tener
+      // varios pendientes en la misma tanda.
+      const preferencesCache = new Map<
+        string,
+        NotificationPreferences | null
+      >();
+
       for (const email of pendingEmails) {
         try {
-          await this.sendEmail(email);
-          sent++;
+          const skipReason = await this.resolveSkipReason(
+            email,
+            preferencesCache,
+          );
+
+          if (skipReason) {
+            await this.firestoreService.cancelQueuedEmail(email.id, skipReason);
+            skipped++;
+            continue;
+          }
+
+          const didSend = await this.sendEmail(email);
+          if (didSend) {
+            sent++;
+          } else {
+            // Otro worker pudo reclamar el documento o una baja cancelarlo
+            // después de getPendingEmails. Ninguno de los dos casos es fallo.
+            skipped++;
+          }
         } catch (error) {
           this.logger.error(
             `Failed to send email ${email.id}: ${error.message}`,
@@ -300,13 +330,66 @@ export class EmailService {
 
       const duration = Date.now() - startTime;
       this.logger.log(
-        `Email queue processed in ${duration}ms: ${sent} sent, ${failed} failed`,
+        `Email queue processed in ${duration}ms: ${sent} sent, ${failed} failed, ${skipped} skipped`,
       );
     } catch (error) {
       this.logger.error(`Error processing email queue: ${error.message}`);
     }
 
-    return { sent, failed, executedAt: new Date() };
+    return { sent, failed, skipped, executedAt: new Date() };
+  }
+
+  /**
+   * Decide si un email de la cola NO debe salir, y por qué.
+   *
+   * La comprobación vive aquí, justo antes del envío, y no solo en el momento de
+   * encolar: entre una cosa y otra pasan horas o días —las secuencias de
+   * onboarding se programan con antelación—, y en ese intervalo el usuario puede
+   * haber desactivado la categoría o haberse dado de baja. Comprobarlo solo al
+   * encolar dejaría salir precisamente los emails que más molestan.
+   *
+   * Ante la duda se envía: un tipo de email sin clasificar o un fallo al leer el
+   * usuario no bastan para silenciar un aviso de cobro fallido.
+   *
+   * @returns el código del motivo para no enviar, o `null` si el envío procede.
+   */
+  private async resolveSkipReason(
+    email: { id: string; userId: string; emailType: string },
+    cache: Map<string, NotificationPreferences | null>,
+  ): Promise<string | null> {
+    const category = getEmailNotificationCategory(email.emailType);
+
+    if (!category) {
+      this.logger.warn(
+        `Email type "${email.emailType}" is not mapped to a notification category; sending anyway`,
+      );
+      return null;
+    }
+
+    let preferences = cache.get(email.userId);
+
+    if (preferences === undefined) {
+      try {
+        const user = await this.firestoreService.getUserById(email.userId);
+        // El usuario borrado se distingue del que no se pudo leer: al primero no
+        // se le escribe nunca más; con el segundo se mantiene el envío.
+        preferences = user
+          ? resolveNotificationPreferences(user.notificationPreferences)
+          : null;
+      } catch (error) {
+        this.logger.warn(
+          `Could not read notification preferences for ${email.userId}: ${error.message}`,
+        );
+        return null;
+      }
+      cache.set(email.userId, preferences);
+    }
+
+    if (preferences === null) {
+      return 'user_deleted';
+    }
+
+    return preferences[category] ? null : `notifications_off:${category}`;
   }
 
   /**
@@ -331,7 +414,7 @@ export class EmailService {
     abVariant: string;
     language: string;
     metadata?: Record<string, any>;
-  }): Promise<void> {
+  }): Promise<boolean> {
     try {
       // Get template from Firestore (required - no fallback)
       const firestoreTemplate =
@@ -378,19 +461,36 @@ export class EmailService {
         .replace(/\s+/g, ' ')
         .trim();
 
+      // La lista de pendientes es solo un snapshot. La transición atómica es
+      // la autorización real para enviar: si el documento fue cancelado o ya
+      // lo tomó otro worker, Resend no debe recibir esta llamada.
+      const claimed = await this.firestoreService.claimPendingEmail(
+        queueItem.id,
+        queueItem.userId,
+      );
+      if (!claimed) {
+        return false;
+      }
+
       // Send via Resend
-      const result = await this.resend.emails.send({
-        from: this.fromEmail,
-        to: queueItem.userEmail,
-        subject,
-        html,
-        text,
-        tags: [
-          { name: 'email_type', value: queueItem.emailType },
-          { name: 'ab_variant', value: queueItem.abVariant },
-          { name: 'user_id', value: queueItem.userId },
-        ],
-      });
+      const result = await this.resend.emails.send(
+        {
+          from: this.fromEmail,
+          to: queueItem.userEmail,
+          subject,
+          html,
+          text,
+          tags: [
+            { name: 'email_type', value: queueItem.emailType },
+            { name: 'ab_variant', value: queueItem.abVariant },
+            { name: 'user_id', value: queueItem.userId },
+          ],
+        },
+        // El id de la cola como clave de idempotencia: un envío que quedó en
+        // `sending` porque el proceso murió se puede reintentar sin arriesgar
+        // que al destinatario le llegue dos veces el mismo correo.
+        { idempotencyKey: queueItem.id },
+      );
 
       // Update queue status
       await this.firestoreService.updateEmailQueueStatus(
@@ -402,6 +502,7 @@ export class EmailService {
       this.logger.debug(
         `Email sent to ${queueItem.userEmail}: ${result.data?.id}`,
       );
+      return true;
     } catch (error) {
       // Update queue status with error
       await this.firestoreService.updateEmailQueueStatus(
