@@ -100,11 +100,12 @@ export class ZplController {
             LabelSize.FOUR_BY_TWO,
             LabelSize.FOUR_BY_SIX,
             LabelSize.FIFTY_BY_EIGHTY_MM,
+            LabelSize.EIGHTY_BY_FIFTY_MM,
           ],
           default: LabelSize.TWO_BY_ONE,
           description:
-            'Tamano de la etiqueta: 2x1, 2x4, 4x2, 4x6 (impresoras de escritorio) ' +
-            'o 50x80mm (impresoras portatiles tipo Phomemo M110)',
+            'Tamano de la etiqueta (ancho x alto): 2x1, 2x4, 4x2, 4x6 (impresoras de escritorio), ' +
+            '50x80mm u 80x50mm (impresoras portatiles tipo Phomemo M110)',
         },
         language: {
           type: 'string',
@@ -536,11 +537,12 @@ export class ZplController {
             LabelSize.FOUR_BY_TWO,
             LabelSize.FOUR_BY_SIX,
             LabelSize.FIFTY_BY_EIGHTY_MM,
+            LabelSize.EIGHTY_BY_FIFTY_MM,
           ],
           default: LabelSize.TWO_BY_ONE,
           description:
-            'Tamano de la etiqueta: 2x1, 2x4, 4x2, 4x6 (impresoras de escritorio) ' +
-            'o 50x80mm (impresoras portatiles tipo Phomemo M110)',
+            'Tamano de la etiqueta (ancho x alto): 2x1, 2x4, 4x2, 4x6 (impresoras de escritorio), ' +
+            '50x80mm u 80x50mm (impresoras portatiles tipo Phomemo M110)',
         },
       },
     },
@@ -903,7 +905,7 @@ export class ZplController {
           type: 'string',
           example: '4x6',
           description:
-            'Tamano de etiqueta: 2x1, 2x4, 4x2, 4x6 o 50x80mm (Phomemo M110)',
+            'Tamano de etiqueta (ancho x alto): 2x1, 2x4, 4x2, 4x6, 50x80mm u 80x50mm (Phomemo M110)',
         },
         outputFormat: {
           type: 'string',

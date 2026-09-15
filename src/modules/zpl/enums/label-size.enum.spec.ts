@@ -22,12 +22,24 @@ describe('label-size.enum — LABEL_SIZE_DIMENSIONS', () => {
       [LabelSize.FOUR_BY_TWO]: '4x2',
       [LabelSize.FOUR_BY_SIX]: '4x6',
       [LabelSize.FIFTY_BY_EIGHTY_MM]: '1.9705x3.1528',
+      [LabelSize.EIGHTY_BY_FIFTY_MM]: '3.1528x1.9705',
     });
   });
 
   it('usa 1.9705x3.1528 para 50x80mm: 400x640 dots exactos a 8dpmm, no la conversión ingenua mm/25.4 (1.9685x3.1496)', () => {
     expect(LABEL_SIZE_DIMENSIONS[LabelSize.FIFTY_BY_EIGHTY_MM]).toBe(
       '1.9705x3.1528',
+    );
+  });
+
+  // Labelary lee la URL como `ancho x alto`: 80x50mm tiene que ser la misma
+  // pareja con los ejes invertidos (640x400 dots), no un alias de 50x80mm. Si
+  // se copiara el valor de 50x80mm tal cual, el PDF saldría vertical.
+  it('usa 3.1528x1.9705 para 80x50mm: los mismos dots exactos que 50x80mm con los ejes invertidos', () => {
+    const [ancho, alto] =
+      LABEL_SIZE_DIMENSIONS[LabelSize.FIFTY_BY_EIGHTY_MM].split('x');
+    expect(LABEL_SIZE_DIMENSIONS[LabelSize.EIGHTY_BY_FIFTY_MM]).toBe(
+      `${alto}x${ancho}`,
     );
   });
 
@@ -54,10 +66,12 @@ describe('label-size.enum — isKnownLabelSize', () => {
     '4x2',
     '4x6',
     '50x80mm',
+    '80x50mm',
     'small',
     'large',
     'SMALL',
     '50X80MM',
+    '80X50MM',
   ])('reconoce "%s" como tamaño o alias válido', (value) => {
     expect(isKnownLabelSize(value)).toBe(true);
   });
@@ -89,6 +103,11 @@ describe('label-size.enum — isKnownLabelSize', () => {
 describe('label-size.enum — normalizeLabelSize', () => {
   it('resuelve el nuevo alias 50x80mm al enum correspondiente', () => {
     expect(normalizeLabelSize('50x80mm')).toBe(LabelSize.FIFTY_BY_EIGHTY_MM);
+  });
+
+  it('resuelve 80x50mm a su propio tamaño horizontal, no al 50x80mm vertical', () => {
+    expect(normalizeLabelSize('80x50mm')).toBe(LabelSize.EIGHTY_BY_FIFTY_MM);
+    expect(normalizeLabelSize('80X50MM')).toBe(LabelSize.EIGHTY_BY_FIFTY_MM);
   });
 
   it('sigue resolviendo los alias existentes sin romper la API pública ni el historial', () => {
@@ -126,6 +145,7 @@ describe('label-size.enum — normalizeLabelSize', () => {
 describe('label-size.enum — LABEL_SIZE_ALIASES', () => {
   it('incluye el alias del tamaño nuevo, para no mantener un segundo mapa duplicado en zpl.service.ts', () => {
     expect(LABEL_SIZE_ALIASES['50x80mm']).toBe(LabelSize.FIFTY_BY_EIGHTY_MM);
+    expect(LABEL_SIZE_ALIASES['80x50mm']).toBe(LabelSize.EIGHTY_BY_FIFTY_MM);
   });
 });
 
