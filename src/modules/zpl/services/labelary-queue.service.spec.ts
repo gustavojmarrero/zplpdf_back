@@ -42,6 +42,19 @@ describe('LabelaryQueueService — traducción de LabelSize a dimensiones de Lab
       );
     });
 
+    it('usa la dimensión horizontal para 80x50mm (ancho primero)', async () => {
+      mockedAxios.post.mockResolvedValue({ data: Buffer.from('png') });
+      const service = buildService();
+
+      await service.enqueuePngDirect('^XA^XZ', LabelSize.EIGHTY_BY_FIFTY_MM);
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://api.labelary.com/v1/printers/8dpmm/labels/3.1528x1.9705/0/',
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
     it('sigue mandando la dimensión de los tamaños de catálogo original sin cambios', async () => {
       mockedAxios.post.mockResolvedValue({ data: Buffer.from('png') });
       const service = buildService();
@@ -72,6 +85,26 @@ describe('LabelaryQueueService — traducción de LabelSize a dimensiones de Lab
 
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://api.labelary.com/v1/printers/8dpmm/labels/1.9705x3.1528',
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('usa la dimensión horizontal para 80x50mm (ancho primero)', async () => {
+      mockedAxios.post.mockResolvedValue({ data: Buffer.from('pdf') });
+      const service = buildService();
+
+      await service.enqueue(
+        'job-1',
+        'user-1',
+        'free',
+        '^XA^XZ',
+        LabelSize.EIGHTY_BY_FIFTY_MM,
+        1,
+      );
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://api.labelary.com/v1/printers/8dpmm/labels/3.1528x1.9705',
         expect.anything(),
         expect.anything(),
       );

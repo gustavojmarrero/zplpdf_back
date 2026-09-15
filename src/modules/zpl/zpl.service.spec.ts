@@ -146,6 +146,12 @@ describe('ZplService — bloques de configuración sin contenido', () => {
         LabelSize.FIFTY_BY_EIGHTY_MM,
       );
     });
+
+    it('mapea 80x50mm (horizontal) a su propio enum, no al 50x80mm vertical', () => {
+      expect((service as any).getLabelSize('80x50mm')).toBe(
+        LabelSize.EIGHTY_BY_FIFTY_MM,
+      );
+    });
   });
 });
 
@@ -403,47 +409,50 @@ describe('ZplService — validación de labelSize en el batch (issue #101)', () 
     );
   });
 
-  it('acepta 50x80mm: pasa el gate de labelSize y llega hasta guardar el batch', async () => {
-    const saveErrorLog = jest
-      .fn()
-      .mockResolvedValue({ id: 'x', errorId: 'ERR-8' });
-    const configService: any = { get: jest.fn(() => 'test-bucket') };
-    const usersService: any = {
-      getUserById: jest.fn().mockResolvedValue({
-        id: 'uid-b',
-        email: 'batch@ejemplo.com',
-        plan: 'pro',
-      }),
-      getEffectivePlan: jest.fn().mockReturnValue('pro'),
-      checkCanConvert: jest
+  it.each(['50x80mm', '80x50mm'])(
+    'acepta %s: pasa el gate de labelSize y llega hasta guardar el batch',
+    async (labelSize) => {
+      const saveErrorLog = jest
         .fn()
-        .mockResolvedValue({ allowed: true, userEmail: 'batch@ejemplo.com' }),
-    };
-    // saveBatchJob corta el flujo justo después del gate de labelSize, sin
-    // necesidad de simular processBatchFiles (que sigue en segundo plano sin
-    // await) al completo.
-    const saveBatchJob = jest.fn().mockRejectedValue(new Error('stop-here'));
-    const service = new ZplService(
-      configService,
-      { saveErrorLog, saveBatchJob } as any,
-      usersService,
-      {} as any,
-      {} as any,
-    );
+        .mockResolvedValue({ id: 'x', errorId: 'ERR-8' });
+      const configService: any = { get: jest.fn(() => 'test-bucket') };
+      const usersService: any = {
+        getUserById: jest.fn().mockResolvedValue({
+          id: 'uid-b',
+          email: 'batch@ejemplo.com',
+          plan: 'pro',
+        }),
+        getEffectivePlan: jest.fn().mockReturnValue('pro'),
+        checkCanConvert: jest
+          .fn()
+          .mockResolvedValue({ allowed: true, userEmail: 'batch@ejemplo.com' }),
+      };
+      // saveBatchJob corta el flujo justo después del gate de labelSize, sin
+      // necesidad de simular processBatchFiles (que sigue en segundo plano sin
+      // await) al completo.
+      const saveBatchJob = jest.fn().mockRejectedValue(new Error('stop-here'));
+      const service = new ZplService(
+        configService,
+        { saveErrorLog, saveBatchJob } as any,
+        usersService,
+        {} as any,
+        {} as any,
+      );
 
-    await expect(
-      service.startBatchConversion(
-        'uid-b',
-        [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
-        '50x80mm',
-      ),
-    ).rejects.toThrow();
+      await expect(
+        service.startBatchConversion(
+          'uid-b',
+          [{ id: 'f1', fileName: 'a.zpl', content: SIMPLE_ZPL }],
+          labelSize,
+        ),
+      ).rejects.toThrow();
 
-    expect(saveBatchJob).toHaveBeenCalled();
-    expect(saveErrorLog).not.toHaveBeenCalledWith(
-      expect.objectContaining({ code: 'INVALID_LABEL_SIZE' }),
-    );
-  });
+      expect(saveBatchJob).toHaveBeenCalled();
+      expect(saveErrorLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ code: 'INVALID_LABEL_SIZE' }),
+      );
+    },
+  );
 });
 
 /**
