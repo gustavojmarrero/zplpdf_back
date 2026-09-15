@@ -13,6 +13,11 @@ export enum LabelSize {
   // conversion_history. La dimensión real que entiende Labelary vive en
   // `LABEL_SIZE_DIMENSIONS`, no aquí.
   FIFTY_BY_EIGHTY_MM = '50x80mm',
+  // El mismo rollo en horizontal: 80mm de ancho por 50mm de alto. Los ids
+  // siguen la convención ancho x alto del resto del enum (`4x2` vs `2x4`), así
+  // que `50x80mm` y `80x50mm` NO son alias el uno del otro: generan páginas de
+  // orientación distinta.
+  EIGHTY_BY_FIFTY_MM = '80x50mm',
 }
 
 /**
@@ -33,6 +38,7 @@ export const LABEL_SIZE_ALIASES: Record<string, LabelSize> = {
   large: LabelSize.FOUR_BY_SIX,
   '4x6': LabelSize.FOUR_BY_SIX,
   '50x80mm': LabelSize.FIFTY_BY_EIGHTY_MM,
+  '80x50mm': LabelSize.EIGHTY_BY_FIFTY_MM,
 };
 
 /**
@@ -56,6 +62,10 @@ export const LABEL_SIZE_ALIASES: Record<string, LabelSize> = {
  * ingenua pierde el último dot de cada eje y recorta cualquier `^FO` pegado al
  * borde derecho o inferior. Medido contra la API real de Labelary — ver
  * issue #101.
+ *
+ * 80×50mm es el mismo par de valores con los ejes invertidos (`ancho x alto`):
+ * `3.1528x1.9705` da 640×400 dots y un PDF de 226.995×141.872 pt; la conversión
+ * ingenua `3.1496x1.9685` se queda en 639×399. También medido contra Labelary.
  */
 export const LABEL_SIZE_DIMENSIONS: Record<LabelSize, string> = {
   [LabelSize.TWO_BY_ONE]: '2x1',
@@ -63,6 +73,7 @@ export const LABEL_SIZE_DIMENSIONS: Record<LabelSize, string> = {
   [LabelSize.FOUR_BY_TWO]: '4x2',
   [LabelSize.FOUR_BY_SIX]: '4x6',
   [LabelSize.FIFTY_BY_EIGHTY_MM]: '1.9705x3.1528',
+  [LabelSize.EIGHTY_BY_FIFTY_MM]: '3.1528x1.9705',
 };
 
 /**
