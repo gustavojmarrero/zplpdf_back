@@ -922,3 +922,34 @@ describe('EmailService.sendEmail — enlace de baja', () => {
     expect(html).not.toContain('darte de baja en cualquier momento');
   });
 });
+
+describe('EmailService.appendBeforeDocumentEnd', () => {
+  const footer = '<p>pie</p>';
+
+  it('en un documento completo coloca el pie antes de </body>, dentro del documento', () => {
+    const html = '<html><body><p>hola</p></body></html>';
+    expect(EmailService.appendBeforeDocumentEnd(html, footer)).toBe(
+      '<html><body><p>hola</p><p>pie</p></body></html>',
+    );
+  });
+
+  it('sin </body> lo coloca antes de </html>', () => {
+    const html = '<html><p>hola</p></html>';
+    expect(EmailService.appendBeforeDocumentEnd(html, footer)).toBe(
+      '<html><p>hola</p><p>pie</p></html>',
+    );
+  });
+
+  it('en un fragmento sin etiquetas de cierre lo añade al final', () => {
+    expect(EmailService.appendBeforeDocumentEnd('<p>hola</p>', footer)).toBe(
+      '<p>hola</p><p>pie</p>',
+    );
+  });
+
+  it('reconoce las etiquetas de cierre en mayúsculas y usa la última', () => {
+    const html = '<HTML><BODY><p>a</p></BODY></HTML>';
+    expect(EmailService.appendBeforeDocumentEnd(html, footer)).toBe(
+      '<HTML><BODY><p>a</p><p>pie</p></BODY></HTML>',
+    );
+  });
+});

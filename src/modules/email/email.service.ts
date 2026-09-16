@@ -422,6 +422,25 @@ export class EmailService {
     });
   }
 
+  /**
+   * Inserta `fragment` dentro del documento HTML. Las plantillas sembradas son
+   * documentos completos que terminan en `</body></html>`: añadir el pie con
+   * `+=` lo dejaba detrás de `</html>`, fuera del documento, y los clientes de
+   * correo pueden descartarlo o moverlo fuera del diseño. Se coloca antes del
+   * último `</body>`; si no hay, antes del último `</html>`; y si el cuerpo es
+   * un fragmento sin esas etiquetas, al final.
+   */
+  static appendBeforeDocumentEnd(html: string, fragment: string): string {
+    const lower = html.toLowerCase();
+    for (const closingTag of ['</body>', '</html>']) {
+      const index = lower.lastIndexOf(closingTag);
+      if (index !== -1) {
+        return html.slice(0, index) + fragment + html.slice(index);
+      }
+    }
+    return html + fragment;
+  }
+
   private buildUnsubscribeFooterHtml(
     language: string,
     unsubscribeUrl: string,
@@ -509,9 +528,9 @@ export class EmailService {
       // categoría, ya se rellenó el placeholder si lo tenía, pero no se
       // inventa un pie que el usuario no puede desactivar desde Ajustes.
       if (category && unsubscribeUrl && !hasUnsubscribePlaceholder) {
-        html += this.buildUnsubscribeFooterHtml(
-          queueItem.language,
-          unsubscribeUrl,
+        html = EmailService.appendBeforeDocumentEnd(
+          html,
+          this.buildUnsubscribeFooterHtml(queueItem.language, unsubscribeUrl),
         );
       }
       // Generate plain text from HTML (simple strip tags)
