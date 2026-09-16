@@ -23,7 +23,12 @@ import {
 } from '@nestjs/swagger';
 import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
-import { buildUnsubscribeUrl } from './unsubscribe-url.util.js';
+import {
+  appendBeforeDocumentEnd,
+  buildUnsubscribeFooterHtml,
+  buildUnsubscribeUrl,
+} from './unsubscribe-url.util.js';
+import { getEmailNotificationCategory } from './email-categories.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
 import type {
@@ -358,6 +363,19 @@ export class EmailTemplatesController {
       const regex = new RegExp(`\\{${key}\\}`, 'g');
       subject = subject.replace(regex, String(value));
       body = body.replace(regex, String(value));
+    }
+
+    // Misma regla que EmailService.sendEmail: una plantilla con categoría y sin
+    // placeholder recibe el pie de reserva. Sin esto la vista previa y el
+    // envío de prueba omitían un pie que el usuario real sí recibe.
+    if (
+      getEmailNotificationCategory(template.templateKey) &&
+      !content.body.includes('{unsubscribeUrl}')
+    ) {
+      body = appendBeforeDocumentEnd(
+        body,
+        buildUnsubscribeFooterHtml(language, String(sampleData.unsubscribeUrl)),
+      );
     }
 
     return { subject, body, sampleData };

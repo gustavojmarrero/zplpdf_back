@@ -25,8 +25,9 @@ import {
   type NotificationPreferences,
 } from '../../common/interfaces/notification-preferences.interface.js';
 import {
+  appendBeforeDocumentEnd,
+  buildUnsubscribeFooterHtml,
   buildUnsubscribeUrl,
-  resolveEmailLanguage,
 } from './unsubscribe-url.util.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
@@ -43,22 +44,6 @@ export class EmailService {
    * silencio haría parecer que se procesó todo.
    */
   private static readonly POWER_USER_MAX_PER_RUN = 50;
-
-  /**
-   * Pie de baja cuando la plantilla en Firestore no incluye el placeholder
-   * `{unsubscribeUrl}`. La frase original (ver `templates/email-templates.ts`,
-   * usada solo para sembrar) prometía un enlace de baja que nunca existió;
-   * este pie sí enlaza. Ver issue zplpdf_back#116.
-   */
-  private static readonly UNSUBSCRIBE_FOOTER_TEXT: Record<
-    EmailLanguage,
-    string
-  > = {
-    en: 'You can manage your email preferences or unsubscribe at any time from your <a href="{unsubscribeUrl}" style="color: #6b7280;">account settings</a>.',
-    es: 'Puedes gestionar tus preferencias de correo o darte de baja en cualquier momento desde los <a href="{unsubscribeUrl}" style="color: #6b7280;">ajustes de tu cuenta</a>.',
-    zh: '您可以随时通过<a href="{unsubscribeUrl}" style="color: #6b7280;">账户设置</a>管理邮件偏好或取消订阅。',
-    pt: 'Você pode gerenciar suas preferências de e-mail ou cancelar a inscrição a qualquer momento nas <a href="{unsubscribeUrl}" style="color: #6b7280;">configurações da sua conta</a>.',
-  };
 
   constructor(
     private readonly configService: ConfigService,
@@ -423,37 +408,6 @@ export class EmailService {
   }
 
   /**
-   * Inserta `fragment` dentro del documento HTML. Las plantillas sembradas son
-   * documentos completos que terminan en `</body></html>`: añadir el pie con
-   * `+=` lo dejaba detrás de `</html>`, fuera del documento, y los clientes de
-   * correo pueden descartarlo o moverlo fuera del diseño. Se coloca antes del
-   * último `</body>`; si no hay, antes del último `</html>`; y si el cuerpo es
-   * un fragmento sin esas etiquetas, al final.
-   */
-  static appendBeforeDocumentEnd(html: string, fragment: string): string {
-    const lower = html.toLowerCase();
-    for (const closingTag of ['</body>', '</html>']) {
-      const index = lower.lastIndexOf(closingTag);
-      if (index !== -1) {
-        return html.slice(0, index) + fragment + html.slice(index);
-      }
-    }
-    return html + fragment;
-  }
-
-  private buildUnsubscribeFooterHtml(
-    language: string,
-    unsubscribeUrl: string,
-  ): string {
-    const lang = resolveEmailLanguage(language);
-    const text = EmailService.UNSUBSCRIBE_FOOTER_TEXT[lang].replace(
-      '{unsubscribeUrl}',
-      unsubscribeUrl,
-    );
-    return `<p style="margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af; text-align: center;">${text}</p>`;
-  }
-
-  /**
    * Send a single email from the queue
    * Uses Firestore templates with A/B variant support
    */
@@ -528,9 +482,9 @@ export class EmailService {
       // categoría, ya se rellenó el placeholder si lo tenía, pero no se
       // inventa un pie que el usuario no puede desactivar desde Ajustes.
       if (category && unsubscribeUrl && !hasUnsubscribePlaceholder) {
-        html = EmailService.appendBeforeDocumentEnd(
+        html = appendBeforeDocumentEnd(
           html,
-          this.buildUnsubscribeFooterHtml(queueItem.language, unsubscribeUrl),
+          buildUnsubscribeFooterHtml(queueItem.language, unsubscribeUrl),
         );
       }
       // Generate plain text from HTML (simple strip tags)

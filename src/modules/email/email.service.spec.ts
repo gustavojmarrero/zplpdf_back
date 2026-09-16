@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service.js';
+import { appendBeforeDocumentEnd } from './unsubscribe-url.util.js';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { User, PlanType } from '../../common/interfaces/user.interface.js';
@@ -923,32 +924,32 @@ describe('EmailService.sendEmail — enlace de baja', () => {
   });
 });
 
-describe('EmailService.appendBeforeDocumentEnd', () => {
+describe('appendBeforeDocumentEnd', () => {
   const footer = '<p>pie</p>';
 
   it('en un documento completo coloca el pie antes de </body>, dentro del documento', () => {
     const html = '<html><body><p>hola</p></body></html>';
-    expect(EmailService.appendBeforeDocumentEnd(html, footer)).toBe(
+    expect(appendBeforeDocumentEnd(html, footer)).toBe(
       '<html><body><p>hola</p><p>pie</p></body></html>',
     );
   });
 
   it('sin </body> lo coloca antes de </html>', () => {
     const html = '<html><p>hola</p></html>';
-    expect(EmailService.appendBeforeDocumentEnd(html, footer)).toBe(
+    expect(appendBeforeDocumentEnd(html, footer)).toBe(
       '<html><p>hola</p><p>pie</p></html>',
     );
   });
 
   it('en un fragmento sin etiquetas de cierre lo añade al final', () => {
-    expect(EmailService.appendBeforeDocumentEnd('<p>hola</p>', footer)).toBe(
+    expect(appendBeforeDocumentEnd('<p>hola</p>', footer)).toBe(
       '<p>hola</p><p>pie</p>',
     );
   });
 
   it('reconoce las etiquetas de cierre en mayúsculas y usa la última', () => {
     const html = '<HTML><BODY><p>a</p></BODY></HTML>';
-    expect(EmailService.appendBeforeDocumentEnd(html, footer)).toBe(
+    expect(appendBeforeDocumentEnd(html, footer)).toBe(
       '<HTML><BODY><p>a</p><p>pie</p></BODY></HTML>',
     );
   });

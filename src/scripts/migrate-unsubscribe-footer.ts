@@ -61,6 +61,11 @@ const NEW_FOOTER_TEXT: Record<Language, string> = {
   pt: 'Você recebeu este e-mail porque se cadastrou no ZPLPDF. Se não deseja mais receber estes e-mails, pode <a href="{unsubscribeUrl}" style="color: #6b7280;">cancelar a inscrição a qualquer momento</a>.',
 };
 
+type TxOutcome =
+  | { status: 'missing' }
+  | { status: 'stale'; name: string }
+  | { status: 'updated'; name: string };
+
 interface PlannedChange {
   docId: string;
   templateKey: string;
@@ -248,68 +253,113 @@ async function main(): Promise<void> {
   }
 
   let updatedDocs = 0;
+  let skippedDocs = 0;
+  const failedDocs: string[] = [];
   for (const [docId, changes] of byDoc) {
     const docRef = db.collection(EMAIL_TEMPLATES_COLLECTION).doc(docId);
 
-    const templateName = await db.runTransaction(async (tx) => {
-      // Lectura y escritura dentro de la MISMA transacción: si un admin
-      // guarda la plantilla desde el panel entre el get() y el update(), esta
-      // transacción reintenta sobre los datos frescos en vez de pisar su
-      // edición.
-      const docSnap = await tx.get(docRef);
-      const data = docSnap.data();
-      if (!data) return null;
+    // Cada documento va aislado: un fallo en uno no puede dejar la migración a
+    // medias sin terminar el resto ni ocultar cuáles fallaron.
+    let outcome: TxOutcome;
+    try {
+      outcome = await db.runTransaction(async (tx): Promise<TxOutcome> => {
+        // Lectura y escritura dentro de la MISMA transacción: si un admin
+        // guarda la plantilla desde el panel entre el get() y el update(), esta
+        // transacción reintenta sobre los datos frescos en vez de pisar su
+        // edición.
+        const docSnap = await tx.get(docRef);
+        const data = docSnap.data();
+        if (!data) return { status: 'missing' };
 
-      const content = data.content;
-      for (const change of changes) {
-        const oldBody: string = content[change.variant][change.language].body;
-        content[change.variant][change.language].body = oldBody.replace(
-          OLD_FOOTER_TEXT[change.language],
-          NEW_FOOTER_TEXT[change.language],
-        );
-      }
+        // El plan se hizo en el escaneo inicial y puede estar obsoleto: un admin
+        // puede haber editado o borrado una variante o un idioma desde entonces,
+        // y Firestore solo reintenta por cambios POSTERIORES a este tx.get. Por
+        // eso cada cambio se revalida contra los datos frescos: si la ruta ya no
+        // existe, la frase antigua ya no está o el placeholder ya se puso, ese
+        // cambio se descarta en lugar de lanzar o de reemplazar en falso.
+        const content = data.content;
+        let applied = 0;
+        for (const change of changes) {
+          const langContent = content?.[change.variant]?.[change.language];
+          const oldBody = langContent?.body;
+          if (
+            typeof oldBody !== 'string' ||
+            oldBody.includes('{unsubscribeUrl}') ||
+            !oldBody.includes(OLD_FOOTER_TEXT[change.language])
+          ) {
+            continue;
+          }
+          langContent.body = oldBody.replace(
+            OLD_FOOTER_TEXT[change.language],
+            NEW_FOOTER_TEXT[change.language],
+          );
+          applied++;
+        }
 
-      const now = new Date();
-      const newVersion = (data.version || 1) + 1;
+        // Nada que cambiar con los datos actuales: sin escritura y sin subir la
+        // versión, para no registrar en el historial una migración que no hubo.
+        if (applied === 0)
+          return { status: 'stale', name: data.templateKey || docId };
 
-      tx.update(docRef, {
-        content,
-        updatedAt: now,
-        updatedBy: SCRIPT_ACTOR,
-        version: newVersion,
+        const now = new Date();
+        const newVersion = (data.version || 1) + 1;
+
+        tx.update(docRef, {
+          content,
+          updatedAt: now,
+          updatedBy: SCRIPT_ACTOR,
+          version: newVersion,
+        });
+
+        // Misma forma que FirestoreService.updateEmailTemplate (ver
+        // src/modules/cache/firestore.service.ts, updateEmailTemplate): así el
+        // panel de admin puede listar y revertir esta migración como cualquier
+        // otro cambio de plantilla.
+        const versionRef = db.collection(TEMPLATE_VERSIONS_COLLECTION).doc();
+        tx.set(versionRef, {
+          templateId: docId,
+          version: newVersion,
+          content,
+          triggerDays: data.triggerDays,
+          enabled: data.enabled,
+          createdAt: now,
+          createdBy: SCRIPT_ACTOR,
+          changeDescription:
+            'Migración automática (issue zplpdf_back#116): enlaza el placeholder ' +
+            '{unsubscribeUrl} en el pie de baja existente de la plantilla.',
+        });
+
+        return { status: 'updated', name: data.templateKey || docId };
       });
-
-      // Misma forma que FirestoreService.updateEmailTemplate (ver
-      // src/modules/cache/firestore.service.ts, updateEmailTemplate): así el
-      // panel de admin puede listar y revertir esta migración como cualquier
-      // otro cambio de plantilla.
-      const versionRef = db.collection(TEMPLATE_VERSIONS_COLLECTION).doc();
-      tx.set(versionRef, {
-        templateId: docId,
-        version: newVersion,
-        content,
-        triggerDays: data.triggerDays,
-        enabled: data.enabled,
-        createdAt: now,
-        createdBy: SCRIPT_ACTOR,
-        changeDescription:
-          'Migración automática (issue zplpdf_back#116): enlaza el placeholder ' +
-          '{unsubscribeUrl} en el pie de baja existente de la plantilla.',
-      });
-
-      return data.templateKey || docId;
-    });
-
-    if (templateName === null) {
-      console.log(`  ⚠️  ${docId} ya no existe, se omite`);
+    } catch (error) {
+      failedDocs.push(docId);
+      console.error(`  ❌ ${docId}: ${(error as Error).message}`);
       continue;
     }
 
-    updatedDocs++;
-    console.log(`  ✅ ${templateName}`);
+    if (outcome.status === 'missing') {
+      skippedDocs++;
+      console.log(`  ⚠️  ${docId} ya no existe, se omite`);
+    } else if (outcome.status === 'stale') {
+      skippedDocs++;
+      console.log(
+        `  ⚠️  ${outcome.name} cambió desde el escaneo y ya no necesita el cambio, se omite`,
+      );
+    } else {
+      updatedDocs++;
+      console.log(`  ✅ ${outcome.name}`);
+    }
   }
 
-  console.log(`\nHecho. Documentos actualizados: ${updatedDocs}.`);
+  console.log(
+    `\nHecho. Actualizados: ${updatedDocs}. Omitidos: ${skippedDocs}. Fallidos: ${failedDocs.length}.`,
+  );
+  if (failedDocs.length > 0) {
+    console.error(
+      `Documentos fallidos (reejecuta el script para reintentarlos): ${failedDocs.join(', ')}`,
+    );
+    process.exit(1);
+  }
   process.exit(0);
 }
 
