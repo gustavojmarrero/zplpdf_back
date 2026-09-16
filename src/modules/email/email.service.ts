@@ -24,6 +24,12 @@ import {
   resolveNotificationPreferences,
   type NotificationPreferences,
 } from '../../common/interfaces/notification-preferences.interface.js';
+import {
+  appendBeforeDocumentEnd,
+  buildUnsubscribeFooterHtml,
+  buildUnsubscribeUrl,
+} from './unsubscribe-url.util.js';
+import { htmlToPlainText } from './html-to-text.util.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
 @Injectable()
@@ -439,11 +445,34 @@ export class EmailService {
 
       // Get language content with fallback to English
       const langContent = variantContent[lang] || variantContent.en;
+      // Idioma del contenido que se envía de verdad: si la plantilla no tiene
+      // el del usuario, cae a inglés, y el pie de baja tiene que ir en ese
+      // mismo idioma o saldría un pie en portugués dentro de un correo en
+      // inglés. El ENLACE sí conserva el idioma del usuario: es la página de
+      // Ajustes a la que llega, y esa sí existe en su idioma.
+      const contentLanguage = variantContent[lang] ? lang : 'en';
       if (!langContent) {
         throw new Error(
           `Language content not found for template "${queueItem.emailType}" variant "${variant}"`,
         );
       }
+
+      // Enlace de baja. El pie de reserva (añadido más abajo si el cuerpo no
+      // trae el placeholder) solo tiene sentido para tipos con categoría
+      // (ver email-categories.ts): un tipo sin categoría no se puede
+      // desactivar desde Ajustes, así que prometer un pie sería engañoso. Pero
+      // si el CUERPO ya trae `{unsubscribeUrl}` —por ejemplo, una plantilla
+      // migrada por `migrate-unsubscribe-footer.ts`— hay que rellenarlo
+      // siempre, tenga o no categoría: el enlace a Ajustes es válido para
+      // cualquier usuario con sesión, y dejarlo sin resolver saldría como
+      // `href="{unsubscribeUrl}"` literal en el correo.
+      const category = getEmailNotificationCategory(queueItem.emailType);
+      const hasUnsubscribePlaceholder =
+        langContent.body.includes('{unsubscribeUrl}');
+      const unsubscribeUrl =
+        category || hasUnsubscribePlaceholder
+          ? buildUnsubscribeUrl(queueItem.language)
+          : undefined;
 
       // Prepare template data with all available variables
       const templateData = {
@@ -451,15 +480,22 @@ export class EmailService {
         userName: queueItem.metadata?.displayName || 'there',
         email: queueItem.userEmail,
         ...queueItem.metadata,
+        ...(unsubscribeUrl ? { unsubscribeUrl } : {}),
       };
 
       const subject = this.replaceVariables(langContent.subject, templateData);
-      const html = this.replaceVariables(langContent.body, templateData);
-      // Generate plain text from HTML (simple strip tags)
-      const text = html
-        .replace(/<[^>]*>/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+      let html = this.replaceVariables(langContent.body, templateData);
+      // El pie de reserva solo se añade a correos con categoría: para uno sin
+      // categoría, ya se rellenó el placeholder si lo tenía, pero no se
+      // inventa un pie que el usuario no puede desactivar desde Ajustes.
+      if (category && unsubscribeUrl && !hasUnsubscribePlaceholder) {
+        html = appendBeforeDocumentEnd(
+          html,
+          buildUnsubscribeFooterHtml(contentLanguage, unsubscribeUrl),
+        );
+      }
+      // Texto plano conservando la URL de cada enlace (ver html-to-text.util.ts).
+      const text = htmlToPlainText(html);
 
       // La lista de pendientes es solo un snapshot. La transición atómica es
       // la autorización real para enviar: si el documento fue cancelado o ya

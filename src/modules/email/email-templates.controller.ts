@@ -23,6 +23,12 @@ import {
 } from '@nestjs/swagger';
 import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
+import {
+  appendBeforeDocumentEnd,
+  buildUnsubscribeFooterHtml,
+  buildUnsubscribeUrl,
+} from './unsubscribe-url.util.js';
+import { getEmailNotificationCategory } from './email-categories.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
 import type {
@@ -340,12 +346,18 @@ export class EmailTemplatesController {
       labelCount: 150,
       appUrl: 'https://zplpdf.com',
       upgradeUrl: 'https://zplpdf.com/pricing',
-      unsubscribeUrl: 'https://zplpdf.com/unsubscribe?token=sample',
+      // Misma URL que vería el usuario real: helper compartido con
+      // EmailService.sendEmail (ver issue zplpdf_back#116). El ejemplo
+      // anterior apuntaba a una ruta `/unsubscribe` inexistente.
+      unsubscribeUrl: buildUnsubscribeUrl(language),
     };
 
     // Get content from variant (A/B) and language
     const variantContent = template.content[variant] || template.content.A;
     const content = variantContent[language] || variantContent.en;
+    // Mismo criterio que EmailService.sendEmail: el pie va en el idioma del
+    // contenido mostrado (que cae a inglés si falta el pedido).
+    const contentLanguage = variantContent[language] ? language : 'en';
     let subject = content.subject;
     let body = content.body;
 
@@ -354,6 +366,22 @@ export class EmailTemplatesController {
       const regex = new RegExp(`\\{${key}\\}`, 'g');
       subject = subject.replace(regex, String(value));
       body = body.replace(regex, String(value));
+    }
+
+    // Misma regla que EmailService.sendEmail: una plantilla con categoría y sin
+    // placeholder recibe el pie de reserva. Sin esto la vista previa y el
+    // envío de prueba omitían un pie que el usuario real sí recibe.
+    if (
+      getEmailNotificationCategory(template.templateKey) &&
+      !content.body.includes('{unsubscribeUrl}')
+    ) {
+      body = appendBeforeDocumentEnd(
+        body,
+        buildUnsubscribeFooterHtml(
+          contentLanguage,
+          String(sampleData.unsubscribeUrl),
+        ),
+      );
     }
 
     return { subject, body, sampleData };
