@@ -865,6 +865,36 @@ describe('EmailService.sendEmail — enlace de baja', () => {
     return resendSend.mock.calls[0][0].html as string;
   }
 
+  it('plantilla sin el idioma del usuario: el pie va en el idioma del contenido y el enlace en el del usuario', async () => {
+    // Solo hay contenido en inglés: un usuario en portugués recibe el correo en
+    // inglés, así que el pie tiene que estar en inglés, pero la página de
+    // Ajustes a la que lleva sí puede ir en su idioma.
+    firestore.getEmailTemplateByKey.mockResolvedValue({
+      content: {
+        A: { en: { subject: 'Subject', body: '<p>Hello</p>' } },
+      },
+    });
+
+    const html = await sendAndGetHtml(queued({ language: 'pt' }));
+
+    expect(html).toContain('account settings');
+    expect(html).not.toContain('configurações da sua conta');
+    expect(html).toContain(
+      'https://zplpdf.com/pt/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
+  it('el texto plano conserva la URL del enlace de baja', async () => {
+    mockTemplate('<p>Hola</p>');
+
+    await (service as any).sendEmail(queued());
+    const text = resendSend.mock.calls[0][0].text as string;
+
+    expect(text).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
   it('con categoría y con placeholder: sustituye el placeholder sin duplicar el pie', async () => {
     mockTemplate('<p>Hola {displayName}</p><p>Baja: {unsubscribeUrl}</p>');
 

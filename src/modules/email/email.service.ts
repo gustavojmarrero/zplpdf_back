@@ -29,6 +29,7 @@ import {
   buildUnsubscribeFooterHtml,
   buildUnsubscribeUrl,
 } from './unsubscribe-url.util.js';
+import { htmlToPlainText } from './html-to-text.util.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
 @Injectable()
@@ -444,6 +445,12 @@ export class EmailService {
 
       // Get language content with fallback to English
       const langContent = variantContent[lang] || variantContent.en;
+      // Idioma del contenido que se envía de verdad: si la plantilla no tiene
+      // el del usuario, cae a inglés, y el pie de baja tiene que ir en ese
+      // mismo idioma o saldría un pie en portugués dentro de un correo en
+      // inglés. El ENLACE sí conserva el idioma del usuario: es la página de
+      // Ajustes a la que llega, y esa sí existe en su idioma.
+      const contentLanguage = variantContent[lang] ? lang : 'en';
       if (!langContent) {
         throw new Error(
           `Language content not found for template "${queueItem.emailType}" variant "${variant}"`,
@@ -484,14 +491,11 @@ export class EmailService {
       if (category && unsubscribeUrl && !hasUnsubscribePlaceholder) {
         html = appendBeforeDocumentEnd(
           html,
-          buildUnsubscribeFooterHtml(queueItem.language, unsubscribeUrl),
+          buildUnsubscribeFooterHtml(contentLanguage, unsubscribeUrl),
         );
       }
-      // Generate plain text from HTML (simple strip tags)
-      const text = html
-        .replace(/<[^>]*>/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+      // Texto plano conservando la URL de cada enlace (ver html-to-text.util.ts).
+      const text = htmlToPlainText(html);
 
       // La lista de pendientes es solo un snapshot. La transición atómica es
       // la autorización real para enviar: si el documento fue cancelado o ya

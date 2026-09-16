@@ -355,6 +355,9 @@ export class EmailTemplatesController {
     // Get content from variant (A/B) and language
     const variantContent = template.content[variant] || template.content.A;
     const content = variantContent[language] || variantContent.en;
+    // Mismo criterio que EmailService.sendEmail: el pie va en el idioma del
+    // contenido mostrado (que cae a inglés si falta el pedido).
+    const contentLanguage = variantContent[language] ? language : 'en';
     let subject = content.subject;
     let body = content.body;
 
@@ -374,7 +377,10 @@ export class EmailTemplatesController {
     ) {
       body = appendBeforeDocumentEnd(
         body,
-        buildUnsubscribeFooterHtml(language, String(sampleData.unsubscribeUrl)),
+        buildUnsubscribeFooterHtml(
+          contentLanguage,
+          String(sampleData.unsubscribeUrl),
+        ),
       );
     }
 

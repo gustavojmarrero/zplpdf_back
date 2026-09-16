@@ -26,6 +26,13 @@
  *   npx tsx src/scripts/migrate-unsubscribe-footer.ts             # dry-run (default)
  *   npx tsx src/scripts/migrate-unsubscribe-footer.ts --dry-run   # dry-run explícito
  *   npx tsx src/scripts/migrate-unsubscribe-footer.ts --execute   # aplica los cambios
+ 
+ * ⚠️ Ejecutar sin nadie editando plantillas en el panel de admin.
+ * `FirestoreService.updateEmailTemplate` no es transaccional: reescribe el
+ * mapa `content` entero a partir de lo que leyó. Si un admin guarda una
+ * plantilla que leyó ANTES de que esta migración la actualizara, su guardado
+ * deshace el cambio sin error. La transacción de este script solo protege
+ * contra escrituras anteriores a su propia lectura.
  */
 
 import admin from 'firebase-admin';
