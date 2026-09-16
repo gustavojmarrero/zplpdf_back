@@ -16,6 +16,10 @@ export function htmlToPlainText(html: string): string {
         return !label || label === href ? href : `${label} (${href})`;
       },
     )
+    .replace(
+      /<\/?(?:br|p|div|li|ul|ol|tr|td|th|table|h[1-6]|section|header|footer|blockquote)\b[^>]*>/gi,
+      ' ',
+    )
     .replace(/<[^>]*>/g, '')
     .replace(/\s+/g, ' ')
     .trim();

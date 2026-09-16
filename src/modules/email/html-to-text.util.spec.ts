@@ -26,4 +26,23 @@ describe('htmlToPlainText', () => {
   it('sin enlaces se comporta como antes: quita etiquetas y normaliza espacios', () => {
     expect(htmlToPlainText('<p>Hola</p>\n  <p>mundo</p>')).toBe('Hola mundo');
   });
+
+  it('separa párrafos adyacentes', () => {
+    expect(htmlToPlainText('<p>Hola</p><p>mundo</p>')).toBe('Hola mundo');
+  });
+
+  it.each(['Hola<br>mundo', 'Hola<br/>mundo'])(
+    'separa el contenido alrededor de una etiqueta br: %s',
+    (html) => {
+      expect(htmlToPlainText(html)).toBe('Hola mundo');
+    },
+  );
+
+  it('separa un enlace dentro de un párrafo del párrafo siguiente', () => {
+    expect(
+      htmlToPlainText(
+        '<p><a href="https://zplpdf.com">Ajustes</a></p><p>Ayuda</p>',
+      ),
+    ).toBe('Ajustes (https://zplpdf.com) Ayuda');
+  });
 });
