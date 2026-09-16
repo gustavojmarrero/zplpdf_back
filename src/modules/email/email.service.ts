@@ -24,6 +24,10 @@ import {
   resolveNotificationPreferences,
   type NotificationPreferences,
 } from '../../common/interfaces/notification-preferences.interface.js';
+import {
+  buildUnsubscribeUrl,
+  resolveEmailLanguage,
+} from './unsubscribe-url.util.js';
 // Note: Hardcoded templates removed. All content now comes from Firestore with A/B support.
 
 @Injectable()
@@ -39,6 +43,22 @@ export class EmailService {
    * silencio haría parecer que se procesó todo.
    */
   private static readonly POWER_USER_MAX_PER_RUN = 50;
+
+  /**
+   * Pie de baja cuando la plantilla en Firestore no incluye el placeholder
+   * `{unsubscribeUrl}`. La frase original (ver `templates/email-templates.ts`,
+   * usada solo para sembrar) prometía un enlace de baja que nunca existió;
+   * este pie sí enlaza. Ver issue zplpdf_back#116.
+   */
+  private static readonly UNSUBSCRIBE_FOOTER_TEXT: Record<
+    EmailLanguage,
+    string
+  > = {
+    en: 'You can manage your email preferences or unsubscribe at any time from your <a href="{unsubscribeUrl}" style="color: #6b7280;">account settings</a>.',
+    es: 'Puedes gestionar tus preferencias de correo o darte de baja en cualquier momento desde los <a href="{unsubscribeUrl}" style="color: #6b7280;">ajustes de tu cuenta</a>.',
+    zh: '您可以随时通过<a href="{unsubscribeUrl}" style="color: #6b7280;">账户设置</a>管理邮件偏好或取消订阅。',
+    pt: 'Você pode gerenciar suas preferências de e-mail ou cancelar a inscrição a qualquer momento nas <a href="{unsubscribeUrl}" style="color: #6b7280;">configurações da sua conta</a>.',
+  };
 
   constructor(
     private readonly configService: ConfigService,
@@ -402,6 +422,18 @@ export class EmailService {
     });
   }
 
+  private buildUnsubscribeFooterHtml(
+    language: string,
+    unsubscribeUrl: string,
+  ): string {
+    const lang = resolveEmailLanguage(language);
+    const text = EmailService.UNSUBSCRIBE_FOOTER_TEXT[lang].replace(
+      '{unsubscribeUrl}',
+      unsubscribeUrl,
+    );
+    return `<p style="margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af; text-align: center;">${text}</p>`;
+  }
+
   /**
    * Send a single email from the queue
    * Uses Firestore templates with A/B variant support
@@ -445,16 +477,43 @@ export class EmailService {
         );
       }
 
+      // Enlace de baja. El pie de reserva (añadido más abajo si el cuerpo no
+      // trae el placeholder) solo tiene sentido para tipos con categoría
+      // (ver email-categories.ts): un tipo sin categoría no se puede
+      // desactivar desde Ajustes, así que prometer un pie sería engañoso. Pero
+      // si el CUERPO ya trae `{unsubscribeUrl}` —por ejemplo, una plantilla
+      // migrada por `migrate-unsubscribe-footer.ts`— hay que rellenarlo
+      // siempre, tenga o no categoría: el enlace a Ajustes es válido para
+      // cualquier usuario con sesión, y dejarlo sin resolver saldría como
+      // `href="{unsubscribeUrl}"` literal en el correo.
+      const category = getEmailNotificationCategory(queueItem.emailType);
+      const hasUnsubscribePlaceholder =
+        langContent.body.includes('{unsubscribeUrl}');
+      const unsubscribeUrl =
+        category || hasUnsubscribePlaceholder
+          ? buildUnsubscribeUrl(queueItem.language)
+          : undefined;
+
       // Prepare template data with all available variables
       const templateData = {
         displayName: queueItem.metadata?.displayName || 'there',
         userName: queueItem.metadata?.displayName || 'there',
         email: queueItem.userEmail,
         ...queueItem.metadata,
+        ...(unsubscribeUrl ? { unsubscribeUrl } : {}),
       };
 
       const subject = this.replaceVariables(langContent.subject, templateData);
-      const html = this.replaceVariables(langContent.body, templateData);
+      let html = this.replaceVariables(langContent.body, templateData);
+      // El pie de reserva solo se añade a correos con categoría: para uno sin
+      // categoría, ya se rellenó el placeholder si lo tenía, pero no se
+      // inventa un pie que el usuario no puede desactivar desde Ajustes.
+      if (category && unsubscribeUrl && !hasUnsubscribePlaceholder) {
+        html += this.buildUnsubscribeFooterHtml(
+          queueItem.language,
+          unsubscribeUrl,
+        );
+      }
       // Generate plain text from HTML (simple strip tags)
       const text = html
         .replace(/<[^>]*>/g, '')

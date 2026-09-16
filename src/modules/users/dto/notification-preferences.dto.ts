@@ -17,7 +17,7 @@ export class NotificationSettingsDto {
   product?: boolean;
 
   @ApiPropertyOptional({
-    description: 'Cobros, fallos de pago y facturas',
+    description: 'Fallos de pago y bajadas de plan',
     default: true,
   })
   @IsOptional()

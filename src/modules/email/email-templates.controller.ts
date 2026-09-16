@@ -23,6 +23,7 @@ import {
 } from '@nestjs/swagger';
 import { Resend } from 'resend';
 import { FirestoreService } from '../cache/firestore.service.js';
+import { buildUnsubscribeUrl } from './unsubscribe-url.util.js';
 import { AdminAuthGuard } from '../../common/guards/admin-auth.guard.js';
 import { AdminUser } from '../../common/decorators/admin-user.decorator.js';
 import type {
@@ -340,7 +341,10 @@ export class EmailTemplatesController {
       labelCount: 150,
       appUrl: 'https://zplpdf.com',
       upgradeUrl: 'https://zplpdf.com/pricing',
-      unsubscribeUrl: 'https://zplpdf.com/unsubscribe?token=sample',
+      // Misma URL que vería el usuario real: helper compartido con
+      // EmailService.sendEmail (ver issue zplpdf_back#116). El ejemplo
+      // anterior apuntaba a una ruta `/unsubscribe` inexistente.
+      unsubscribeUrl: buildUnsubscribeUrl(language),
     };
 
     // Get content from variant (A/B) and language

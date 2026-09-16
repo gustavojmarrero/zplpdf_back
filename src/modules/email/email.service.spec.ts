@@ -792,3 +792,133 @@ describe('EmailService.processQueue — preferencias de notificación', () => {
     expect(result).toMatchObject({ sent: 1 });
   });
 });
+
+/**
+ * Enlace de baja (issue zplpdf_back#116): las plantillas de Firestore
+ * prometían darse de baja "en cualquier momento" sin enlazar nada. Solo se
+ * añade para tipos de email con categoría en email-categories.ts —de lo
+ * contrario Ajustes no tiene ningún interruptor que corresponda al enlace.
+ */
+describe('EmailService.sendEmail — enlace de baja', () => {
+  let service: EmailService;
+  let firestore: {
+    getEmailTemplateByKey: jest.Mock;
+    claimPendingEmail: jest.Mock;
+    updateEmailQueueStatus: jest.Mock;
+  };
+  let resendSend: jest.Mock;
+
+  function queued(overrides: Record<string, any> = {}) {
+    return {
+      id: 'q-1',
+      userId: 'uid-1',
+      userEmail: 'user@example.com',
+      emailType: 'payment_failed',
+      abVariant: 'A',
+      language: 'es',
+      metadata: { displayName: 'Ana' },
+      ...overrides,
+    };
+  }
+
+  function mockTemplate(body: string) {
+    firestore.getEmailTemplateByKey.mockResolvedValue({
+      content: {
+        A: {
+          es: { subject: 'Asunto', body },
+          en: { subject: 'Subject', body },
+        },
+      },
+    });
+  }
+
+  beforeEach(async () => {
+    firestore = {
+      getEmailTemplateByKey: jest.fn(),
+      claimPendingEmail: jest.fn().mockResolvedValue(true),
+      updateEmailQueueStatus: jest.fn().mockResolvedValue(undefined),
+    };
+    resendSend = jest.fn().mockResolvedValue({ data: { id: 'resend-id' } });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RESEND_API_KEY' ? 'test-key' : undefined,
+          },
+        },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+
+    service = module.get<EmailService>(EmailService);
+    (service as any).resend = { emails: { send: resendSend } };
+  });
+
+  async function sendAndGetHtml(queueItem: Record<string, any>) {
+    await (service as any).sendEmail(queueItem);
+    return resendSend.mock.calls[0][0].html as string;
+  }
+
+  it('con categoría y con placeholder: sustituye el placeholder sin duplicar el pie', async () => {
+    mockTemplate('<p>Hola {displayName}</p><p>Baja: {unsubscribeUrl}</p>');
+
+    const html = await sendAndGetHtml(queued());
+
+    const matches = html.match(/dashboard\/settings/g) || [];
+    expect(matches).toHaveLength(1);
+    expect(html).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
+  it('con categoría y sin placeholder: añade el pie con el enlace', async () => {
+    mockTemplate('<p>Hola {displayName}</p>');
+
+    const html = await sendAndGetHtml(queued());
+
+    expect(html).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+    expect(html).toContain('darte de baja en cualquier momento');
+  });
+
+  it('sin categoría: no añade ningún enlace de baja', async () => {
+    mockTemplate('<p>Hola {displayName}</p>');
+
+    const html = await sendAndGetHtml(
+      queued({ emailType: 'plantilla_creada_a_mano' }),
+    );
+
+    expect(html).not.toContain('dashboard/settings');
+  });
+
+  it('idioma desconocido: cae a inglés', async () => {
+    mockTemplate('<p>Hola {displayName}</p>');
+
+    const html = await sendAndGetHtml(queued({ language: 'de' }));
+
+    expect(html).toContain(
+      'https://zplpdf.com/en/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
+  it('sin categoría pero con placeholder: rellena la URL, sin placeholder literal ni pie añadido', async () => {
+    mockTemplate('<p>Hola {displayName}</p><p>Baja: {unsubscribeUrl}</p>');
+
+    const html = await sendAndGetHtml(
+      queued({ emailType: 'plantilla_creada_a_mano' }),
+    );
+
+    expect(html).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+    expect(html).not.toContain('{unsubscribeUrl}');
+    // No se añade el pie de reserva: solo se rellenó el placeholder existente.
+    expect(html).not.toContain('darte de baja en cualquier momento');
+  });
+});
