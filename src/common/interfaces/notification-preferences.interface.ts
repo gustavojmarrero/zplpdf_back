@@ -13,7 +13,7 @@
 export interface NotificationPreferences {
   /** Novedades y cambios del producto. */
   product: boolean;
-  /** Cobros, fallos de pago y facturas. */
+  /** Fallos de pago y bajadas de plan. */
   billing: boolean;
   /** Avisos al acercarse al límite del plan. */
   usageReminders: boolean;

@@ -68,7 +68,7 @@ interface User {
   // Preferencias de notificación por email (ausente = todo activado)
   notificationPreferences?: {
     product?: boolean;        // novedades del producto, onboarding, retención
-    billing?: boolean;        // cobros, fallos de pago, facturas
+    billing?: boolean;        // fallos de pago y bajadas de plan
     usageReminders?: boolean; // avisos al acercarse al límite del plan
   };
 

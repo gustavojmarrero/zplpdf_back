@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service.js';
+import { appendBeforeDocumentEnd } from './unsubscribe-url.util.js';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { PeriodCalculatorService } from '../../common/services/period-calculator.service.js';
 import { User, PlanType } from '../../common/interfaces/user.interface.js';
@@ -790,5 +791,196 @@ describe('EmailService.processQueue — preferencias de notificación', () => {
 
     expect((service as any).sendEmail).toHaveBeenCalled();
     expect(result).toMatchObject({ sent: 1 });
+  });
+});
+
+/**
+ * Enlace de baja (issue zplpdf_back#116): las plantillas de Firestore
+ * prometían darse de baja "en cualquier momento" sin enlazar nada. Solo se
+ * añade para tipos de email con categoría en email-categories.ts —de lo
+ * contrario Ajustes no tiene ningún interruptor que corresponda al enlace.
+ */
+describe('EmailService.sendEmail — enlace de baja', () => {
+  let service: EmailService;
+  let firestore: {
+    getEmailTemplateByKey: jest.Mock;
+    claimPendingEmail: jest.Mock;
+    updateEmailQueueStatus: jest.Mock;
+  };
+  let resendSend: jest.Mock;
+
+  function queued(overrides: Record<string, any> = {}) {
+    return {
+      id: 'q-1',
+      userId: 'uid-1',
+      userEmail: 'user@example.com',
+      emailType: 'payment_failed',
+      abVariant: 'A',
+      language: 'es',
+      metadata: { displayName: 'Ana' },
+      ...overrides,
+    };
+  }
+
+  function mockTemplate(body: string) {
+    firestore.getEmailTemplateByKey.mockResolvedValue({
+      content: {
+        A: {
+          es: { subject: 'Asunto', body },
+          en: { subject: 'Subject', body },
+        },
+      },
+    });
+  }
+
+  beforeEach(async () => {
+    firestore = {
+      getEmailTemplateByKey: jest.fn(),
+      claimPendingEmail: jest.fn().mockResolvedValue(true),
+      updateEmailQueueStatus: jest.fn().mockResolvedValue(undefined),
+    };
+    resendSend = jest.fn().mockResolvedValue({ data: { id: 'resend-id' } });
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        EmailService,
+        PeriodCalculatorService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) =>
+              key === 'RESEND_API_KEY' ? 'test-key' : undefined,
+          },
+        },
+        { provide: FirestoreService, useValue: firestore },
+      ],
+    }).compile();
+
+    service = module.get<EmailService>(EmailService);
+    (service as any).resend = { emails: { send: resendSend } };
+  });
+
+  async function sendAndGetHtml(queueItem: Record<string, any>) {
+    await (service as any).sendEmail(queueItem);
+    return resendSend.mock.calls[0][0].html as string;
+  }
+
+  it('plantilla sin el idioma del usuario: el pie va en el idioma del contenido y el enlace en el del usuario', async () => {
+    // Solo hay contenido en inglés: un usuario en portugués recibe el correo en
+    // inglés, así que el pie tiene que estar en inglés, pero la página de
+    // Ajustes a la que lleva sí puede ir en su idioma.
+    firestore.getEmailTemplateByKey.mockResolvedValue({
+      content: {
+        A: { en: { subject: 'Subject', body: '<p>Hello</p>' } },
+      },
+    });
+
+    const html = await sendAndGetHtml(queued({ language: 'pt' }));
+
+    expect(html).toContain('account settings');
+    expect(html).not.toContain('configurações da sua conta');
+    expect(html).toContain(
+      'https://zplpdf.com/pt/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
+  it('el texto plano conserva la URL del enlace de baja', async () => {
+    mockTemplate('<p>Hola</p>');
+
+    await (service as any).sendEmail(queued());
+    const text = resendSend.mock.calls[0][0].text as string;
+
+    expect(text).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
+  it('con categoría y con placeholder: sustituye el placeholder sin duplicar el pie', async () => {
+    mockTemplate('<p>Hola {displayName}</p><p>Baja: {unsubscribeUrl}</p>');
+
+    const html = await sendAndGetHtml(queued());
+
+    const matches = html.match(/dashboard\/settings/g) || [];
+    expect(matches).toHaveLength(1);
+    expect(html).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
+  it('con categoría y sin placeholder: añade el pie con el enlace', async () => {
+    mockTemplate('<p>Hola {displayName}</p>');
+
+    const html = await sendAndGetHtml(queued());
+
+    expect(html).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+    expect(html).toContain('darte de baja en cualquier momento');
+  });
+
+  it('sin categoría: no añade ningún enlace de baja', async () => {
+    mockTemplate('<p>Hola {displayName}</p>');
+
+    const html = await sendAndGetHtml(
+      queued({ emailType: 'plantilla_creada_a_mano' }),
+    );
+
+    expect(html).not.toContain('dashboard/settings');
+  });
+
+  it('idioma desconocido: cae a inglés', async () => {
+    mockTemplate('<p>Hola {displayName}</p>');
+
+    const html = await sendAndGetHtml(queued({ language: 'de' }));
+
+    expect(html).toContain(
+      'https://zplpdf.com/en/dashboard/settings#settings-notifications-heading',
+    );
+  });
+
+  it('sin categoría pero con placeholder: rellena la URL, sin placeholder literal ni pie añadido', async () => {
+    mockTemplate('<p>Hola {displayName}</p><p>Baja: {unsubscribeUrl}</p>');
+
+    const html = await sendAndGetHtml(
+      queued({ emailType: 'plantilla_creada_a_mano' }),
+    );
+
+    expect(html).toContain(
+      'https://zplpdf.com/es/dashboard/settings#settings-notifications-heading',
+    );
+    expect(html).not.toContain('{unsubscribeUrl}');
+    // No se añade el pie de reserva: solo se rellenó el placeholder existente.
+    expect(html).not.toContain('darte de baja en cualquier momento');
+  });
+});
+
+describe('appendBeforeDocumentEnd', () => {
+  const footer = '<p>pie</p>';
+
+  it('en un documento completo coloca el pie antes de </body>, dentro del documento', () => {
+    const html = '<html><body><p>hola</p></body></html>';
+    expect(appendBeforeDocumentEnd(html, footer)).toBe(
+      '<html><body><p>hola</p><p>pie</p></body></html>',
+    );
+  });
+
+  it('sin </body> lo coloca antes de </html>', () => {
+    const html = '<html><p>hola</p></html>';
+    expect(appendBeforeDocumentEnd(html, footer)).toBe(
+      '<html><p>hola</p><p>pie</p></html>',
+    );
+  });
+
+  it('en un fragmento sin etiquetas de cierre lo añade al final', () => {
+    expect(appendBeforeDocumentEnd('<p>hola</p>', footer)).toBe(
+      '<p>hola</p><p>pie</p>',
+    );
+  });
+
+  it('reconoce las etiquetas de cierre en mayúsculas y usa la última', () => {
+    const html = '<HTML><BODY><p>a</p></BODY></HTML>';
+    expect(appendBeforeDocumentEnd(html, footer)).toBe(
+      '<HTML><BODY><p>a</p><p>pie</p></BODY></HTML>',
+    );
   });
 });
