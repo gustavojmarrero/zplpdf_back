@@ -454,6 +454,31 @@ describe('CfdiService', () => {
       expect(description).toContain('periodo');
     });
 
+    it('en una factura de proración toma el periodo del cargo, no del crédito', async () => {
+      // Pasar de mensual a anual factura el crédito por los días no consumidos
+      // en la primera línea; con ella el concepto de un cobro anual diría
+      // «periodo del 17/09 al 01/10».
+      const { service, stampSubscription } = buildService();
+      const inicio = 1758110400; // 17/09/2025 12:00 UTC
+
+      await service.stampForInvoice(
+        invoice({
+          lines: {
+            data: [
+              { amount: -15000, period: { start: inicio, end: 1759320000 } },
+              {
+                amount: 199000,
+                period: { start: inicio, end: inicio + 365 * 24 * 60 * 60 },
+              },
+            ],
+          },
+        } as unknown as Partial<Stripe.Invoice>),
+      );
+
+      const { description } = stampSubscription.mock.calls[0][0];
+      expect(description).toContain('17/09/2025 a 17/09/2026');
+    });
+
     /**
      * Desde la API `2025-03-31.basil`, `Invoice` ya no lleva `payment_intent` en
      * el nivel superior: los cobros viven en `payments`, una lista de

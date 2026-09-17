@@ -10,6 +10,20 @@ import {
 import type { Request, Response } from 'express';
 import { PaymentsService } from './payments.service.js';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter.js';
+import { PriceCatalog } from './price-catalog.js';
+
+/**
+ * Configura un price ID como lo haría el constructor con la variable de entorno.
+ * Se acumulan por servicio porque cada test declara solo los que necesita.
+ */
+const preciosPorServicio = new WeakMap<object, Record<string, string>>();
+function definirPrecio(service: object, envVar: string, priceId: string) {
+  const env = preciosPorServicio.get(service) ?? {};
+  env[envVar] = priceId;
+  preciosPorServicio.set(service, env);
+  (service as { priceCatalog: PriceCatalog }).priceCatalog =
+    PriceCatalog.fromConfig((key) => env[key]);
+}
 
 /**
  * Un fallo de permisos de la API key de Stripe (restricted key sin el scope
@@ -43,13 +57,28 @@ describe('PaymentsService — upgradeSubscription', () => {
     const retrieve = overrides.retrieveError
       ? jest.fn().mockRejectedValue(overrides.retrieveError)
       : jest.fn().mockResolvedValue(overrides.subscription);
+    // Por defecto Stripe devuelve la suscripción con el precio pedido: el
+    // servicio verifica que el precio confirmado sea el que solicitó.
     const update = overrides.updateError
       ? jest.fn().mockRejectedValue(overrides.updateError)
-      : jest
-          .fn()
-          .mockResolvedValue(
-            overrides.updateResult ?? { status: 'active', id: 'sub_123' },
-          );
+      : jest.fn().mockImplementation(
+          async (
+            _id: string,
+            params: { items: Array<{ id: string; price: string }> },
+          ) =>
+            overrides.updateResult ?? {
+              status: 'active',
+              id: 'sub_123',
+              items: {
+                data: [
+                  {
+                    id: params.items[0].id,
+                    price: { id: params.items[0].price },
+                  },
+                ],
+              },
+            },
+        );
     // Documento con estado real: la clave de idempotencia se persiste en el
     // usuario y debe sobrevivir entre intentos, así que un mock sin memoria no
     // podría distinguir "reusa la clave" de "genera otra".
@@ -81,6 +110,8 @@ describe('PaymentsService — upgradeSubscription', () => {
         candidate: {
           key: string;
           targetPlan: string;
+          targetPriceId?: string;
+          targetInterval?: string;
           subscriptionId: string;
         },
         ttlMs: number,
@@ -100,7 +131,14 @@ describe('PaymentsService — upgradeSubscription', () => {
           Number.isFinite(createdAtMs) &&
           stored.subscriptionId === candidate.subscriptionId;
 
-        if (mismoContrato && stored.targetPlan === candidate.targetPlan) {
+        // El destino es el precio; una clave sin precio se compara por plan y
+        // solo con destinos mensuales.
+        const mismoDestino = stored?.targetPriceId
+          ? stored.targetPriceId === candidate.targetPriceId
+          : stored?.targetPlan === candidate.targetPlan &&
+            candidate.targetInterval !== 'yearly';
+
+        if (mismoContrato && mismoDestino) {
           if (Date.now() - createdAtMs < ttlMs) {
             userDoc.upgradeIdempotency = { ...stored, lastAttemptAt: ahora };
             return { status: 'ok', key: stored.key };
@@ -201,10 +239,10 @@ describe('PaymentsService — upgradeSubscription', () => {
       renewSubscriptionSyncLock,
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    service.promaxPriceIdMxn = PROMAX_MXN;
+    definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID_MXN', PROMAX_MXN);
     // Sin estos, el precio vigente no se resuelve y el upgrade falla cerrado.
-    service.proPriceIdMxn = PRO_MXN;
-    service.litePriceIdMxn = LITE_MXN;
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
+    definirPrecio(service, 'STRIPE_LITE_PRICE_ID_MXN', LITE_MXN);
     // El upgrade emite y cobra la factura de la proración dentro del update, así
     // que propaga el perfil fiscal antes y en modo estricto.
     service.billingService = { syncTaxProfileToStripe: syncTaxProfileToStripe };
@@ -584,7 +622,10 @@ describe('PaymentsService — upgradeSubscription', () => {
     expect(error).toBeInstanceOf(BadRequestException);
     // PROMAX, no LITE: prueba que el rechazo viene de la guarda contra Stripe y
     // no de las anteriores, que habrían dejado pasar este cambio.
-    expect(error.message).toBe('Cannot upgrade from PROMAX to PRO.');
+    expect(error.message).toMatch(/^Cannot upgrade from PROMAX to PRO\. /);
+    expect((error as BadRequestException).getResponse()).toMatchObject({
+      data: { code: 'PLAN_CHANGE_VIA_PORTAL', reason: 'plan_downgrade' },
+    });
     expect(update).not.toHaveBeenCalled();
     expect(escriturasDePlan(updateUser)).toHaveLength(0);
   });
@@ -945,7 +986,11 @@ describe('PaymentsService — upgradeSubscription', () => {
         status: 'trialing',
         items: { data: [{ id: 'si_123', price: { id: PRO_MXN } }] },
       },
-      updateResult: { status: 'trialing', id: 'sub_123' },
+      updateResult: {
+        status: 'trialing',
+        id: 'sub_123',
+        items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+      },
     });
 
     await expect(
@@ -1371,6 +1416,311 @@ describe('PaymentsService — upgradeSubscription', () => {
    * propagación no ocurre antes, esa factura sale con datos viejos o sin ellos y
    * ya no hay forma de corregirla.
    */
+  /**
+   * Facturación anual (#95). La periodicidad es parte del destino: Pro mensual →
+   * Pro anual es una subida válida aunque el plan no cambie, y todo lo que antes
+   * comparaba solo el plan —validaciones, recuperación idempotente, clave de
+   * idempotencia— tiene que distinguirlos.
+   */
+  describe('facturación anual', () => {
+    const PRO_Y_MXN = 'price_pro_yearly_mxn';
+    const PROMAX_Y_MXN = 'price_promax_yearly_mxn';
+
+    const proAnual = {
+      status: 'active',
+      items: { data: [{ id: 'si_123', price: { id: PRO_Y_MXN } }] },
+    };
+
+    function conAnuales(service: object) {
+      definirPrecio(service, 'STRIPE_PRO_PRICE_ID_YEARLY_MXN', PRO_Y_MXN);
+      definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID_YEARLY_MXN', PROMAX_Y_MXN);
+    }
+
+    function claveRetenida(targetPlan: string, targetPriceId: string) {
+      const ahora = new Date().toISOString();
+      return {
+        key: 'upgrade_previo',
+        targetPlan,
+        targetPriceId,
+        subscriptionId: 'sub_123',
+        createdAt: ahora,
+        lastAttemptAt: ahora,
+      };
+    }
+
+    it('pasa de mensual a anual del mismo plan cobrando la proración en el acto', async () => {
+      const { service, update, updateUser } = buildService({
+        subscription: activeSubscription,
+      });
+      conAnuales(service);
+
+      const result = await service.upgradeSubscription(
+        'uid-1',
+        'pro',
+        'yearly',
+      );
+
+      expect(result).toEqual({
+        success: true,
+        message:
+          'Successfully upgraded to PRO (yearly). Proration has been applied.',
+      });
+      expect(update).toHaveBeenCalledWith(
+        'sub_123',
+        expect.objectContaining({
+          items: [{ id: 'si_123', price: PRO_Y_MXN }],
+          proration_behavior: 'always_invoice',
+          payment_behavior: 'pending_if_incomplete',
+        }),
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      );
+      expect(updateUser).toHaveBeenCalledWith('uid-1', { plan: 'pro' });
+    });
+
+    it('escribe el ciclo nuevo que deja Stripe, del que depende la cuota', async () => {
+      // Al cambiar de periodicidad Stripe reinicia el ciclo. Esperar al webhook
+      // dejaría la cuota contando sobre el ciclo mensual viejo hasta entonces.
+      const inicio = 1758110400;
+      const fin = inicio + 365 * 24 * 60 * 60;
+      const { service, updateUser } = buildService({
+        subscription: activeSubscription,
+        updateResult: {
+          status: 'active',
+          id: 'sub_123',
+          items: {
+            data: [
+              {
+                id: 'si_123',
+                price: { id: PRO_Y_MXN },
+                current_period_start: inicio,
+                current_period_end: fin,
+              },
+            ],
+          },
+        },
+      });
+      conAnuales(service);
+
+      await service.upgradeSubscription('uid-1', 'pro', 'yearly');
+
+      expect(updateUser).toHaveBeenCalledWith('uid-1', {
+        plan: 'pro',
+        subscriptionPeriodStart: new Date(inicio * 1000),
+        subscriptionPeriodEnd: new Date(fin * 1000),
+      });
+    });
+
+    it('sin precio anual responde 400 sin sincronizar datos fiscales ni tocar Stripe', async () => {
+      const { service, update, syncTaxProfileToStripe } = buildService({
+        subscription: activeSubscription,
+      });
+
+      const error = await service
+        .upgradeSubscription('uid-1', 'pro', 'yearly')
+        .catch((e: Error) => e);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        data: { code: 'YEARLY_BILLING_NOT_AVAILABLE', plan: 'pro' },
+      });
+      expect(syncTaxProfileToStripe).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['PRO anual → PRO mensual', 'pro'],
+      // Sube el plan pero baja la periodicidad: dejaría un crédito enorme.
+      ['PRO anual → PRO MAX mensual', 'promax'],
+    ])('%s se remite al portal sin tocar Stripe', async (_caso, plan) => {
+      const { service, update, updateUser } = buildService({
+        subscription: proAnual,
+      });
+      conAnuales(service);
+
+      const error = await service
+        .upgradeSubscription('uid-1', plan, 'monthly')
+        .catch((e: Error) => e);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        data: { code: 'PLAN_CHANGE_VIA_PORTAL', reason: 'interval_downgrade' },
+      });
+      expect(update).not.toHaveBeenCalled();
+      expect(escriturasDePlan(updateUser)).toHaveLength(0);
+    });
+
+    it('PRO anual → PRO MAX anual prorratea con el precio anual', async () => {
+      const { service, update } = buildService({ subscription: proAnual });
+      conAnuales(service);
+
+      await expect(
+        service.upgradeSubscription('uid-1', 'promax', 'yearly'),
+      ).resolves.toMatchObject({ success: true });
+      expect(update).toHaveBeenCalledWith(
+        'sub_123',
+        expect.objectContaining({
+          items: [{ id: 'si_123', price: PROMAX_Y_MXN }],
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('rechaza pedir el mismo plan y periodicidad que ya tiene', async () => {
+      const { service, update, syncTaxProfileToStripe } = buildService({
+        subscription: proAnual,
+      });
+      conAnuales(service);
+
+      const error = await service
+        .upgradeSubscription('uid-1', 'pro', 'yearly')
+        .catch((e: Error) => e);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error.message).toBe(
+        'Cannot upgrade from PRO (yearly) to PRO (yearly).',
+      );
+      expect(update).not.toHaveBeenCalled();
+      // Se rechaza antes del sync fiscal: un fallo ahí no debe convertirlo en 503.
+      expect(syncTaxProfileToStripe).not.toHaveBeenCalled();
+    });
+
+    it('rechaza la bajada de periodicidad antes del sync fiscal y del lock', async () => {
+      const syncTaxProfileToStripe = jest
+        .fn()
+        .mockRejectedValue(new Error('Stripe caído'));
+      const { service, update } = buildService({
+        subscription: proAnual,
+        syncTaxProfileToStripe,
+        // Otro ciclo tiene el lock: dentro saldría un 409.
+        syncLockToken: null,
+      });
+      conAnuales(service);
+
+      const error = await service
+        .upgradeSubscription('uid-1', 'pro', 'monthly')
+        .catch((e: Error) => e);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        data: { code: 'PLAN_CHANGE_VIA_PORTAL', reason: 'interval_downgrade' },
+      });
+      expect(syncTaxProfileToStripe).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('una clave anterior sin precio no se toma por un paso a anual recuperado', async () => {
+      // Las claves de antes del despliegue solo pudieron ser de cambios mensuales.
+      const { service, update, userDoc } = buildService({
+        subscription: proAnual,
+      });
+      conAnuales(service);
+      const { targetPriceId: _sinPrecio, ...legada } = claveRetenida(
+        'pro',
+        PRO_Y_MXN,
+      );
+      userDoc.upgradeIdempotency = legada;
+
+      await expect(
+        service.upgradeSubscription('uid-1', 'pro', 'yearly'),
+      ).rejects.toThrow('Cannot upgrade from PRO (yearly) to PRO (yearly).');
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('recupera el paso a anual ya aplicado en Stripe cuyo intento dejó la clave retenida', async () => {
+      // El plan de Firestore ya es `pro`, así que lo único que delata el intento
+      // perdido es la clave que retuvo para este precio.
+      const { service, update, updateUser, userDoc } = buildService({
+        subscription: proAnual,
+      });
+      conAnuales(service);
+      userDoc.upgradeIdempotency = claveRetenida('pro', PRO_Y_MXN);
+
+      await expect(
+        service.upgradeSubscription('uid-1', 'pro', 'yearly'),
+      ).resolves.toMatchObject({ success: true });
+      expect(update).not.toHaveBeenCalled();
+      expect(updateUser).toHaveBeenCalledWith('uid-1', { plan: 'pro' });
+      expect(userDoc.upgradeIdempotency).toBeNull();
+    });
+
+    it('no toma PRO mensual en Stripe por un paso a anual ya aplicado', async () => {
+      // Comparando por plan se habría dado por hecho y no se cobraría nunca.
+      const { service, update, userDoc } = buildService({
+        subscription: activeSubscription,
+      });
+      conAnuales(service);
+      userDoc.upgradeIdempotency = claveRetenida('pro', PRO_Y_MXN);
+
+      await service.upgradeSubscription('uid-1', 'pro', 'yearly');
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(update.mock.calls[0][1].items).toEqual([
+        { id: 'si_123', price: PRO_Y_MXN },
+      ]);
+      // Es el reintento del mismo destino: reutiliza la clave.
+      expect(claveUsada(update)).toBe('upgrade_previo');
+    });
+
+    it('no reutiliza la clave de un intento mensual al pedir el anual del mismo plan', async () => {
+      // Stripe rechaza una clave reutilizada con otros parámetros: compartirla
+      // haría fallar sin motivo el paso a anual.
+      const { service, update, userDoc } = buildService({
+        subscription: activeSubscription,
+      });
+      conAnuales(service);
+      userDoc.upgradeIdempotency = claveRetenida('promax', PROMAX_MXN);
+
+      await expect(
+        service.upgradeSubscription('uid-1', 'promax', 'yearly'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('no escribe el plan si Stripe confirma un precio distinto del pedido', async () => {
+      const { service, updateUser, userDoc } = buildService({
+        subscription: activeSubscription,
+        updateResult: {
+          status: 'active',
+          id: 'sub_123',
+          items: { data: [{ id: 'si_123', price: { id: PROMAX_MXN } }] },
+        },
+      });
+      conAnuales(service);
+
+      const error = await service
+        .upgradeSubscription('uid-1', 'promax', 'yearly')
+        .catch((e: Error) => e);
+
+      expect(error).toBeInstanceOf(ServiceUnavailableException);
+      expect(error.message).toContain('could not confirm');
+      expect(escriturasDePlan(updateUser)).toHaveLength(0);
+      // La clave queda libre: un reintento no debe recibir la misma respuesta.
+      expect(userDoc.upgradeIdempotency).toBeNull();
+      expect(service.logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('sin el precio pedido'),
+      );
+    });
+
+    it('cobra en la moneda del contrato aunque el país del usuario sea otro', async () => {
+      // Una suscripción no cambia de moneda: con el país, Stripe rechazaría el
+      // cambio y el cliente vería un 503 sin causa aparente.
+      const { service, update } = buildService({
+        subscription: {
+          status: 'active',
+          items: { data: [{ id: 'si_123', price: { id: 'price_pro_usd' } }] },
+        },
+      });
+      definirPrecio(service, 'STRIPE_PRO_PRICE_ID', 'price_pro_usd');
+      definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID', 'price_promax_usd');
+
+      await service.upgradeSubscription('uid-1', 'promax');
+
+      expect(update.mock.calls[0][1].items).toEqual([
+        { id: 'si_123', price: 'price_promax_usd' },
+      ]);
+    });
+  });
+
   describe('sincronización fiscal previa', () => {
     it('propaga el perfil fiscal antes de tocar la suscripción', async () => {
       const { service, update, syncTaxProfileToStripe } = buildService({
@@ -1536,8 +1886,8 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     // Class field: `Object.create` no lo materializa y `withRetry` lo necesita.
     service.MAX_RETRIES = 3;
-    service.proPriceIdMxn = PRO_MXN;
-    service.promaxPriceIdMxn = PROMAX_MXN;
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
+    definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID_MXN', PROMAX_MXN);
 
     return {
       service,
@@ -1785,8 +2135,8 @@ describe('PaymentsService — handleSubscriptionUpdated', () => {
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
-    service.proPriceIdMxn = PRO_MXN;
-    service.promaxPriceIdMxn = PROMAX_MXN;
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
+    definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID_MXN', PROMAX_MXN);
 
     // La lenta sale primero; la rápida, unos milisegundos después.
     const lenta = service.handleSubscriptionUpdated(subscriptionCon(PRO_MXN));
@@ -1976,12 +2326,12 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
-    service.proPriceIdMxn = PRO_MXN;
-    service.proPriceId = PRO_MXN;
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID', PRO_MXN);
     // Sin el precio de PROMAX, comparar contratos falla por configuración y el
     // handler pide reentrega en vez de decidir.
-    service.promaxPriceIdMxn = PROMAX_MXN;
-    service.promaxPriceId = PROMAX_MXN;
+    definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID_MXN', PROMAX_MXN);
+    definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID', PROMAX_MXN);
     service.emailService = {
       queueSubscriptionDowngradedEmail: jest.fn().mockResolvedValue(undefined),
     };
@@ -2028,6 +2378,40 @@ describe('PaymentsService — alta y baja bajo el mutex', () => {
       expect.any(Date),
       'tok-1',
     );
+  });
+
+  it('el alta anual contabiliza el cobro entero y un MRR mensual', async () => {
+    const PRO_Y_MXN = 'price_pro_yearly_mxn';
+    const { service, firestoreService, updateUserSubscriptionState } =
+      buildService({
+        delCheckout: {
+          id: 'sub_123',
+          status: 'active',
+          created: 2000,
+          items: { data: [{ id: 'si_1', price: { id: PRO_Y_MXN } }] },
+        },
+      });
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_YEARLY_MXN', PRO_Y_MXN);
+
+    await service.handleCheckoutCompleted({ ...session, amount_total: 199000 });
+
+    expect(updateUserSubscriptionState).toHaveBeenCalledWith(
+      'uid-1',
+      expect.objectContaining({ plan: 'pro' }),
+      expect.any(Date),
+      'tok-1',
+    );
+    expect(firestoreService.saveTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: 199000,
+        amountMxn: 1990,
+        billingInterval: 'yearly',
+      }),
+    );
+    const evento = firestoreService.saveSubscriptionEvent.mock.calls[0][0];
+    expect(evento.billingInterval).toBe('yearly');
+    expect(evento.mrr).toBeCloseTo(1990 / 12);
+    expect(evento.mrrMxn).toBeCloseTo(1990 / 12);
   });
 
   it('el alta no relee Stripe ni escribe si otro ciclo tiene el mutex', async () => {
@@ -2573,8 +2957,8 @@ describe('PaymentsService — createCheckoutSession con contrato impagado', () =
     service.emailService = { queueSubscriptionDowngradedEmail };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
-    service.proPriceIdMxn = PRO_MXN;
-    service.proPriceId = 'price_pro_usd';
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID', 'price_pro_usd');
 
     return {
       service,
@@ -2830,7 +3214,7 @@ describe('PaymentsService — el checkout no cancela un contrato recuperado', ()
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
-    service.proPriceIdMxn = PRO_MXN;
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
 
     await expect(
       service.createCheckoutSession(
@@ -2947,7 +3331,7 @@ describe('PaymentsService — la baja se aplica, avisa y cuenta una sola vez', (
     service.emailService = { queueSubscriptionDowngradedEmail };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
-    service.proPriceIdMxn = PRO_MXN;
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
 
     return {
       service,
@@ -3124,7 +3508,7 @@ describe('PaymentsService — reconciliación de un upgrade en trialing', () => 
     const res = await service.reconcileIndeterminateUpgrade(
       Object.assign(new Error('timeout'), { type: 'StripeConnectionError' }),
       'uid-1',
-      'promax',
+      { plan: 'promax', interval: 'monthly' },
       'sub_123',
       'price_promax',
       'ctx',
@@ -3181,7 +3565,7 @@ describe('PaymentsService — el webhook repara también trialing', () => {
     };
     service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     service.MAX_RETRIES = 3;
-    service.promaxPriceIdMxn = PROMAX_MXN;
+    definirPrecio(service, 'STRIPE_PROMAX_PRICE_ID_MXN', PROMAX_MXN);
 
     await service.handleSubscriptionUpdated(enTrial);
 
@@ -3288,5 +3672,308 @@ describe('PaymentsService — subscription.deleted usa el mismo punto único', (
       'lite',
       'payment_failed',
     );
+  });
+});
+
+describe('PaymentsService — checkout con periodicidad (#95)', () => {
+  const PRO_MXN = 'price_pro_mxn';
+  const PRO_Y_MXN = 'price_pro_yearly_mxn';
+
+  function buildService(
+    opts: {
+      /** Precio del contrato registrado en el usuario, vivo en Stripe. */
+      precioVivo?: string;
+      /** Precio de una suscripción activa que solo aparece al listar por customer. */
+      precioListado?: string;
+      sinAnual?: boolean;
+    } = {},
+  ) {
+    const usuario = {
+      id: 'uid-1',
+      email: 'cliente@example.com',
+      plan: 'free',
+      country: 'MX',
+      stripeCustomerId: 'cus_123',
+      stripeSubscriptionId: opts.precioVivo ? 'sub_viva' : undefined,
+    };
+    const suscripcion = (id: string, priceId: string) => ({
+      id,
+      status: 'active',
+      items: { data: [{ id: 'si_1', price: { id: priceId } }] },
+    });
+    const sessionsCreate = jest
+      .fn()
+      .mockResolvedValue({ url: 'https://checkout', id: 'cs_1' });
+    const customersCreate = jest.fn().mockResolvedValue({ id: 'cus_nuevo' });
+    const getUserById = jest.fn().mockResolvedValue(usuario);
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = {
+      subscriptions: {
+        retrieve: jest
+          .fn()
+          .mockResolvedValue(suscripcion('sub_viva', opts.precioVivo)),
+        list: jest.fn().mockResolvedValue({
+          data: opts.precioListado
+            ? [suscripcion('sub_listada', opts.precioListado)]
+            : [],
+        }),
+      },
+      customers: {
+        retrieve: jest.fn().mockResolvedValue({ id: 'cus_123' }),
+        create: customersCreate,
+      },
+      checkout: { sessions: { create: sessionsCreate } },
+    };
+    service.firestoreService = {
+      getUserById,
+      updateUser: jest.fn().mockResolvedValue(undefined),
+    };
+    service.billingService = {
+      syncTaxProfileToStripe: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_MXN', PRO_MXN);
+    if (!opts.sinAnual) {
+      definirPrecio(service, 'STRIPE_PRO_PRICE_ID_YEARLY_MXN', PRO_Y_MXN);
+    }
+
+    const checkout = (plan: string, periodo?: string) =>
+      service.createCheckoutSession(
+        'uid-1',
+        'cliente@example.com',
+        'https://ok',
+        'https://ko',
+        'MX',
+        plan,
+        periodo,
+      );
+
+    return { service, checkout, sessionsCreate, customersCreate, getUserById };
+  }
+
+  it('abre el checkout con el precio anual', async () => {
+    const { checkout, sessionsCreate } = buildService();
+
+    await checkout('pro', 'yearly');
+
+    expect(sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [{ price: PRO_Y_MXN, quantity: 1 }],
+      }),
+    );
+  });
+
+  it('sin periodicidad sigue abriendo el mensual', async () => {
+    const { checkout, sessionsCreate } = buildService();
+
+    await checkout('pro');
+
+    expect(sessionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [{ price: PRO_MXN, quantity: 1 }],
+      }),
+    );
+  });
+
+  it('sin precio anual responde 400 antes de leer al usuario o crear nada', async () => {
+    const { checkout, sessionsCreate, customersCreate, getUserById } =
+      buildService({ sinAnual: true });
+
+    const error = await checkout('pro', 'yearly').catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).getResponse()).toMatchObject({
+      data: { code: 'YEARLY_BILLING_NOT_AVAILABLE', plan: 'pro' },
+    });
+    expect(getUserById).not.toHaveBeenCalled();
+    expect(customersCreate).not.toHaveBeenCalled();
+    expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+
+  describe.each([
+    ['contrato registrado', 'precioVivo'],
+    ['contrato encontrado al listar por customer', 'precioListado'],
+  ])('con un %s', (_caso, origen) => {
+    it.each([
+      [
+        'PRO mensual pide PRO anual',
+        PRO_MXN,
+        'yearly',
+        'Use the upgrade endpoint to upgrade from PRO to PRO (yearly).',
+        'USE_UPGRADE_ENDPOINT',
+      ],
+      [
+        'PRO anual pide PRO mensual',
+        PRO_Y_MXN,
+        'monthly',
+        'You already have an active subscription (PRO (yearly)). To downgrade or change your plan, manage it from your account settings (customer portal).',
+        'PLAN_CHANGE_VIA_PORTAL',
+      ],
+      [
+        'PRO anual pide PRO anual',
+        PRO_Y_MXN,
+        'yearly',
+        'You already have an active PRO (yearly) subscription. Manage it from your account settings.',
+        'ALREADY_SUBSCRIBED',
+      ],
+    ])(
+      '%s: no abre un segundo checkout',
+      async (_c, precio, periodo, mensaje, code) => {
+        const { checkout, sessionsCreate } = buildService({ [origen]: precio });
+
+        const error = await checkout('pro', periodo).catch((e: Error) => e);
+
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect(error.message).toBe(mensaje);
+        // Mismo vocabulario que el upgrade para que el frontend ramifique igual.
+        expect((error as BadRequestException).getResponse()).toMatchObject({
+          data: { code },
+        });
+        expect(sessionsCreate).not.toHaveBeenCalled();
+      },
+    );
+  });
+});
+
+describe('PaymentsService — MRR de contratos anuales (#95)', () => {
+  const PRO_Y_MXN = 'price_pro_yearly_mxn';
+  const UN_ANIO = 365 * 24 * 60 * 60;
+
+  function buildService(retrieve: jest.Mock) {
+    const saveTransaction = jest.fn().mockResolvedValue(undefined);
+    const saveSubscriptionEvent = jest.fn().mockResolvedValue(undefined);
+
+    const service: any = Object.create(PaymentsService.prototype);
+    service.stripe = { subscriptions: { retrieve } };
+    service.firestoreService = {
+      getUserByStripeCustomerId: jest.fn().mockResolvedValue({
+        id: 'uid-1',
+        email: 'cliente@example.com',
+        plan: 'pro',
+        country: 'MX',
+        stripeSubscriptionId: 'sub_123',
+      }),
+      saveTransaction,
+      saveSubscriptionEvent,
+      updateUser: jest.fn().mockResolvedValue(undefined),
+    };
+    service.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    definirPrecio(service, 'STRIPE_PRO_PRICE_ID_YEARLY_MXN', PRO_Y_MXN);
+
+    return { service, saveTransaction, saveSubscriptionEvent };
+  }
+
+  const renovacionAnual = {
+    id: 'in_1',
+    billing_reason: 'subscription_cycle',
+    customer: 'cus_123',
+    currency: 'mxn',
+    amount_paid: 199000,
+    parent: { subscription_details: { subscription: 'sub_123' } },
+    lines: {
+      data: [{ period: { start: 1758110400, end: 1758110400 + UN_ANIO } }],
+    },
+  };
+
+  it('la renovación anual registra el cobro entero y un MRR mensual', async () => {
+    const { service, saveTransaction, saveSubscriptionEvent } = buildService(
+      jest.fn().mockResolvedValue({
+        id: 'sub_123',
+        items: { data: [{ id: 'si_1', price: { id: PRO_Y_MXN } }] },
+      }),
+    );
+
+    await service.handleInvoicePaid(renovacionAnual);
+
+    expect(saveTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 199000, billingInterval: 'yearly' }),
+    );
+    const evento = saveSubscriptionEvent.mock.calls[0][0];
+    expect(evento).toMatchObject({
+      eventType: 'renewed',
+      billingInterval: 'yearly',
+    });
+    expect(evento.mrr).toBeCloseTo(1990 / 12);
+  });
+
+  it('sin poder leer el precio, deduce la periodicidad del periodo facturado', async () => {
+    const { service, saveSubscriptionEvent } = buildService(
+      jest.fn().mockRejectedValue(new Error('Stripe caído')),
+    );
+
+    await service.handleInvoicePaid(renovacionAnual);
+
+    const evento = saveSubscriptionEvent.mock.calls[0][0];
+    expect(evento.billingInterval).toBe('yearly');
+    expect(evento.mrr).toBeCloseTo(1990 / 12);
+  });
+
+  it('una renovación mensual de febrero sigue contando un mes', async () => {
+    const { service, saveSubscriptionEvent } = buildService(
+      jest.fn().mockRejectedValue(new Error('Stripe caído')),
+    );
+    const inicio = Date.UTC(2027, 1, 1) / 1000;
+
+    await service.handleInvoicePaid({
+      ...renovacionAnual,
+      amount_paid: 19900,
+      lines: {
+        data: [{ period: { start: inicio, end: Date.UTC(2027, 2, 1) / 1000 } }],
+      },
+    });
+
+    const evento = saveSubscriptionEvent.mock.calls[0][0];
+    expect(evento.billingInterval).toBe('monthly');
+    expect(evento.mrr).toBe(199);
+  });
+
+  it('la baja de un anual pierde la doceava parte de su precio', async () => {
+    const { service } = buildService(jest.fn());
+
+    const desdeSuscripcion = await service.calcularMrrPerdido(
+      {
+        subscription: {
+          id: 'sub_123',
+          items: {
+            data: [
+              {
+                quantity: 1,
+                price: {
+                  currency: 'mxn',
+                  unit_amount: 199000,
+                  recurring: { interval: 'year', interval_count: 1 },
+                },
+              },
+            ],
+          },
+        },
+      },
+      'MX',
+    );
+    const desdeFactura = await service.calcularMrrPerdido(
+      {
+        invoice: {
+          id: 'in_1',
+          currency: 'mxn',
+          amount_due: 199000,
+          // Un cargo suelto delante no debe hacer contar el año como un mes.
+          lines: {
+            data: [
+              { amount: 500, period: { start: 1758110400, end: 1758110400 } },
+              ...renovacionAnual.lines.data.map((line) => ({
+                ...line,
+                amount: 198500,
+              })),
+            ],
+          },
+        },
+      },
+      'MX',
+    );
+
+    expect(desdeSuscripcion.mrr).toBeCloseTo(1990 / 12);
+    expect(desdeFactura.mrr).toBeCloseTo(1990 / 12);
+    expect(desdeFactura.mrrMxn).toBeCloseTo(1990 / 12);
   });
 });

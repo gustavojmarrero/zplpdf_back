@@ -36,6 +36,18 @@ export class CreateCheckoutDto {
   @IsString()
   @IsOptional()
   country?: string;
+
+  @ApiProperty({
+    description:
+      'Billing period. `yearly` returns 400 with `data.code: YEARLY_BILLING_NOT_AVAILABLE` ' +
+      'while the yearly price is not configured; it never falls back to monthly.',
+    required: false,
+    enum: ['monthly', 'yearly'],
+    default: 'monthly',
+  })
+  @IsIn(['monthly', 'yearly'])
+  @IsOptional()
+  billingPeriod?: 'monthly' | 'yearly';
 }
 
 export class CheckoutResponseDto {
@@ -53,11 +65,22 @@ export class PortalResponseDto {
 
 export class UpgradeSubscriptionDto {
   @ApiProperty({
-    description: 'Target plan to upgrade to',
-    enum: ['pro', 'promax'],
+    description:
+      'Target plan. It may equal the current plan when moving from monthly to yearly billing.',
+    enum: ['lite', 'pro', 'promax'],
   })
-  @IsIn(['pro', 'promax'])
-  targetPlan: 'pro' | 'promax';
+  @IsIn(['lite', 'pro', 'promax'])
+  targetPlan: 'lite' | 'pro' | 'promax';
+
+  @ApiProperty({
+    description: 'Target billing period',
+    required: false,
+    enum: ['monthly', 'yearly'],
+    default: 'monthly',
+  })
+  @IsIn(['monthly', 'yearly'])
+  @IsOptional()
+  billingPeriod?: 'monthly' | 'yearly';
 }
 
 export class UpgradeResponseDto {

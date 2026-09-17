@@ -231,6 +231,102 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
     return new Date(Date.now() - ms).toISOString();
   }
 
+  describe('con el precio como destino (#95)', () => {
+    function conPrecio(
+      targetPlan: string,
+      targetPriceId: string,
+      targetInterval = 'monthly',
+    ) {
+      return { ...candidato(targetPlan), targetPriceId, targetInterval };
+    }
+
+    it('no reutiliza la clave de otro precio del mismo plan', async () => {
+      // Pro mensual y Pro anual comparten plan, pero Stripe rechaza una clave
+      // reutilizada con otros parámetros.
+      const haceUnMinuto = hace(60 * 1000);
+      const { service, docData } = buildService({
+        key: 'upgrade_previo',
+        targetPlan: 'pro',
+        targetPriceId: 'price_pro_mensual',
+        subscriptionId: 'sub_123',
+        createdAt: haceUnMinuto,
+        lastAttemptAt: haceUnMinuto,
+      });
+
+      const result = await service.acquireUpgradeIdempotency(
+        'uid-1',
+        conPrecio('pro', 'price_pro_anual'),
+        TTL_MS,
+        LEASE_MS,
+      );
+
+      expect(result).toEqual({ status: 'conflict', targetPlan: 'pro' });
+      expect((docData.upgradeIdempotency as any).key).toBe('upgrade_previo');
+    });
+
+    it('reutiliza la clave del mismo precio', async () => {
+      const haceUnMinuto = hace(60 * 1000);
+      const { service } = buildService({
+        key: 'upgrade_previo',
+        targetPlan: 'pro',
+        targetPriceId: 'price_pro_anual',
+        subscriptionId: 'sub_123',
+        createdAt: haceUnMinuto,
+        lastAttemptAt: haceUnMinuto,
+      });
+
+      const result = await service.acquireUpgradeIdempotency(
+        'uid-1',
+        conPrecio('pro', 'price_pro_anual'),
+        TTL_MS,
+        LEASE_MS,
+      );
+
+      expect(result).toEqual({ status: 'ok', key: 'upgrade_previo' });
+    });
+
+    it('una clave anterior sin precio se sigue comparando por plan', async () => {
+      const haceUnMinuto = hace(60 * 1000);
+      const { service } = buildService({
+        key: 'upgrade_previo',
+        targetPlan: 'promax',
+        subscriptionId: 'sub_123',
+        createdAt: haceUnMinuto,
+        lastAttemptAt: haceUnMinuto,
+      });
+
+      const result = await service.acquireUpgradeIdempotency(
+        'uid-1',
+        conPrecio('promax', 'price_promax_mensual'),
+        TTL_MS,
+        LEASE_MS,
+      );
+
+      expect(result).toEqual({ status: 'ok', key: 'upgrade_previo' });
+    });
+
+    it('una clave anterior sin precio no vale para un destino anual', async () => {
+      // Solo pudo ser de un cambio mensual.
+      const haceUnMinuto = hace(60 * 1000);
+      const { service } = buildService({
+        key: 'upgrade_previo',
+        targetPlan: 'pro',
+        subscriptionId: 'sub_123',
+        createdAt: haceUnMinuto,
+        lastAttemptAt: haceUnMinuto,
+      });
+
+      const result = await service.acquireUpgradeIdempotency(
+        'uid-1',
+        conPrecio('pro', 'price_pro_anual', 'yearly'),
+        TTL_MS,
+        LEASE_MS,
+      );
+
+      expect(result).toEqual({ status: 'conflict', targetPlan: 'pro' });
+    });
+  });
+
   it('reutiliza la clave del mismo destino dentro del TTL', async () => {
     // El caso original: el reintento del mismo upgrade no debe cobrar dos veces.
     // El instante se captura UNA vez: dos llamadas a `hace()` difieren en algún

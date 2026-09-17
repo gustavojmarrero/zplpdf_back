@@ -39,6 +39,14 @@ export class PaymentsController {
     description: 'Checkout session created',
     type: CheckoutResponseDto,
   })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Checkout not allowed. Branch on `data.code`: `YEARLY_BILLING_NOT_AVAILABLE` when the ' +
+      'yearly price is not configured yet. With a live subscription: `ALREADY_SUBSCRIBED` ' +
+      '(same plan and period), `USE_UPGRADE_ENDPOINT` (higher plan or period) or ' +
+      '`PLAN_CHANGE_VIA_PORTAL` (lower plan or period, or unrecognized current price).',
+  })
   async createCheckout(
     @CurrentUser() user: FirebaseUser,
     @Body() dto: CreateCheckoutDto,
@@ -55,6 +63,7 @@ export class PaymentsController {
       cancelUrl,
       dto.country,
       dto.plan || 'pro',
+      dto.billingPeriod ?? 'monthly',
     );
   }
 
@@ -77,7 +86,10 @@ export class PaymentsController {
 
   @Post('upgrade')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Upgrade subscription from PRO to PRO MAX' })
+  @ApiOperation({
+    summary:
+      'Upgrade subscription plan and/or billing period (e.g. PRO → PRO MAX, PRO monthly → PRO yearly)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Subscription upgraded successfully',
@@ -85,7 +97,13 @@ export class PaymentsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Invalid upgrade request (no subscription, wrong plan, etc.)',
+    description:
+      'Invalid upgrade request (no subscription, same plan and period, etc.). Branch on `data.code`:\n\n' +
+      '- `PLAN_CHANGE_VIA_PORTAL` (`data.reason`: `plan_downgrade` | `interval_downgrade`): any ' +
+      'downgrade of plan or billing period (including yearly → monthly of a higher plan) is ' +
+      'done from the customer portal, not here. Nothing was charged.\n' +
+      '- `YEARLY_BILLING_NOT_AVAILABLE`: the yearly price is not configured yet. Nothing was charged.\n' +
+      '- `UPGRADE_PAYMENT_PENDING`: the change awaits payment or authentication (`data.paymentUrl`).',
   })
   @ApiResponse({
     status: 409,
@@ -112,6 +130,10 @@ export class PaymentsController {
     @CurrentUser() user: FirebaseUser,
     @Body() dto: UpgradeSubscriptionDto,
   ): Promise<UpgradeResponseDto> {
-    return this.paymentsService.upgradeSubscription(user.uid, dto.targetPlan);
+    return this.paymentsService.upgradeSubscription(
+      user.uid,
+      dto.targetPlan,
+      dto.billingPeriod ?? 'monthly',
+    );
   }
 }
