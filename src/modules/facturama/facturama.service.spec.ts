@@ -120,6 +120,16 @@ describe('FacturamaService', () => {
   });
 
   describe('fecha de expedición', () => {
+    beforeEach(() => {
+      // El servicio y la expectativa deben observar el mismo instante,
+      // incluso si la llamada asíncrona cruza un cambio de segundo real.
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-04T19:00:00.999Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
     /** Hora local del emisor (Mérida, UTC-6) de un instante dado. */
     function meridaLocal(date: Date): string {
       const parts = new Intl.DateTimeFormat('en-CA', {
@@ -152,16 +162,11 @@ describe('FacturamaService', () => {
 
     it('expide en hora local del emisor, no en UTC', async () => {
       const chargedAt = new Date('2026-08-04T18:30:00.000Z');
-      jest.useFakeTimers().setSystemTime(new Date('2026-08-04T19:00:00.000Z'));
 
-      try {
-        // Facturama lee `Date` como hora local del emisor. Mandarle el UTC
-        // adelantaba seis horas el comprobante y lo dejaba fechado en el futuro,
-        // que el PAC rechaza de plano.
-        expect(await stampWith(chargedAt)).toBe('2026-08-04T12:30:00');
-      } finally {
-        jest.useRealTimers();
-      }
+      // Facturama lee `Date` como hora local del emisor. Mandarle el UTC
+      // adelantaba seis horas el comprobante y lo dejaba fechado en el futuro,
+      // que el PAC rechaza de plano.
+      expect(await stampWith(chargedAt)).toBe('2026-08-04T12:30:00');
     });
 
     it('usa la fecha del cobro si está dentro de las 72 horas', async () => {
