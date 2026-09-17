@@ -1,4 +1,10 @@
+import { GrowthOperationsModule } from './modules/growth-operations/growth-operations.module.js';
+import { TemplateRegressionModule } from './modules/template-regression/template-regression.module.js';
+import { LabelTemplatesModule } from './modules/label-templates/label-templates.module.js';
+import { WorkflowsModule } from './modules/workflows/workflows.module.js';
+import { PdfPreparationModule } from './modules/pdf-preparation/pdf-preparation.module.js';
 import { Module } from '@nestjs/common';
+import { ProductObservabilityModule } from './modules/product-observability/product-observability.module.js';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard.js';
@@ -39,6 +45,12 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
         limit: 100,
       },
     ]),
+    ProductObservabilityModule,
+    PdfPreparationModule,
+    WorkflowsModule,
+    GrowthOperationsModule,
+    LabelTemplatesModule,
+    TemplateRegressionModule,
     AuthModule,
     UsersModule,
     PaymentsModule,

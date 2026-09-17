@@ -1,5 +1,60 @@
 import { FirestoreService } from './firestore.service.js';
 
+describe('FirestoreService — manual enterprise financial privacy', () => {
+  it('keeps the booked amount while removing account and free-text source', async () => {
+    const contract = {
+      accountId: 'owner',
+      source: 'person@example.com',
+      amountMinor: 20000,
+      currency: 'mxn',
+      period: '2026-09',
+    };
+    const service: any = Object.create(FirestoreService.prototype);
+    Object.assign(service, {
+      usersCollection: 'users',
+      transactionsCollection: 'transactions',
+      subscriptionEventsCollection: 'subscription_events',
+      firestore: {
+        collection: (name: string) => ({
+          doc: () => ({ get: async () => ({ data: () => ({}) }) }),
+          where: (field: string, op: string, owner: string) => ({
+            get: async () => {
+              if (name === 'growth_enterprise_contracts') {
+                expect([field, op, owner]).toEqual([
+                  'accountId',
+                  '==',
+                  'owner',
+                ]);
+                return {
+                  docs: [
+                    { ref: { path: 'growth_enterprise_contracts/contract' } },
+                  ],
+                  empty: false,
+                };
+              }
+              return { docs: [], empty: true };
+            },
+          }),
+        }),
+        batch: () => ({
+          update: (_ref: unknown, patch: Record<string, unknown>) =>
+            Object.assign(contract, patch),
+          commit: async () => undefined,
+        }),
+      },
+    });
+    expect(await service.anonymizeUserFinancialRecords('owner')).toBe(1);
+    expect(contract).toMatchObject({
+      accountId: null,
+      source: 'anonymized-record',
+      amountMinor: 20000,
+      currency: 'mxn',
+      period: '2026-09',
+    });
+    expect(JSON.stringify(contract)).not.toMatch(/owner|example.com/);
+  });
+});
+
 /**
  * Stripe no garantiza el orden de entrega de los webhooks, y releer la
  * suscripción antes de escribir no basta: entre esa lectura y la escritura cabe
@@ -1325,7 +1380,7 @@ describe('FirestoreService — la inactividad no depende del historial', () => {
                 : [];
               return { docs, empty: docs.length === 0 };
             }
-            return { docs: [], empty: true };
+            return { docs: [], empty: true, size: 0 };
           },
         };
         return q;
@@ -1520,6 +1575,12 @@ describe('FirestoreService — anonimiza UIDs en agregados y auditoría', () => 
       firestore: {
         collection: (collection: string) => ({
           where: (field: string) => ({
+            orderBy() {
+              return this;
+            },
+            limit() {
+              return this;
+            },
             get: async () => {
               if (collection === 'daily_stats' && field === 'activeUserIds') {
                 return { docs: [dailyDoc], empty: false };
@@ -1530,7 +1591,7 @@ describe('FirestoreService — anonimiza UIDs en agregados y auditoría', () => 
               ) {
                 return { docs: [auditDoc], empty: false };
               }
-              return { docs: [], empty: true };
+              return { docs: [], empty: true, size: 0 };
             },
           }),
         }),
@@ -1749,5 +1810,72 @@ describe('FirestoreService — lease de la cola de emails', () => {
         false,
       );
     }
+  });
+});
+
+describe('FirestoreService — product event privacy deletion', () => {
+  it('deletes all pages owned by the account and leaves financial snapshots alone', async () => {
+    const records = new Map<string, any[]>([
+      [
+        'product_events',
+        [
+          { ref: { path: 'product_events/a' } },
+          { ref: { path: 'product_events/b' } },
+        ],
+      ],
+      ['growth_assignments', [{ ref: { path: 'growth_assignments/c' } }]],
+    ]);
+    const deleted: string[] = [];
+    const service: any = Object.create(FirestoreService.prototype);
+    Object.assign(service, {
+      emailQueueCollection: 'email_queue',
+      emailEventsCollection: 'email_events',
+      feedbackCollection: 'feedback',
+      errorLogsCollection: 'error_logs',
+      dailyStatsCollection: 'daily_stats',
+      adminAuditCollection: 'admin_audit_log',
+      firestore: {
+        collection: (name: string) => ({
+          where: (field: string, op: string, id: string) => ({
+            orderBy() {
+              return this;
+            },
+            limit() {
+              return this;
+            },
+            get: async () => {
+              if (records.has(name)) {
+                expect([field, op, id]).toEqual([
+                  'accountId',
+                  '==',
+                  'account-a',
+                ]);
+                const docs = records.get(name);
+                return { docs, empty: !docs.length };
+              }
+              return { docs: [], empty: true, size: 0 };
+            },
+          }),
+        }),
+        batch: () => ({
+          delete: (ref: any) => {
+            deleted.push(ref.path);
+          },
+          commit: async () => {
+            for (const [name, rows] of records)
+              records.set(
+                name,
+                rows.filter((r) => !deleted.includes(r.ref.path)),
+              );
+          },
+        }),
+      },
+    });
+    expect(await service.anonymizeUserActivityRecords('account-a')).toBe(3);
+    expect(deleted).toEqual([
+      'product_events/a',
+      'product_events/b',
+      'growth_assignments/c',
+    ]);
   });
 });

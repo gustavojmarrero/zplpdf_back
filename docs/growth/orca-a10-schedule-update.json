@@ -1,0 +1,58 @@
+{
+  "id": "9dd29d5d-0bc3-4d0c-9422-1d170159a2b6",
+  "ok": true,
+  "result": {
+    "automation": {
+      "id": "4a06a664-f473-4dff-9794-8f781de223cb",
+      "name": "ZPLPDF A10 · COE mensual",
+      "prompt": "ZPLPDF A10. Lee /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/docs/growth/coe-prompts.md y ejecuta exclusivamente su contrato común y sección A10. Lee .local/growth/current-snapshot-manifest.json para snapshots; si falta, informa missing_dependency. Escribe evidencia privada en .local/growth/reports/A10/ con ventana y checksum. No imprimas secretos ni datos personales. No publiques, no envíes mensajes, no modifiques producción/precios/suscripciones/flags. Si A10 es A11, actualiza .local/growth/market-state.json lastSuccessfulAt solo tras informe completo; no investigues más de 8 fuentes. Estos jobs siguen disabled hasta verificar datos, precheck y corrida manual.",
+      "precheck": {
+        "command": "node /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/scripts/growth/coe-precheck.mjs A10",
+        "timeoutSeconds": 30
+      },
+      "agentId": "codex",
+      "runContext": {
+        "kind": "workspace-run",
+        "projectId": "github:gustavojmarrero/zplpdf_back",
+        "hostId": "local",
+        "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+        "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+        "path": "/Users/gustavomarrero/Code/backend/zpl-backend"
+      },
+      "sourceContext": {
+        "kind": "task-source",
+        "provider": "github",
+        "projectId": "github:gustavojmarrero/zplpdf_back",
+        "hostId": "local",
+        "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+        "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+        "providerIdentity": {
+          "provider": "github",
+          "owner": "gustavojmarrero",
+          "repo": "zplpdf_back"
+        },
+        "accountLabel": null
+      },
+      "projectId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+      "executionTargetType": "local",
+      "executionTargetId": "local",
+      "schedulerOwner": "local_host_service",
+      "workspaceMode": "existing",
+      "workspaceId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc::/Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation",
+      "baseBranch": null,
+      "reuseSession": false,
+      "timezone": "America/Merida",
+      "rrule": "0 10 5 * *",
+      "dtstart": 1789680059180,
+      "enabled": false,
+      "nextRunAt": 1791187200000,
+      "missedRunPolicy": "run_once_within_grace",
+      "missedRunGraceMinutes": 720,
+      "createdAt": 1789673516154,
+      "updatedAt": 1789680059188
+    }
+  },
+  "_meta": {
+    "runtimeId": "59e83c90-1848-45cc-881d-49e0e79fad05"
+  }
+}
