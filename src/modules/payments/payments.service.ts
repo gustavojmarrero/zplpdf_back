@@ -29,12 +29,23 @@ import type {
 } from '../../common/interfaces/finance.interface.js';
 import { ErrorCodes } from '../../common/constants/error-codes.js';
 import { PLAN_ORDER } from '../../common/interfaces/user.interface.js';
-import type { PlanType, User } from '../../common/interfaces/user.interface.js';
+import type { User } from '../../common/interfaces/user.interface.js';
+import {
+  PriceCatalog,
+  classifyTransition,
+  currencyForCountry,
+  mesesDelCobro,
+  mesesDePeriodicidad,
+} from './price-catalog.js';
+import type {
+  BillingInterval,
+  PriceCurrency,
+  PriceRef,
+  SellablePlan,
+} from './price-catalog.js';
 import { randomUUID } from 'node:crypto';
 
 type PaidPlanType = 'lite' | 'pro' | 'promax' | 'enterprise';
-/** Planes de pago vendibles por checkout/upgrade (excluye enterprise, que es manual). */
-type SellablePlan = 'lite' | 'pro' | 'promax';
 type FuenteMrrBaja =
   | { subscription: Stripe.Subscription }
   | { invoice: Stripe.Invoice };
@@ -44,12 +55,7 @@ type MrrPerdido = Pick<SubscriptionEvent, 'currency' | 'mrr' | 'mrrMxn'>;
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
   private stripe: Stripe;
-  private proPriceId: string;
-  private proPriceIdMxn: string;
-  private promaxPriceId: string;
-  private promaxPriceIdMxn: string;
-  private litePriceId: string;
-  private litePriceIdMxn: string;
+  private priceCatalog = new PriceCatalog();
   private readonly MAX_RETRIES = 3;
 
   /**
@@ -137,79 +143,93 @@ export class PaymentsService {
 
     this.stripe = new Stripe(stripeSecretKey);
 
-    this.proPriceId = this.configService.get<string>('STRIPE_PRO_PRICE_ID');
-    this.proPriceIdMxn = this.configService.get<string>(
-      'STRIPE_PRO_PRICE_ID_MXN',
-    );
-    this.promaxPriceId = this.configService.get<string>(
-      'STRIPE_PROMAX_PRICE_ID',
-    );
-    this.promaxPriceIdMxn = this.configService.get<string>(
-      'STRIPE_PROMAX_PRICE_ID_MXN',
-    );
-    this.litePriceId = this.configService.get<string>('STRIPE_LITE_PRICE_ID');
-    this.litePriceIdMxn = this.configService.get<string>(
-      'STRIPE_LITE_PRICE_ID_MXN',
+    this.priceCatalog = PriceCatalog.fromConfig((key) =>
+      this.configService.get<string>(key),
     );
 
-    // Validate price IDs are configured
-    if (!this.proPriceId) {
-      this.logger.warn('STRIPE_PRO_PRICE_ID not configured');
+    for (const conflicto of this.priceCatalog.conflicts()) {
+      this.logger.error(
+        `CRITICAL: ${conflicto}; se ignora esa variable y su destino queda sin precio.`,
+      );
     }
-    if (!this.proPriceIdMxn) {
-      this.logger.warn('STRIPE_PRO_PRICE_ID_MXN not configured');
+    for (const envVar of this.priceCatalog.missing('monthly')) {
+      this.logger.warn(`${envVar} not configured`);
     }
-    if (!this.promaxPriceId) {
-      this.logger.warn('STRIPE_PROMAX_PRICE_ID not configured');
-    }
-    if (!this.promaxPriceIdMxn) {
-      this.logger.warn('STRIPE_PROMAX_PRICE_ID_MXN not configured');
-    }
-    if (!this.litePriceId) {
-      this.logger.warn('STRIPE_LITE_PRICE_ID not configured');
-    }
-    if (!this.litePriceIdMxn) {
-      this.logger.warn('STRIPE_LITE_PRICE_ID_MXN not configured');
+    // Los anuales se despliegan después que el código: su ausencia es un estado
+    // esperado, no un aviso. Pedir `yearly` sin precio devuelve un 400 claro.
+    const anualesSinPrecio = this.priceCatalog.missing('yearly');
+    if (anualesSinPrecio.length > 0) {
+      this.logger.log(
+        `Facturación anual deshabilitada para: ${anualesSinPrecio.join(', ')}`,
+      );
     }
   }
 
   /**
-   * Get plan type from Stripe price ID.
+   * Qué vende un price ID de Stripe: plan, moneda y periodicidad.
    *
-   * Devuelve `null` si el price ID no está mapeado a ningún plan. NO hace fallback
-   * a 'pro': un price ID desconocido es casi siempre un error de configuración
-   * (ej. STRIPE_LITE_PRICE_ID sin definir), y asignar Pro por defecto regalaría
-   * un plan superior. Los callers deben tratar `null` como condición de error.
+   * Devuelve `null` si el price ID no está mapeado. NO hace fallback a 'pro': un
+   * price ID desconocido es casi siempre un error de configuración (ej.
+   * STRIPE_LITE_PRICE_ID sin definir), y asignar Pro por defecto regalaría un
+   * plan superior. Los callers deben tratar `null` como condición de error.
    */
-  private getPlanFromPriceId(priceId: string): PaidPlanType | null {
-    if (priceId === this.proPriceId || priceId === this.proPriceIdMxn) {
-      return 'pro';
-    }
-    if (priceId === this.promaxPriceId || priceId === this.promaxPriceIdMxn) {
-      return 'promax';
-    }
-    if (priceId === this.litePriceId || priceId === this.litePriceIdMxn) {
-      return 'lite';
+  private resolvePrice(priceId: string): PriceRef | null {
+    const ref = this.priceCatalog.resolve(priceId);
+    if (ref) {
+      return ref;
     }
     this.logger.error(
       `CRITICAL: Unknown Stripe price ID '${priceId}' — not mapped to any plan. ` +
-        `Check STRIPE_LITE/PRO/PROMAX_PRICE_ID[_MXN] configuration. Plan NOT assigned.`,
+        `Check STRIPE_LITE/PRO/PROMAX_PRICE_ID[_YEARLY][_MXN] configuration. Plan NOT assigned.`,
     );
     return null;
   }
 
+  /** Plan que concede un price ID; `null` si no está mapeado (ver `resolvePrice`). */
+  private getPlanFromPriceId(priceId: string): PaidPlanType | null {
+    return this.resolvePrice(priceId)?.plan ?? null;
+  }
+
   /**
-   * Get price ID for a plan and country
+   * 400 cuando se pide un precio anual que todavía no existe.
+   *
+   * Nunca se cae al mensual: el cliente eligió anual y cobrarle otra cosa sería
+   * peor que decirle que aún no está disponible. `data.code` deja al frontend
+   * mantener la pestaña deshabilitada sin parsear el mensaje.
    */
-  private getPriceIdForPlan(plan: SellablePlan, country?: string): string {
-    const isMexico = country === 'MX';
-    if (plan === 'promax') {
-      return isMexico ? this.promaxPriceIdMxn : this.promaxPriceId;
+  private throwBillingNotAvailable(
+    plan: SellablePlan,
+    billingPeriod: BillingInterval,
+  ): never {
+    if (billingPeriod === 'yearly') {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: `Yearly billing is not available yet for the ${plan.toUpperCase()} plan.`,
+        data: { code: 'YEARLY_BILLING_NOT_AVAILABLE', plan },
+      });
     }
-    if (plan === 'lite') {
-      return isMexico ? this.litePriceIdMxn : this.litePriceId;
-    }
-    return isMexico ? this.proPriceIdMxn : this.proPriceId;
+    throw new BadRequestException(`${plan} price not configured`);
+  }
+
+  /**
+   * 400 para un cambio que no se hace desde la app: cualquier bajada de plan o
+   * de periodicidad va por el portal de Stripe, que la aplica a fin de periodo.
+   */
+  private throwChangeViaPortal(
+    from: { plan: string; interval: BillingInterval },
+    to: { plan: string; interval: BillingInterval },
+    reason: 'plan_downgrade' | 'interval_downgrade',
+  ): never {
+    throw new BadRequestException({
+      statusCode: 400,
+      error: 'Bad Request',
+      message:
+        `Cannot upgrade from ${this.etiquetaContrato(from)} to ${this.etiquetaContrato(to)}. ` +
+        `To downgrade or switch to monthly billing, manage your subscription from ` +
+        `your account settings (customer portal).`,
+      data: { code: 'PLAN_CHANGE_VIA_PORTAL', reason },
+    });
   }
 
   /**
@@ -223,36 +243,64 @@ export class PaymentsService {
    */
   private bloquearAltaSobreContratoVivo(
     viva: Stripe.Subscription,
-    plan: SellablePlan,
+    destino: { plan: SellablePlan; interval: BillingInterval },
   ): never {
     const currentPriceId = viva.items.data[0]?.price?.id;
-    const currentPlan = currentPriceId
-      ? this.getPlanFromPriceId(currentPriceId)
-      : null;
+    const actual = currentPriceId ? this.resolvePrice(currentPriceId) : null;
+    const transicion = actual ? classifyTransition(actual, destino) : null;
 
-    // If trying to buy the same plan, reject
-    if (currentPlan === plan) {
-      throw new BadRequestException(
-        `You already have an active ${plan.toUpperCase()} subscription. Manage it from your account settings.`,
+    // `data.code` con el mismo vocabulario que el upgrade, para que el frontend
+    // ramifique igual en los dos endpoints. El mensaje no cambia.
+    const rechazar = (message: string, data: Record<string, string>): never => {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message,
+        data,
+      });
+    };
+
+    // Mismo plan y misma periodicidad: no hay nada que contratar.
+    if (transicion === 'same') {
+      rechazar(
+        `You already have an active ${this.etiquetaContrato(destino)} subscription. Manage it from your account settings.`,
+        { code: 'ALREADY_SUBSCRIBED' },
       );
     }
 
-    // If moving UP between paid plans (lite→pro, lite→promax, pro→promax),
-    // redirect to the upgrade endpoint to modify the existing subscription
-    // with proration instead of creating a duplicate subscription.
-    if (currentPlan && PLAN_ORDER[plan] > PLAN_ORDER[currentPlan]) {
-      throw new BadRequestException(
-        `Use the upgrade endpoint to upgrade from ${currentPlan.toUpperCase()} to ${plan.toUpperCase()}.`,
+    // Subida de plan, de periodicidad o de ambas: se modifica la suscripción
+    // existente con proración en vez de crear una duplicada.
+    if (transicion === 'upgrade') {
+      rechazar(
+        `Use the upgrade endpoint to upgrade from ${this.etiquetaContrato(actual)} to ${this.etiquetaContrato(destino)}.`,
+        { code: 'USE_UPGRADE_ENDPOINT' },
       );
     }
 
-    // Any other case with an active subscription (downgrade, lateral move, or
-    // an unrecognized current plan) must NOT create a second checkout, or Stripe
-    // would create a duplicate subscription and the webhook would orphan the old
-    // one. Block and direct the user to the customer portal to change/cancel first.
-    throw new BadRequestException(
-      `You already have an active subscription${currentPlan ? ` (${currentPlan.toUpperCase()})` : ''}. ` +
+    // Any other case with an active subscription (downgrade of plan or billing
+    // period, or an unrecognized current price) must NOT create a second
+    // checkout, or Stripe would create a duplicate subscription and the webhook
+    // would orphan the old one. Block and direct the user to the customer portal.
+    return rechazar(
+      `You already have an active subscription${actual ? ` (${this.etiquetaContrato(actual)})` : ''}. ` +
         `To downgrade or change your plan, manage it from your account settings (customer portal).`,
+      transicion
+        ? { code: 'PLAN_CHANGE_VIA_PORTAL', reason: transicion }
+        : { code: 'PLAN_CHANGE_VIA_PORTAL' },
+    );
+  }
+
+  /**
+   * `PRO` o `PRO (yearly)`. El mensual va sin adornar para que los mensajes de
+   * siempre no cambien.
+   */
+  private etiquetaContrato(contrato: {
+    plan: string;
+    interval: BillingInterval;
+  }): string {
+    return (
+      contrato.plan.toUpperCase() +
+      (contrato.interval === 'yearly' ? ' (yearly)' : '')
     );
   }
 
@@ -263,16 +311,23 @@ export class PaymentsService {
     cancelUrl: string,
     country?: string,
     plan: SellablePlan = 'pro',
+    billingPeriod: BillingInterval = 'monthly',
   ): Promise<CheckoutResponseDto> {
     if (!this.stripe) {
       throw new BadRequestException('Payment system not configured');
     }
 
-    // Select price based on plan and country
-    const priceId = this.getPriceIdForPlan(plan, country);
+    const destino = { plan, interval: billingPeriod };
+
+    // Antes de tocar Firestore o Stripe: sin precio no hay nada que preparar.
+    const priceId = this.priceCatalog.find(
+      plan,
+      currencyForCountry(country),
+      billingPeriod,
+    );
 
     if (!priceId) {
-      throw new BadRequestException(`${plan} price not configured`);
+      this.throwBillingNotAvailable(plan, billingPeriod);
     }
 
     // Get or create Stripe customer
@@ -318,13 +373,13 @@ export class PaymentsService {
             // segundo cobro sobre una renovación que acaba de saldar.
             this.bloquearAltaSobreContratoVivo(
               await this.stripe.subscriptions.retrieve(existingSubscription.id),
-              plan,
+              destino,
             );
           }
         } else if (
           PaymentsService.ESTADOS_VIVOS.includes(existingSubscription.status)
         ) {
-          this.bloquearAltaSobreContratoVivo(existingSubscription, plan);
+          this.bloquearAltaSobreContratoVivo(existingSubscription, destino);
         }
       } catch (error) {
         if (error instanceof BadRequestException) throw error;
@@ -342,7 +397,9 @@ export class PaymentsService {
     }
 
     // VALIDATION: Prevent duplicate subscriptions
-    // Check if user already has the same plan
+    // Check if user already has the same plan. Sin contrato verificado en Stripe
+    // no se sabe su periodicidad, así que un cambio mensual → anual también se
+    // bloquea aquí: es el camino de fallo de la lectura, y bloquear es lo seguro.
     if (user?.plan === plan) {
       throw new BadRequestException(
         `You are already subscribed to the ${plan.toUpperCase()} plan. Manage your subscription from your account settings.`,
@@ -361,31 +418,7 @@ export class PaymentsService {
 
         if (activeSubscriptions.data.length > 0) {
           const activeSub = activeSubscriptions.data[0];
-          const activePriceId = activeSub.items.data[0]?.price?.id;
-          const activePlan = activePriceId
-            ? this.getPlanFromPriceId(activePriceId)
-            : null;
 
-          // If user trying to buy the same plan they already have active in Stripe
-          if (activePlan === plan) {
-            this.logger.warn(
-              `User ${userId} has active Stripe subscription ${activeSub.id} (${activePlan}) ` +
-                `but tried to create checkout for ${plan}. Blocking duplicate.`,
-            );
-            throw new BadRequestException(
-              `You already have an active ${plan.toUpperCase()} subscription (${activeSub.id}). ` +
-                `Manage it from your account settings.`,
-            );
-          }
-
-          // An active subscription exists for a DIFFERENT plan. Creating a new checkout
-          // would produce a duplicate subscription, so block here too. Upgrades must go
-          // through the upgrade endpoint; downgrades/lateral moves via the customer portal.
-          if (activePlan && PLAN_ORDER[plan] > PLAN_ORDER[activePlan]) {
-            throw new BadRequestException(
-              `Use the upgrade endpoint to upgrade from ${activePlan.toUpperCase()} to ${plan.toUpperCase()}.`,
-            );
-          }
           if (activeSubscriptions.data.length > 1) {
             this.logger.warn(
               `User ${userId} has ${activeSubscriptions.data.length} active subscriptions in Stripe: ` +
@@ -393,13 +426,13 @@ export class PaymentsService {
             );
           }
           this.logger.warn(
-            `User ${userId} has active Stripe subscription ${activeSub.id} (${activePlan ?? 'unknown'}) ` +
-              `but tried to create checkout for ${plan}. Blocking to avoid duplicate.`,
+            `User ${userId} has active Stripe subscription ${activeSub.id} ` +
+              `but tried to create checkout for ${plan} (${billingPeriod}). Blocking to avoid duplicate.`,
           );
-          throw new BadRequestException(
-            `You already have an active subscription${activePlan ? ` (${activePlan.toUpperCase()})` : ''} (${activeSub.id}). ` +
-              `To downgrade or change your plan, manage it from your account settings (customer portal).`,
-          );
+          // Un checkout nuevo crearía una suscripción duplicada. Mismo criterio
+          // que con el contrato conocido: subidas por el endpoint de upgrade,
+          // bajadas por el portal.
+          this.bloquearAltaSobreContratoVivo(activeSub, destino);
         }
       } catch (error) {
         if (error instanceof BadRequestException) throw error;
@@ -674,16 +707,24 @@ export class PaymentsService {
    */
   private async getUpgradeIdempotencyKey(
     userId: string,
-    targetPlan: PlanType,
+    destino: { plan: SellablePlan; interval: BillingInterval; priceId: string },
     subscriptionId: string,
   ): Promise<string> {
+    const targetPlan = destino.plan;
     // La adquisición es transaccional: dos upgrades simultáneos no pueden
     // acabar con claves distintas y, por tanto, con dos mutaciones en Stripe.
+    //
+    // El destino se identifica por el PRECIO, no solo por el plan: Pro mensual y
+    // Pro anual son mutaciones distintas, y Stripe rechaza (`idempotency_error`)
+    // una clave reutilizada con otros parámetros, así que compartirla haría
+    // fallar sin motivo el segundo cambio.
     const result = await this.firestoreService.acquireUpgradeIdempotency(
       userId,
       {
         key: `upgrade_${userId}_${randomUUID()}`,
         targetPlan,
+        targetPriceId: destino.priceId,
+        targetInterval: destino.interval,
         subscriptionId,
       },
       PaymentsService.IDEMPOTENCY_TTL_MS,
@@ -795,7 +836,7 @@ export class PaymentsService {
   private async reconcileIndeterminateUpgrade(
     error: unknown,
     userId: string,
-    targetPlan: 'pro' | 'promax',
+    destino: { plan: SellablePlan; interval: BillingInterval },
     subscriptionId: string,
     expectedPriceId: string,
     context: string,
@@ -914,7 +955,7 @@ export class PaymentsService {
     try {
       persisted = await this.firestoreService.updateUserSubscriptionState(
         userId,
-        { plan: targetPlan },
+        this.estadoTrasUpgrade(destino.plan, current),
         readAt,
         lockToken,
       );
@@ -932,7 +973,7 @@ export class PaymentsService {
       // todo el lease, pese a que este ya terminó.
       await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
       this.throwUnsyncedUpgradeError(
-        targetPlan,
+        destino.plan,
         context,
         falloAlEscribir ? 'fallo al escribir en Firestore' : 'relevo del lease',
       );
@@ -944,8 +985,53 @@ export class PaymentsService {
 
     return {
       success: true,
-      message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
+      message: `Successfully upgraded to ${this.etiquetaContrato(destino)}. Proration has been applied.`,
     };
+  }
+
+  /**
+   * Si la clave retenida en el usuario es la de un intento hacia este destino
+   * sobre este contrato: la huella de un upgrade que pudo aplicarse sin que su
+   * respuesta llegara.
+   *
+   * Una clave anterior a la facturación anual no guarda precio y solo pudo ser
+   * de un cambio mensual, así que solo cuenta para destinos mensuales.
+   */
+  private esIntentoRecuperado(
+    user: User,
+    subscriptionId: string,
+    destino: { plan: SellablePlan; interval: BillingInterval; priceId: string },
+  ): boolean {
+    const retenida = user.upgradeIdempotency;
+    if (!retenida || retenida.subscriptionId !== subscriptionId) {
+      return false;
+    }
+    return retenida.targetPriceId
+      ? retenida.targetPriceId === destino.priceId
+      : retenida.targetPlan === destino.plan && destino.interval === 'monthly';
+  }
+
+  /**
+   * Lo que se escribe en el usuario cuando el cambio ya está confirmado en
+   * Stripe: el plan y, si la suscripción las trae, las fechas del periodo.
+   *
+   * El periodo importa desde la facturación anual: pasar de mensual a anual
+   * reinicia el ciclo en Stripe, y la cuota se calcula sobre esas fechas. El
+   * webhook las escribiría igualmente, pero hasta que llega la cuota seguiría
+   * contando sobre el ciclo viejo. Sin fechas no se escribe nada de periodo:
+   * Firestore rechaza `undefined`.
+   */
+  private estadoTrasUpgrade(
+    plan: SellablePlan,
+    subscription: Stripe.Subscription,
+  ): Record<string, unknown> {
+    const estado: Record<string, unknown> = { plan };
+    const period = extractBillingPeriod(subscription);
+    if (period.start && period.end) {
+      estado.subscriptionPeriodStart = period.start;
+      estado.subscriptionPeriodEnd = period.end;
+    }
+    return estado;
   }
 
   /**
@@ -988,12 +1074,16 @@ export class PaymentsService {
   }
 
   /**
-   * Upgrade subscription from one paid plan to another (e.g., PRO → PRO MAX)
-   * Stripe handles proration automatically
+   * Sube la suscripción de plan, de periodicidad o de ambas (PRO → PRO MAX,
+   * PRO mensual → PRO anual). Stripe prorratea y cobra en el acto.
+   *
+   * Cualquier bajada —de plan o de mensual a anual— se rechaza y se remite al
+   * portal, que la aplica a fin de periodo.
    */
   async upgradeSubscription(
     userId: string,
-    targetPlan: 'pro' | 'promax',
+    targetPlan: SellablePlan,
+    billingPeriod: BillingInterval = 'monthly',
   ): Promise<{ success: boolean; message: string }> {
     if (!this.stripe) {
       throw new BadRequestException('Payment system not configured');
@@ -1011,14 +1101,16 @@ export class PaymentsService {
       );
     }
 
-    // Solo se permite subir a un plan ESTRICTAMENTE superior (lite→pro, lite→promax, pro→promax).
-    if (PLAN_ORDER[targetPlan] <= PLAN_ORDER[user.plan]) {
+    // Aquí solo se descarta la bajada estricta de plan. A igual plan puede ser un
+    // paso de mensual a anual, y eso lo decide el precio vigente en Stripe.
+    if (PLAN_ORDER[targetPlan] < PLAN_ORDER[user.plan]) {
       throw new BadRequestException(
         `Cannot upgrade from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}.`,
       );
     }
 
-    const upgradeContext = `user ${userId} (${user.plan} → ${targetPlan}, sub ${user.stripeSubscriptionId})`;
+    const destino = { plan: targetPlan, interval: billingPeriod };
+    const upgradeContext = `user ${userId} (${user.plan} → ${targetPlan}/${billingPeriod}, sub ${user.stripeSubscriptionId})`;
 
     // Get current subscription to find the item ID
     let subscription: Stripe.Subscription;
@@ -1054,13 +1146,53 @@ export class PaymentsService {
       throw new BadRequestException('Could not find subscription item');
     }
 
-    // Get the new price ID based on user's country
-    const newPriceId = this.getPriceIdForPlan(targetPlan, user.country);
+    // Comprobación barata, antes del sync fiscal: sin precio para el destino no
+    // hay nada que preparar. La moneda es la del contrato —una suscripción no
+    // cambia de moneda—, y el país solo cuenta si ese precio no está mapeado, en
+    // cuyo caso la revalidación dentro del lock falla cerrado de todos modos.
+    const actualPrevio = this.priceCatalog.resolve(
+      subscription.items.data[0]?.price?.id,
+    );
+    const monedaDelContrato: PriceCurrency =
+      actualPrevio?.currency ?? currencyForCountry(user.country);
+    const precioPrevio = this.priceCatalog.find(
+      targetPlan,
+      monedaDelContrato,
+      billingPeriod,
+    );
+    if (!precioPrevio) {
+      this.throwBillingNotAvailable(targetPlan, billingPeriod);
+    }
 
-    if (!newPriceId) {
-      throw new BadRequestException(
-        `${targetPlan.toUpperCase()} price not configured`,
-      );
+    // Lo que ya se ve que no es una subida se rechaza aquí, antes del sync
+    // fiscal y del lock: una bajada o un «ya lo tienes» no debe salir como 503
+    // porque falle la sincronización, ni como 409 porque otro ciclo tenga el
+    // lock. Un precio sin mapear sigue adelante y la revalidación dentro del
+    // lock, que es la que manda, falla cerrado.
+    if (actualPrevio) {
+      const transicionPrevia = classifyTransition(actualPrevio, destino);
+
+      if (
+        transicionPrevia === 'plan_downgrade' ||
+        transicionPrevia === 'interval_downgrade'
+      ) {
+        this.throwChangeViaPortal(actualPrevio, destino, transicionPrevia);
+      }
+
+      // Salvo que sea la recuperación de un cambio ya aplicado en Stripe, que
+      // se resuelve dentro del lock.
+      if (
+        transicionPrevia === 'same' &&
+        PLAN_ORDER[user.plan] >= PLAN_ORDER[targetPlan] &&
+        !this.esIntentoRecuperado(user, user.stripeSubscriptionId, {
+          ...destino,
+          priceId: precioPrevio,
+        })
+      ) {
+        throw new BadRequestException(
+          `Cannot upgrade from ${this.etiquetaContrato(actualPrevio)} to ${this.etiquetaContrato(destino)}.`,
+        );
+      }
     }
 
     // `always_invoice` emite y cobra la factura de la proración dentro del
@@ -1115,7 +1247,7 @@ export class PaymentsService {
           );
         }
 
-        if (PLAN_ORDER[targetPlan] <= PLAN_ORDER[fresh.plan]) {
+        if (PLAN_ORDER[targetPlan] < PLAN_ORDER[fresh.plan]) {
           this.logger.warn(
             `Upgrade abortado: el plan pasó a ${fresh.plan} mientras se ` +
               `preparaba — ${upgradeContext}.`,
@@ -1170,15 +1302,15 @@ export class PaymentsService {
           throw new BadRequestException('Could not find subscription item');
         }
 
-        const planVigente = vigenteItem.price?.id
-          ? this.getPlanFromPriceId(vigenteItem.price.id)
+        const actual = vigenteItem.price?.id
+          ? this.resolvePrice(vigenteItem.price.id)
           : null;
 
-        // Falla cerrado: sin saber de qué plan se parte no se puede afirmar que
-        // esto sea una subida, y facturar a ciegas es peor que rechazar. Es el
-        // mismo caso de configuración que el webhook trata como CRITICAL sin
-        // tocar el plan; `getPlanFromPriceId` ya lo registró.
-        if (!planVigente) {
+        // Falla cerrado: sin saber de qué plan y periodicidad se parte no se
+        // puede afirmar que esto sea una subida, y facturar a ciegas es peor que
+        // rechazar. Es el mismo caso de configuración que el webhook trata como
+        // CRITICAL sin tocar el plan; `resolvePrice` ya lo registró.
+        if (!actual) {
           this.logger.error(
             `CRITICAL: upgrade abortado por no poder resolver el plan del precio ` +
               `vigente '${vigenteItem.price?.id ?? 'sin precio'}' — ${upgradeContext}. ` +
@@ -1190,21 +1322,43 @@ export class PaymentsService {
           );
         }
 
+        const newPriceId = this.priceCatalog.find(
+          targetPlan,
+          actual.currency,
+          billingPeriod,
+        );
+
+        if (!newPriceId) {
+          this.throwBillingNotAvailable(targetPlan, billingPeriod);
+        }
+
         // Recuperación idempotente: un intento anterior pudo aplicar y cobrar el
-        // target en Stripe, perder su respuesta y fallar también al reconciliar.
+        // destino en Stripe, perder su respuesta y fallar también al reconciliar.
         // Firestore seguiría con el plan inferior, así que rechazar aquí como
-        // target→target dejaría al cliente pagando sin entitlement y cada
+        // destino→destino dejaría al cliente pagando sin entitlement y cada
         // reintento repetiría el mismo rechazo.
+        //
+        // Se compara el PRECIO, no el plan: Stripe en Pro mensual no es un Pro
+        // anual ya aplicado. Y en un cambio de periodicidad el plan de Firestore
+        // ya coincide con el destino, así que lo que delata el intento recuperado
+        // es la clave que dejó retenida, para este contrato y este precio.
+        const recoveredIdempotency = fresh.upgradeIdempotency;
+        const intentoRecuperado = this.esIntentoRecuperado(
+          fresh,
+          user.stripeSubscriptionId,
+          { ...destino, priceId: newPriceId },
+        );
+
         if (
-          planVigente === targetPlan &&
-          PLAN_ORDER[fresh.plan] < PLAN_ORDER[targetPlan]
+          actual.priceId === newPriceId &&
+          (PLAN_ORDER[fresh.plan] < PLAN_ORDER[targetPlan] || intentoRecuperado)
         ) {
           let persisted = false;
           let falloAlEscribir = false;
           try {
             persisted = await this.firestoreService.updateUserSubscriptionState(
               userId,
-              { plan: targetPlan },
+              this.estadoTrasUpgrade(targetPlan, vigente),
               vigenteReadAt,
               lockToken,
             );
@@ -1219,11 +1373,7 @@ export class PaymentsService {
           // Solo corresponde al intento recuperado si coinciden contrato y
           // destino. El compare-and-delete de Firestore protege además una clave
           // posterior que pudiera haber reemplazado a esta lectura.
-          const recoveredIdempotency = fresh.upgradeIdempotency;
-          if (
-            recoveredIdempotency?.targetPlan === targetPlan &&
-            recoveredIdempotency.subscriptionId === user.stripeSubscriptionId
-          ) {
+          if (intentoRecuperado) {
             await this.clearUpgradeIdempotencyKey(
               userId,
               recoveredIdempotency.key,
@@ -1241,30 +1391,42 @@ export class PaymentsService {
           }
 
           this.logger.log(
-            `Upgrade a ${targetPlan} ya aplicado en Stripe sincronizado de forma ` +
-              `idempotente — ${upgradeContext}.`,
+            `Upgrade a ${this.etiquetaContrato(destino)} ya aplicado en Stripe ` +
+              `sincronizado de forma idempotente — ${upgradeContext}.`,
           );
 
           return {
             success: true,
-            message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
+            message: `Successfully upgraded to ${this.etiquetaContrato(destino)}. Proration has been applied.`,
           };
         }
 
-        if (PLAN_ORDER[targetPlan] <= PLAN_ORDER[planVigente]) {
+        // El contrato vigente en Stripe decide, no el documento: es la
+        // comprobación que de verdad impide bajar de plan o de periodicidad.
+        const transicion = classifyTransition(actual, destino);
+
+        if (transicion === 'same') {
           this.logger.warn(
-            `Upgrade abortado: Stripe ya tiene la suscripción en ${planVigente} ` +
-              `— ${upgradeContext}.`,
+            `Upgrade abortado: Stripe ya tiene la suscripción en ` +
+              `${this.etiquetaContrato(actual)} — ${upgradeContext}.`,
           );
           throw new BadRequestException(
-            `Cannot upgrade from ${planVigente.toUpperCase()} to ${targetPlan.toUpperCase()}.`,
+            `Cannot upgrade from ${this.etiquetaContrato(actual)} to ${this.etiquetaContrato(destino)}.`,
           );
+        }
+
+        if (transicion !== 'upgrade') {
+          this.logger.warn(
+            `Upgrade abortado (${transicion}): Stripe tiene la suscripción en ` +
+              `${this.etiquetaContrato(actual)} — ${upgradeContext}.`,
+          );
+          this.throwChangeViaPortal(actual, destino, transicion);
         }
 
         return this.applyUpgrade({
           userId,
           user,
-          targetPlan,
+          destino,
           // El item vigente, no el del snapshot previo al sync fiscal.
           subscriptionItemId: vigenteItem.id,
           newPriceId,
@@ -1283,7 +1445,7 @@ export class PaymentsService {
   private async applyUpgrade({
     userId,
     user,
-    targetPlan,
+    destino,
     subscriptionItemId,
     newPriceId,
     upgradeContext,
@@ -1291,17 +1453,18 @@ export class PaymentsService {
   }: {
     userId: string;
     user: User;
-    targetPlan: 'pro' | 'promax';
+    destino: { plan: SellablePlan; interval: BillingInterval };
     subscriptionItemId: string;
     newPriceId: string;
     upgradeContext: string;
     lockToken: string;
   }): Promise<{ success: boolean; message: string }> {
+    const targetPlan = destino.plan;
     // La clave se toma justo antes de la única llamada que mueve dinero: así un
     // fallo previo no retiene una clave que nadie liberará.
     const idempotencyKey = await this.getUpgradeIdempotencyKey(
       userId,
-      targetPlan,
+      { ...destino, priceId: newPriceId },
       user.stripeSubscriptionId,
     );
 
@@ -1338,7 +1501,7 @@ export class PaymentsService {
       const reconciled = await this.reconcileIndeterminateUpgrade(
         error,
         userId,
-        targetPlan,
+        destino,
         user.stripeSubscriptionId,
         newPriceId,
         upgradeContext,
@@ -1426,6 +1589,30 @@ export class PaymentsService {
       );
     }
 
+    // El precio confirmado tiene que ser el pedido. No debería poder ser otro —la
+    // clave identifica el precio, y Stripe no reutiliza una clave con otros
+    // parámetros—, pero escribir el plan sobre una respuesta que no le
+    // corresponde concedería un contrato distinto del que Stripe tiene, y eso se
+    // comprueba en vez de suponerse. La clave sale de circulación para que el
+    // siguiente intento parta de cero.
+    if (
+      !updatedSubscription.items?.data?.some(
+        (item) => item.price?.id === newPriceId,
+      )
+    ) {
+      this.logger.error(
+        `CRITICAL: subscriptions.update respondió sin el precio pedido ` +
+          `(${newPriceId}) — ${upgradeContext}. Precio devuelto: ` +
+          `${updatedSubscription.items?.data?.[0]?.price?.id ?? 'ninguno'}. ` +
+          `No se escribe el plan. Revisar la suscripción en Stripe a mano.`,
+      );
+      await this.clearUpgradeIdempotencyKey(userId, idempotencyKey);
+      throw new ServiceUnavailableException(
+        'We could not confirm whether your plan change went through. Please check your billing ' +
+          'settings before trying again, or contact support@zplpdf.com.',
+      );
+    }
+
     // Update user plan in Firestore.
     //
     // Sellado con el instante de la confirmación de Stripe, no con `updateUser`
@@ -1441,7 +1628,7 @@ export class PaymentsService {
     try {
       persisted = await this.firestoreService.updateUserSubscriptionState(
         userId,
-        { plan: targetPlan },
+        this.estadoTrasUpgrade(targetPlan, updatedSubscription),
         confirmedAt,
         lockToken,
       );
@@ -1469,12 +1656,12 @@ export class PaymentsService {
     }
 
     this.logger.log(
-      `User ${userId} upgraded from ${user.plan.toUpperCase()} to ${targetPlan.toUpperCase()}`,
+      `User ${userId} upgraded from ${user.plan.toUpperCase()} to ${this.etiquetaContrato(destino)}`,
     );
 
     return {
       success: true,
-      message: `Successfully upgraded to ${targetPlan.toUpperCase()}. Proration has been applied.`,
+      message: `Successfully upgraded to ${this.etiquetaContrato(destino)}. Proration has been applied.`,
     };
   }
 
@@ -1663,6 +1850,7 @@ export class PaymentsService {
           (await this.firestoreService.getUserById(userId)) ?? user;
 
         let resuelto: PaidPlanType | null = null;
+        let interval: BillingInterval = 'monthly';
         let periodStart: Date | undefined;
         let periodEnd: Date | undefined;
         let delCheckout: Stripe.Subscription | null = null;
@@ -1676,7 +1864,9 @@ export class PaymentsService {
           readAt = new Date();
           const priceId = delCheckout.items.data[0]?.price?.id;
           if (priceId) {
-            resuelto = this.getPlanFromPriceId(priceId);
+            const ref = this.resolvePrice(priceId);
+            resuelto = ref?.plan ?? null;
+            interval = ref?.interval ?? interval;
           }
           const period = this.resolveBillingPeriod(delCheckout);
           periodStart = period.start;
@@ -1714,7 +1904,7 @@ export class PaymentsService {
         );
 
         if (!adoptable) {
-          return { plan: resuelto, adoptado: false };
+          return { plan: resuelto, interval, adoptado: false };
         }
 
         // IMPORTANT: Only include period fields if they have values - Firestore rejects undefined
@@ -1749,11 +1939,12 @@ export class PaymentsService {
           );
         }
 
-        return { plan: resuelto, adoptado: true };
+        return { plan: resuelto, interval, adoptado: true };
       },
       'el alta de la suscripción',
     );
     const plan = alta.plan;
+    const meses = mesesDePeriodicidad(alta.interval);
 
     // Calculate MXN amount for transactions
     let amountMxn = amount / 100;
@@ -1824,6 +2015,7 @@ export class PaymentsService {
       exchangeRate,
       type: transactionType,
       plan,
+      billingInterval: alta.interval,
       stripeCustomerId: session.customer as string,
       stripeSubscriptionId: subscriptionId,
       status: 'succeeded',
@@ -1834,7 +2026,8 @@ export class PaymentsService {
     await this.firestoreService.saveTransaction(transaction);
     this.logger.log(`Saved transaction: ${transactionId}`);
 
-    // Save subscription event
+    // Save subscription event. La transacción guarda el cobro entero; el MRR
+    // del evento es mensual, así que un alta anual cuenta la doceava parte.
     const subscriptionEvent: SubscriptionEvent = {
       id: this.generateSubscriptionEventId(),
       userId,
@@ -1843,8 +2036,9 @@ export class PaymentsService {
       plan,
       previousPlan: user?.plan || 'free',
       currency,
-      mrr: amount / 100,
-      mrrMxn: amountMxn,
+      mrr: amount / 100 / meses,
+      mrrMxn: amountMxn / meses,
+      billingInterval: alta.interval,
       stripeSubscriptionId: subscriptionId,
       country: billingCountry,
       createdAt: new Date(),
@@ -1868,6 +2062,29 @@ export class PaymentsService {
       price: session.amount_total ? session.amount_total / 100 : 0,
       currency: session.currency?.toUpperCase() || 'USD',
     });
+  }
+
+  /**
+   * Meses que cubre una factura, según el periodo de su línea de mayor importe.
+   *
+   * Sirve cuando no hay precio que consultar. La de mayor importe y no la
+   * primera, igual que el concepto del CFDI: la primera puede ser un cargo suelto
+   * o el crédito de una proración. Un mes de 28 a 31 días redondea a 1 y un año
+   * a 12. Sin periodo legible cuenta como un mes, igual que se contaba antes.
+   */
+  private mesesDeLaFactura(invoice: Stripe.Invoice): number {
+    const period = (invoice.lines?.data ?? []).reduce<
+      Stripe.InvoiceLineItem | undefined
+    >(
+      (mayor, actual) =>
+        !mayor || (actual.amount ?? 0) > (mayor.amount ?? 0) ? actual : mayor,
+      undefined,
+    )?.period;
+    if (!period?.start || !period?.end || period.end <= period.start) {
+      return 1;
+    }
+    const dias = (period.end - period.start) / (24 * 60 * 60);
+    return Math.max(1, Math.round(dias / 30.44));
   }
 
   private generateTransactionId(): string {
@@ -2301,6 +2518,8 @@ export class PaymentsService {
     let amountMinor = 0;
     let sourceCurrency: string | undefined;
 
+    // Mensualizado: la baja de un anual pierde la doceava parte de su precio al
+    // mes, no el año entero, que es lo que contaría el importe tal cual.
     if ('subscription' in fuente) {
       const items = fuente.subscription.items.data;
       sourceCurrency = items[0]?.price?.currency;
@@ -2308,11 +2527,17 @@ export class PaymentsService {
         const decimal = item.price?.unit_amount_decimal;
         const unitAmount =
           item.price?.unit_amount ?? (decimal ? Number(decimal) : 0);
-        return total + unitAmount * (item.quantity ?? 1);
+        const meses = mesesDelCobro(
+          item.price?.recurring?.interval,
+          item.price?.recurring?.interval_count,
+        );
+        return total + (unitAmount * (item.quantity ?? 1)) / meses;
       }, 0);
     } else {
       sourceCurrency = fuente.invoice.currency;
-      amountMinor = fuente.invoice.amount_due ?? 0;
+      amountMinor =
+        (fuente.invoice.amount_due ?? 0) /
+        this.mesesDeLaFactura(fuente.invoice);
     }
 
     const currency: 'usd' | 'mxn' =
@@ -2847,6 +3072,9 @@ export class PaymentsService {
         : 'pro';
     let subscriptionPeriodStart: Date | undefined;
     let subscriptionPeriodEnd: Date | undefined;
+    // Si no se puede leer el precio, la periodicidad sale del periodo facturado.
+    let interval: BillingInterval =
+      this.mesesDeLaFactura(invoice) >= 12 ? 'yearly' : 'monthly';
     const subscriptionId = getSubscriptionIdFromInvoice(invoice);
 
     if (!subscriptionId) {
@@ -2862,9 +3090,10 @@ export class PaymentsService {
           await this.stripe.subscriptions.retrieve(subscriptionId);
         const priceId = subscription.items.data[0]?.price?.id;
         if (priceId) {
-          const resolvedPlan = this.getPlanFromPriceId(priceId);
-          if (resolvedPlan) {
-            plan = resolvedPlan;
+          const resolved = this.resolvePrice(priceId);
+          if (resolved) {
+            plan = resolved.plan;
+            interval = resolved.interval;
           }
         }
         const period = this.resolveBillingPeriod(subscription);
@@ -2918,6 +3147,7 @@ export class PaymentsService {
       exchangeRate,
       type: transactionType,
       plan,
+      billingInterval: interval,
       stripeCustomerId: customerId,
       stripeSubscriptionId: user.stripeSubscriptionId || undefined,
       stripeInvoiceId: invoice.id || undefined,
@@ -2942,8 +3172,10 @@ export class PaymentsService {
       );
     }
 
-    // Save subscription event for renewal tracking
+    // Save subscription event for renewal tracking. MRR mensual: una renovación
+    // anual cuenta la doceava parte de lo cobrado.
     if (billingReason === 'subscription_cycle') {
+      const meses = mesesDePeriodicidad(interval);
       const subscriptionEvent: SubscriptionEvent = {
         id: this.generateSubscriptionEventId(),
         userId: user.id,
@@ -2952,8 +3184,9 @@ export class PaymentsService {
         plan,
         previousPlan: plan,
         currency,
-        mrr: amount / 100,
-        mrrMxn: amountMxn,
+        mrr: amount / 100 / meses,
+        mrrMxn: amountMxn / meses,
+        billingInterval: interval,
         stripeSubscriptionId: user.stripeSubscriptionId || '',
         country: user.country,
         createdAt: new Date(),

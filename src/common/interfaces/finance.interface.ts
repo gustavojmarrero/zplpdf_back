@@ -37,6 +37,8 @@ export interface StripeTransaction {
   exchangeRate: number; // Tipo de cambio usado
   type: TransactionType;
   plan: 'lite' | 'pro' | 'promax' | 'enterprise';
+  /** Periodicidad del precio cobrado. Ausente en transacciones anteriores a la facturación anual (todas mensuales). */
+  billingInterval?: 'monthly' | 'yearly';
   stripeCustomerId: string;
   stripeSubscriptionId?: string;
   stripeInvoiceId?: string;
@@ -244,8 +246,11 @@ export interface SubscriptionEvent {
   plan: 'lite' | 'pro' | 'promax' | 'enterprise';
   previousPlan?: 'free' | 'lite' | 'pro' | 'promax' | 'enterprise';
   currency: 'usd' | 'mxn';
-  mrr: number; // MRR en la moneda original
-  mrrMxn: number; // MRR convertido a MXN
+  /** MRR en la moneda original, siempre mensual: un contrato anual cuenta su precio / 12. */
+  mrr: number;
+  mrrMxn: number; // MRR convertido a MXN (también mensual)
+  /** Ausente en eventos anteriores a la facturación anual (todos mensuales). */
+  billingInterval?: 'monthly' | 'yearly';
   stripeSubscriptionId: string;
   cancellationReason?: string;
   country?: string;
