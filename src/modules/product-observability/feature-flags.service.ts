@@ -10,6 +10,10 @@ import { FirestoreService } from '../cache/firestore.service.js';
 import { FEATURE_IDS, PLANS } from './observability.types.js';
 import type { FeatureId } from './observability.types.js';
 import type { PlanType } from '../../common/interfaces/user.interface.js';
+import {
+  FEATURE_MINIMUM_PLANS,
+  isFeatureEntitled,
+} from './feature-entitlements.js';
 
 interface FlagConfig {
   enabled: boolean;
@@ -21,6 +25,7 @@ interface FlagConfig {
   rolloutPercent: number;
   experimentId: string;
   assignmentVersion: string;
+  pilotAccountIds?: string[];
 }
 const VERSION = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,39}$/;
 @Injectable()
@@ -69,6 +74,14 @@ export class FeatureFlagsService {
           !Number.isFinite(Date.parse(f.updatedAt)) ||
           !Array.isArray(f.allowedPlans) ||
           !f.allowedPlans.every((p) => PLANS.includes(p)) ||
+          (f.pilotAccountIds !== undefined &&
+            (!Array.isArray(f.pilotAccountIds) ||
+              f.pilotAccountIds.length > 15 ||
+              new Set(f.pilotAccountIds).size !== f.pilotAccountIds.length ||
+              !f.pilotAccountIds.every(
+                (id) =>
+                  typeof id === 'string' && id.length > 0 && id.length <= 128,
+              ))) ||
           !Number.isFinite(f.rolloutPercent) ||
           f.rolloutPercent < 0 ||
           f.rolloutPercent > 100
@@ -89,13 +102,29 @@ export class FeatureFlagsService {
     const features = await Promise.all(
       FEATURE_IDS.map(async (featureId) => {
         const f = flags[featureId];
-        const eligible = Boolean(f?.allowedPlans.includes(account.plan));
+        const minimumPlan = FEATURE_MINIMUM_PLANS[featureId];
+        const entitled = isFeatureEntitled(account.plan, featureId);
+        const eligible =
+          entitled && Boolean(f?.allowedPlans.includes(account.plan));
+        const pilotSelected =
+          !f?.pilotAccountIds || f.pilotAccountIds.includes(accountId);
+        // A limited pilot must not advertise an upgrade that cannot grant access.
+        // This is a rollout signal; a release manifest separately verifies publication.
+        const released = Boolean(
+          f?.enabled &&
+            !f.killSwitch &&
+            f.pilotAccountIds === undefined &&
+            f.rolloutPercent === 100 &&
+            PLANS.filter((plan) => isFeatureEntitled(plan, featureId)).every(
+              (plan) => f.allowedPlans.includes(plan),
+            ),
+        );
         let assignment: {
           experimentId: string;
           assignmentVersion: string;
           variant: 'control' | 'treatment';
         } = null;
-        if (f && eligible && f.enabled && !f.killSwitch) {
+        if (f && eligible && pilotSelected && f.enabled && !f.killSwitch) {
           const key = createHash('sha256')
             .update(
               JSON.stringify([accountId, f.experimentId, f.assignmentVersion]),
@@ -156,6 +185,9 @@ export class FeatureFlagsService {
               assignment?.variant === 'treatment',
           ),
           eligible,
+          entitled,
+          minimumPlan,
+          released,
           flagVersion: f?.version ?? '1',
           experimentAssignment: assignment,
         };

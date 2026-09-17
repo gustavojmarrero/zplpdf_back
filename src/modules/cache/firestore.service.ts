@@ -8211,6 +8211,7 @@ export class FirestoreService {
       'growth_event_facts',
       'growth_operational_signals',
       'growth_assignments',
+      'product_tour_progress',
       'growth_excluded_accounts',
       'feedback_cadence',
       'in_app_feedback_candidates',

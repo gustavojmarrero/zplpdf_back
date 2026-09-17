@@ -61,3 +61,65 @@ describe('growth scheduler retry boundary', () => {
     expect(Object.values(data)[0].status).toBe('running');
   });
 });
+
+describe('feedback invitations require real feature use', () => {
+  it('ignores tour completion and selects a server-confirmed conversion', async () => {
+    const writes: Array<{ accountId: string }> = [];
+    const facts = [
+      { accountId: 'tour-only', eventName: 'tour_completed', source: 'web' },
+      {
+        accountId: 'forged-web',
+        eventName: 'packing_export_succeeded',
+        source: 'web',
+      },
+      {
+        accountId: 'converter',
+        eventName: 'packing_export_succeeded',
+        source: 'api',
+      },
+    ].map((event) => ({
+      ...event,
+      environment: 'test',
+      isSynthetic: false,
+      featureId: 'packing_workflow',
+    }));
+    const db = {
+      collection: (name: string) => {
+        const query = {
+          where: () => query,
+          limit: () => query,
+          get: async () => ({
+            size: name === 'growth_event_facts' ? facts.length : 0,
+            docs:
+              name === 'growth_event_facts'
+                ? facts.map((event) => ({ data: () => event }))
+                : [],
+          }),
+          doc: (id: string) => ({ name, id }),
+        };
+        return query;
+      },
+      runTransaction: async (callback: any) =>
+        callback({
+          get: async () => ({ exists: false, get: () => undefined }),
+          set: (_ref: unknown, value: { accountId: string }) =>
+            writes.push(value),
+        }),
+    };
+    const lastFeedback = jest.fn().mockResolvedValue(null);
+    const service = new GrowthJobsService(
+      {
+        getClient: () => db,
+        getLastFeedbackByUser: lastFeedback,
+      } as unknown as FirestoreService,
+      {} as ProductEventOutboxService,
+      new ConfigService({ PRODUCT_ENVIRONMENT: 'test' }),
+      {} as any,
+    );
+    const result = await (service as any).prepareFeedbackCandidates();
+    expect(result.created).toBe(1);
+    expect(writes.map((row) => row.accountId)).toEqual(['converter']);
+    expect(lastFeedback).toHaveBeenCalledTimes(1);
+    expect(lastFeedback).toHaveBeenCalledWith('converter');
+  });
+});

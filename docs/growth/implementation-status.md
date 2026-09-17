@@ -1,4 +1,6 @@
-# Implementación en curso — 17 septiembre 2026
+# Evidencia de implementación — 17 septiembre 2026
+
+Actualización18septiembre: el usuario autorizó la matriz comercial y la construcción de BE11/FE08. Ambos están en revisión, con contrato en `product-updates-contract.md` y `plan-entitlements-contract.md`. El bloque siguiente conserva la evidencia histórica del programa; los estados operativos y números de pruebas anteriores no describen la revisión nueva.
 
 Backend `gustavojmarrero/growth-implementation`; frontend `gustavojmarrero/growth-frontend`.
 Programa GitHub backend #123; frontend #306, #307 y tour #305. Sin despliegue ni flags habilitados.
@@ -31,4 +33,4 @@ A las 21:34 UTC pasaron **1.384 pruebas en 70 suites** del backend completo, con
 
 ## Puerta de lanzamiento y tour
 
-BE11/FE08 no iniciados: conservan dependencia del cierre verificado de los 43 puntos originales, incluida evidencia de despliegue/proveedores y automatizaciones habilitadas donde aplique. El registro maestro en Documents/ZPLPDF ya distingue implementación local de verificación de lanzamiento. Ninguna prueba local certifica pagos reales, OAuth, IAM, impresión física o crecimiento de suscriptores.
+La antigua espera de construcción de BE11/FE08 fue reemplazada por autorización explícita del usuario. El tour se implementa con manifiesto de publicación y permisos actuales; solo anuncia el subconjunto verificado en el entorno. El registro maestro en Documents/ZPLPDF distingue implementación de verificación de lanzamiento. Ninguna prueba local certifica pagos reales, OAuth, IAM, impresión física o crecimiento de suscriptores.

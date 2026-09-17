@@ -10,7 +10,20 @@ export const FEATURE_IDS = [
   'template_regression',
 ] as const;
 export type FeatureId = (typeof FEATURE_IDS)[number];
-export const WEB_EVENTS = ['feature_exposed', 'feature_interacted'] as const;
+export const TOUR_EVENTS = [
+  'tour_invitation_viewed',
+  'tour_started',
+  'tour_step_viewed',
+  'tour_dismissed',
+  'tour_completed',
+  'tour_feature_opened',
+  'tour_upgrade_clicked',
+] as const;
+export const WEB_EVENTS = [
+  'feature_exposed',
+  'feature_interacted',
+  ...TOUR_EVENTS,
+] as const;
 export const ACTIONS = ['open', 'start', 'cancel', 'help', 'retry'] as const;
 export const SERVER_EVENTS = [
   'packing_export_succeeded',
@@ -85,6 +98,9 @@ export interface ProductEvent {
   consentEpoch?: string;
   sessionEpoch?: string;
   action?: (typeof ACTIONS)[number];
+  releaseId?: string;
+  tourVersion?: string;
+  tourStepId?: string;
   durationMs?: number;
   labelCount?: number;
   consent?: { analytics: true; version: typeof CONSENT_VERSION };

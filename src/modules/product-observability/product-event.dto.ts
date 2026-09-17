@@ -60,6 +60,21 @@ export class WebProductEventDto {
   @IsOptional()
   @IsIn(ACTIONS)
   action?: (typeof ACTIONS)[number];
+
+  @ApiPropertyOptional({ maxLength: 40 })
+  @IsOptional()
+  @Matches(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,39}$/)
+  releaseId?: string;
+
+  @ApiPropertyOptional({ maxLength: 40 })
+  @IsOptional()
+  @Matches(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,39}$/)
+  tourVersion?: string;
+
+  @ApiPropertyOptional({ maxLength: 40 })
+  @IsOptional()
+  @Matches(/^[a-z0-9][a-z0-9._-]{0,39}$/)
+  tourStepId?: string;
 }
 export class WebProductEventsDto {
   @ApiProperty({ format: 'date-time' })
