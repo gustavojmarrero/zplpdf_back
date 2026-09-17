@@ -1824,6 +1824,7 @@ describe('FirestoreService — product event privacy deletion', () => {
         ],
       ],
       ['growth_assignments', [{ ref: { path: 'growth_assignments/c' } }]],
+      ['product_tour_progress', [{ ref: { path: 'product_tour_progress/d' } }]],
     ]);
     const deleted: string[] = [];
     const service: any = Object.create(FirestoreService.prototype);
@@ -1871,11 +1872,12 @@ describe('FirestoreService — product event privacy deletion', () => {
         }),
       },
     });
-    expect(await service.anonymizeUserActivityRecords('account-a')).toBe(3);
+    expect(await service.anonymizeUserActivityRecords('account-a')).toBe(4);
     expect(deleted).toEqual([
       'product_events/a',
       'product_events/b',
       'growth_assignments/c',
+      'product_tour_progress/d',
     ]);
   });
 });

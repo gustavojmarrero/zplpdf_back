@@ -10,7 +10,15 @@ import {
 } from './product-event.repository.js';
 import { exposureDay } from './product-event.repository.js';
 import { WebProductEventsDto } from './product-event.dto.js';
-import { FEATURE_IDS, SERVER_EVENTS } from './observability.types.js';
+import {
+  FEATURE_IDS,
+  SERVER_EVENTS,
+  TOUR_EVENTS,
+} from './observability.types.js';
+import {
+  loadApprovedRelease,
+  isKnownTourMetadata,
+} from '../product-updates/release-config.js';
 import type { ProductEvent, ServerEventInput } from './observability.types.js';
 
 const SERVER_KEYS = new Set([
@@ -80,13 +88,56 @@ export class ProductObservabilityService {
     const account = await this.flags.account(accountId);
     const featureResponse = await this.flags.getFeatures(accountId);
     const receivedAt = new Date().toISOString();
+    const approvedRelease = loadApprovedRelease({
+      raw: this.config.get<string>('PRODUCT_UPDATES_RELEASE'),
+      environment: this.environment(),
+      now: new Date(),
+    });
     const writes = dto.events.map((item) => {
       const age = Date.now() - Date.parse(item.occurredAt);
       const feature = featureResponse.features.find(
         (f) => f.featureId === item.featureId,
       );
-      if (!feature?.available || feature.featureVersion !== item.featureVersion)
+      const isTour = TOUR_EVENTS.includes(
+        item.eventName as (typeof TOUR_EVENTS)[number],
+      );
+      const upgradeVisible = isTour && feature?.released && !feature.entitled;
+      if (
+        (!feature?.available && !upgradeVisible) ||
+        feature.featureVersion !== item.featureVersion
+      )
         throw new BadRequestException('Feature unavailable or stale version');
+      if (isTour) {
+        const release = approvedRelease.ok ? approvedRelease.release : null;
+        if (
+          !item.releaseId ||
+          !item.tourVersion ||
+          item.surface !== 'tour' ||
+          item.action ||
+          !isKnownTourMetadata(release, {
+            releaseId: item.releaseId,
+            tourVersion: item.tourVersion,
+            stepId: item.tourStepId,
+          }) ||
+          !release?.releasedFeatureIds.includes(item.featureId) ||
+          (item.tourStepId &&
+            !release.steps.some(
+              (s) =>
+                s.stepId === item.tourStepId && s.featureId === item.featureId,
+            )) ||
+          (item.eventName === 'tour_step_viewed' &&
+            (!item.tourStepId || !feature.available)) ||
+          (item.eventName === 'tour_feature_opened' && !feature.available) ||
+          (item.eventName === 'tour_upgrade_clicked' && !upgradeVisible)
+        )
+          throw new BadRequestException('Invalid tour event context');
+      } else if (
+        item.releaseId !== undefined ||
+        item.tourVersion !== undefined ||
+        item.tourStepId !== undefined
+      ) {
+        throw new BadRequestException('Tour metadata on a non-tour event');
+      }
       if (
         age > 7 * 86400000 ||
         age < -300000 ||
@@ -128,6 +179,9 @@ export class ProductObservabilityService {
           feature.experimentAssignment?.assignmentVersion,
           feature.experimentAssignment?.variant,
           item.action ?? null,
+          ...(isTour
+            ? [item.releaseId, item.tourVersion, item.tourStepId ?? null]
+            : []),
           dto.consent.version,
         ]),
       );

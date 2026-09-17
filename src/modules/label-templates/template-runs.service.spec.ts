@@ -4,6 +4,7 @@ import {
   NotFoundException,
   PayloadTooLargeException,
   UnprocessableEntityException,
+  ValidationPipe,
 } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import { validate as isUuid, version as uuidVersion } from 'uuid';
@@ -21,7 +22,7 @@ import type {
 } from '../workflows/ports/label-event-recorder.port.js';
 import type { UsersService } from '../users/users.service.js';
 import type { ZplService } from '../zpl/zpl.service.js';
-import type { CreateRunDto } from './dto/template-request.dto.js';
+import { ColumnMappingDto, CreateRunDto } from './dto/template-request.dto.js';
 
 const ALICE = { uid: 'alice', email: 'alice@example.com' };
 const BOB = { uid: 'bob', email: 'bob@example.com' };
@@ -183,6 +184,48 @@ async function zipWith(
 }
 
 describe('TemplateRunsService — CSV', () => {
+  it.each([undefined, 'quantity'])(
+    'persiste el DTO transformado como objeto plano (copias: %s)',
+    async (quantityColumn) => {
+      const { templates, runs, repository, runDurableConversion } =
+        buildHarness();
+      const templateId = await createTemplate(templates);
+      const dto: CreateRunDto = await new ValidationPipe({
+        transform: true,
+      }).transform(
+        csvRun(templateId, {
+          mapping: {
+            fields: { sku: 'sku', name: 'name', price: 'price' },
+            ...(quantityColumn ? { quantityColumn } : {}),
+          },
+        }),
+        { type: 'body', metatype: CreateRunDto },
+      );
+      expect(dto.mapping).toBeInstanceOf(ColumnMappingDto);
+      const reserve = jest.spyOn(repository, 'reserveRun');
+      const update = jest.spyOn(repository, 'updateTemplate');
+      const first = await runs.createRun(ALICE, 'transformed-dto', dto);
+      const persisted = reserve.mock.calls[0][0].resolvedMapping!;
+      expect(Object.getPrototypeOf(persisted)).toBe(Object.prototype);
+      expect(Object.getPrototypeOf(persisted.fields)).toBe(Object.prototype);
+      expect(persisted).toEqual(dto.mapping);
+      expect(persisted.fields).not.toBe(dto.mapping!.fields);
+      expect(
+        Object.prototype.hasOwnProperty.call(persisted, 'quantityColumn'),
+      ).toBe(!!quantityColumn);
+      const current = (await repository.getTemplate(ALICE.uid, templateId))!;
+      const saved = update.mock.calls[0][3](current).savedMapping!;
+      expect(Object.getPrototypeOf(saved)).toBe(Object.prototype);
+      expect(saved).toEqual(dto.mapping);
+      expect(first.run.status).toBe('accepted');
+      const retry = await runs.createRun(ALICE, 'transformed-dto', dto);
+      expect(retry.run.runId).toBe(first.run.runId);
+      expect(retry.created).toBe(false);
+      expect(runDurableConversion).toHaveBeenCalledTimes(1);
+      expect(dto.mapping).toBeInstanceOf(ColumnMappingDto);
+    },
+  );
+
   it('valida sin convertir y devuelve previsualización y mapeo', async () => {
     const { templates, runs, runDurableConversion } = buildHarness();
     const templateId = await createTemplate(templates);

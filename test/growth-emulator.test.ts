@@ -1,3 +1,15 @@
+import { ValidationPipe } from '@nestjs/common';
+import {
+  ColumnMappingDto,
+  CreateRunDto,
+  UpdateTemplateDto,
+} from '../src/modules/label-templates/dto/template-request.dto.js';
+import { FirestoreTemplateRepository } from '../src/modules/label-templates/label-templates.firestore-repository.js';
+import { LabelTemplatesService } from '../src/modules/label-templates/label-templates.service.js';
+import { TemplateRunsService } from '../src/modules/label-templates/template-runs.service.js';
+import { LabelEventPublisher } from '../src/modules/workflows/label-event.publisher.js';
+import type { UsersService } from '../src/modules/users/users.service.js';
+import type { ZplService } from '../src/modules/zpl/zpl.service.js';
 import { Firestore, Timestamp } from '@google-cloud/firestore';
 import { randomUUID } from 'node:crypto';
 import { PDFDocument } from 'pdf-lib';
@@ -430,5 +442,110 @@ test.each(['workflow', 'template'] as const)(
           .get()
       ).size,
     ).toBe(1);
+  },
+);
+
+test.each([undefined, 'quantity'])(
+  'BE05 transformed explicit mapping survives real Firestore, saved mapping and replay (copies: %s)',
+  async (quantityColumn) => {
+    const actor = { uid };
+    const repository = new FirestoreTemplateRepository(db);
+    const publisher = new LabelEventPublisher();
+    jest
+      .spyOn(publisher, 'deliverAfterCommit')
+      .mockResolvedValue({ delivered: false });
+    const templates = new LabelTemplatesService(
+      repository,
+      { assertFeatureAvailable() {} },
+      publisher,
+    );
+    const runDurableConversion = jest.fn(
+      async ({ operationId }: { operationId: string }) => ({
+        jobId: operationId,
+        status: 'completed',
+      }),
+    );
+    const runs = new TemplateRunsService(
+      repository,
+      templates,
+      {
+        getUserById: async () => ({ uid, plan: 'pro' }),
+        getEffectivePlan: () => 'pro',
+      } as unknown as UsersService,
+      { runDurableConversion } as unknown as ZplService,
+    );
+    const { template } = await templates.createTemplate(actor, {
+      fromBuiltin: 'product',
+    });
+    const pipe = new ValidationPipe({ transform: true });
+    const raw = {
+      templateId: template.id,
+      format: 'csv',
+      content: 'sku,name,price,barcode,quantity\n00751,Cafe,12.50,00751,3',
+      mapping: {
+        fields: {
+          sku: 'sku',
+          name: 'name',
+          price: 'price',
+          barcode: 'barcode',
+        },
+        ...(quantityColumn ? { quantityColumn } : {}),
+      },
+    };
+    const dto: CreateRunDto = await pipe.transform(raw, {
+      type: 'body',
+      metatype: CreateRunDto,
+    });
+    expect(dto.mapping).toBeInstanceOf(ColumnMappingDto);
+    expect((await runs.validateRun(actor, dto)).run.status).toBe('validated');
+    const key = randomUUID();
+    const first = await runs.createRun(actor, key, dto);
+    expect(first.run).toMatchObject({
+      status: 'accepted',
+      labelCount: quantityColumn ? 3 : 1,
+    });
+    expect(
+      (await repository.getRun(uid, first.run.runId))?.resolvedMapping,
+    ).toEqual(raw.mapping);
+    expect(
+      (await repository.getTemplate(uid, template.id))?.savedMapping,
+    ).toEqual(raw.mapping);
+    const retry = await runs.createRun(actor, key, dto);
+    expect(retry).toMatchObject({
+      created: false,
+      run: { runId: first.run.runId, status: 'accepted' },
+    });
+    expect(runDurableConversion).toHaveBeenCalledTimes(1);
+    expect(
+      (
+        await db
+          .collection('label_event_retries')
+          .where('operationId', '==', first.run.runId)
+          .get()
+      ).size,
+    ).toBe(1);
+
+    // PATCH has its own transformed DTO path into savedMapping.
+    const current = (await repository.getTemplate(uid, template.id))!;
+    const patch: UpdateTemplateDto = await pipe.transform(
+      {
+        expectedVersion: current.version,
+        savedMapping: raw.mapping,
+      },
+      { type: 'body', metatype: UpdateTemplateDto },
+    );
+    expect(patch.savedMapping).toBeInstanceOf(ColumnMappingDto);
+    await templates.updateTemplate(uid, template.id, patch);
+    expect(
+      (await repository.getTemplate(uid, template.id))?.savedMapping,
+    ).toEqual(raw.mapping);
+    const implicit: CreateRunDto = await pipe.transform(
+      { ...raw, mapping: undefined },
+      { type: 'body', metatype: CreateRunDto },
+    );
+    expect(
+      (await runs.createRun(actor, randomUUID(), implicit)).run.status,
+    ).toBe('accepted');
+    expect(runDurableConversion).toHaveBeenCalledTimes(2);
   },
 );

@@ -25,6 +25,7 @@ import {
   TEMPLATE_LIMITS,
 } from './label-templates.constants.js';
 import { TemplateErrorCodes } from './template-error-codes.js';
+import { plainColumnMapping } from './column-mapping.js';
 import { LabelTemplatesService } from './label-templates.service.js';
 import type { TemplateActor } from './label-templates.service.js';
 import { TEMPLATE_REPOSITORY } from './label-templates.types.js';
@@ -746,7 +747,7 @@ export class TemplateRunsService {
       diagnostics,
       sourceChecksum: table.checksum,
       requestHash,
-      resolvedMapping: mapping,
+      resolvedMapping: plainColumnMapping(mapping),
       originalFilename: prior?.originalFilename ?? `${template.name}.zpl`,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),

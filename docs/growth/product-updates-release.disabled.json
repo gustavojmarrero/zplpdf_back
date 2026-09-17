@@ -1,0 +1,61 @@
+{
+  "releaseId": "growth-2026-09",
+  "tourVersion": "1",
+  "manifestVersion": "1",
+  "enabled": false,
+  "environment": "production",
+  "releasedAt": "2026-09-17T00:00:00.000Z",
+  "releasedFeatureIds": [
+    "packing_workflow",
+    "data_templates",
+    "pdf_preparation",
+    "folder_automation",
+    "direct_print",
+    "template_regression",
+    "self_service_api"
+  ],
+  "steps": [
+    {
+      "stepId": "packing_workflow",
+      "featureId": "packing_workflow",
+      "anchorId": "nav-packing_workflow",
+      "order": 1
+    },
+    {
+      "stepId": "data_templates",
+      "featureId": "data_templates",
+      "anchorId": "nav-data_templates",
+      "order": 2
+    },
+    {
+      "stepId": "pdf_preparation",
+      "featureId": "pdf_preparation",
+      "anchorId": "nav-pdf_preparation",
+      "order": 3
+    },
+    {
+      "stepId": "folder_automation",
+      "featureId": "folder_automation",
+      "anchorId": "nav-folder_automation",
+      "order": 4
+    },
+    {
+      "stepId": "direct_print",
+      "featureId": "direct_print",
+      "anchorId": "nav-direct_print",
+      "order": 5
+    },
+    {
+      "stepId": "template_regression",
+      "featureId": "template_regression",
+      "anchorId": "nav-template_regression",
+      "order": 6
+    },
+    {
+      "stepId": "self_service_api",
+      "featureId": "self_service_api",
+      "anchorId": "nav-self_service_api",
+      "order": 7
+    }
+  ]
+}

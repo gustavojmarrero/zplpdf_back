@@ -6,6 +6,8 @@ Estado: A08–A11 registrados en Orca y desactivados; recibos reales en orca-aut
 
 Trabaja únicamente sobre ZPLPDF y la ventana asignada a esta ejecución. Lee el plan de desarrollo vigente, el manifiesto de features y el manifiesto del snapshot. Usa hechos agregados producidos por el backend; no reconstruyas ingresos desde visitas o valores de GA4. No consultes ni imprimas secretos. No incluyas emails, direcciones, etiquetas reales, URLs firmadas o claves en informes.
 
+Aplica también el contrato «Tour de novedades y acceso por planes» de este documento al evaluar BE11/FE08.
+
 El exportador `scripts/growth/export-snapshot.mjs` y los comandos `coe-precheck.mjs`/`coe-finish.mjs` están implementados. Si falta una dependencia, falla con `missing_dependency`, documenta qué falta y no inventes comandos ni datos. Si los datos llegan tarde o incompletos, informa `insufficient_data` con los campos ausentes. Distingue `not_deployed`, `no_eligible_accounts`, `zero_observed` y `missing_data`.
 
 Cada corrida recibe `automationId`, `runId`, `periodStartUtc`, `periodEndUtc`, `timezone`, `snapshotManifestPath`, `snapshotPath`, `snapshotChecksum` y `outputDirectory`. Las salidas se guardan en un directorio único por corrida. Repetir la misma ventana y versión conserva la identidad de la revisión; no crea otra acción equivalente. Lee el archivo inmutable `snapshotPath` del precheck y verifica `snapshotChecksum`; el puntero actual puede avanzar durante una corrida. El cierre vuelve a verificar el checksum y A09 comprueba los artefactos del recibo A08. El snapshot contiene versión de consulta, denominadores, exclusiones, cobertura y frescura.
@@ -13,6 +15,12 @@ Cada corrida recibe `automationId`, `runId`, `periodStartUtc`, `periodEndUtc`, `
 Se autoriza en el diseño de estas automatizaciones leer snapshots, analizar, escribir informes privados y preparar propuestas de tickets. Este prompt no ordena publicar issues, enviar mensajes, contactar usuarios, modificar suscripciones/precios, habilitar flags, imprimir documentos o desplegar. La ejecución de las propuestas será una tarea separada con alcance concreto. No deduzcas autorización para publicar del hecho de estar escribiendo un plan.
 
 Las tareas Orca se crean desactivadas durante la implementación. Verificar zona horaria y próxima ejecución en el runtime antes de habilitar; el horario deseado es América/Mérida. El host local puede estar configurado en Europa/Roma. Nunca cambiar schedules por cuenta propia como parte del análisis.
+
+## Tour de novedades y acceso por planes
+
+El snapshot schema2 incorpora `tour` por releaseId/tourVersion: cuentas con invitación observada, inicio, finalización, cierre, apertura de función y clic en comparar planes. Su población es exclusivamente la actividad con consentimiento analítico; no representa todos los usuarios registrados. La tasa de finalización usa la intersección de quienes iniciaron y terminaron dentro de la ventana, con denominador explícito y valor null si no hay inicios o cobertura de eventos. Su cobertura es independiente de la conciliación de pagos.
+
+A08 y A09 deben revisar estos datos junto con la evidencia FE08 de CAS, reintentos, aislamiento entre cuentas, permisos y traducciones. Un tour completado o un clic de upgrade no es activación, pago, renovación ni evidencia causal. Separar problemas de descubrimiento de errores funcionales; no recomendar cobrar por prestaciones ya incluidas ni mostrar CTA de pago para un piloto que no concede acceso general. Usar `plan-entitlements-contract.md` como matriz comercial vigente y `product-updates-contract.md` como contrato del manifiesto. La QA diaria/por PR ejecuta los tests de progreso y concurrencia en Firestore y conserva `product-updates-emulator-results.json`.
 
 ## A08 — COE semanal · Codex
 
