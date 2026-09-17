@@ -26,6 +26,7 @@ import {
   TEMPLATE_LIMITS,
 } from './label-templates.constants.js';
 import { TemplateErrorCodes } from './template-error-codes.js';
+import { plainColumnMapping } from './column-mapping.js';
 import { BUILTIN_TEMPLATES } from './builtin-templates.js';
 import { deterministicUuidV4 } from '../workflows/deterministic-uuid.js';
 import { mapRows } from './tabular/row-mapper.js';
@@ -405,7 +406,9 @@ export class LabelTemplatesService {
         dto.expectedVersion,
         () => ({
           name: dto.name,
-          savedMapping: dto.savedMapping,
+          savedMapping: dto.savedMapping
+            ? plainColumnMapping(dto.savedMapping)
+            : dto.savedMapping,
           status: dto.status,
         }),
       );
@@ -427,7 +430,9 @@ export class LabelTemplatesService {
         accountId,
         templateId,
         template.version,
-        () => ({ savedMapping: mapping }),
+        () => ({
+          savedMapping: mapping ? plainColumnMapping(mapping) : mapping,
+        }),
       );
     } catch (error: any) {
       // Esto sí se puede tragar, y es la única cosa que se traga en todo el
