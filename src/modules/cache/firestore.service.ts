@@ -750,7 +750,12 @@ export class FirestoreService {
    */
   async acquireUpgradeIdempotency(
     userId: string,
-    candidate: { key: string; targetPlan: string; subscriptionId: string },
+    candidate: {
+      key: string;
+      targetPlan: string;
+      targetPriceId: string;
+      subscriptionId: string;
+    },
     ttlMs: number,
     leaseMs: number,
   ): Promise<
@@ -780,7 +785,14 @@ export class FirestoreService {
         Number.isFinite(createdAtMs) &&
         stored.subscriptionId === candidate.subscriptionId;
 
-      if (mismoContrato && stored.targetPlan === candidate.targetPlan) {
+      // El destino es el precio: Pro mensual y Pro anual no pueden compartir
+      // clave. Una clave anterior a la facturación anual no guarda precio y solo
+      // pudo ser mensual, así que se compara por plan.
+      const mismoDestino = stored?.targetPriceId
+        ? stored.targetPriceId === candidate.targetPriceId
+        : stored?.targetPlan === candidate.targetPlan;
+
+      if (mismoContrato && mismoDestino) {
         if (Date.now() - createdAtMs < ttlMs) {
           // Misma clave, ejecución nueva: hay que renovar el lease o esta
           // quedaría sin exclusión frente a otros destinos.

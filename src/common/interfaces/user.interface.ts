@@ -54,6 +54,11 @@ export interface User {
   upgradeIdempotency?: {
     key: string;
     targetPlan: PlanType;
+    /**
+     * Precio destino. Distingue Pro mensual de Pro anual, que comparten plan.
+     * Ausente en claves escritas antes de la facturación anual.
+     */
+    targetPriceId?: string;
     subscriptionId: string;
     /**
      * ISO string, no Date: `getUserById` solo convierte los Timestamp de primer

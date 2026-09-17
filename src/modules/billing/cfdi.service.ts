@@ -395,10 +395,21 @@ export class CfdiService {
    *
    * Incluye el periodo facturado porque es lo que distingue una mensualidad de
    * la siguiente en la contabilidad del cliente.
+   *
+   * El periodo sale de la línea de mayor importe, no de la primera. En una
+   * factura de proración —un upgrade, o el paso de mensual a anual— la primera
+   * línea suele ser el crédito negativo por los días no consumidos, y el concepto
+   * de un cobro anual diría «periodo del 17/09 al 30/09».
    */
   private buildDescription(invoice: Stripe.Invoice, user: User): string {
     const plan = (user.plan || 'pro').toUpperCase();
-    const line = invoice.lines?.data?.[0];
+    const line = (invoice.lines?.data ?? []).reduce<
+      Stripe.InvoiceLineItem | undefined
+    >(
+      (mayor, actual) =>
+        !mayor || (actual.amount ?? 0) > (mayor.amount ?? 0) ? actual : mayor,
+      undefined,
+    );
     const start = line?.period?.start ?? invoice.period_start;
     const end = line?.period?.end ?? invoice.period_end;
 
