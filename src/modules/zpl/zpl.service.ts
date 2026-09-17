@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { isUUID } from 'class-validator';
+import { DurableOperationRepository } from '../../common/services/durable-operation.repository.js';
 import {
   Injectable,
   Logger,
@@ -58,6 +61,7 @@ export { LabelSize };
 
 // Interfaz para el estado de conversión
 interface ConversionJob {
+  durable?: boolean;
   id: string;
   zplContent: string;
   labelSize: LabelSize;
@@ -510,6 +514,188 @@ export class ZplService {
     }
   }
 
+  /** Durable bridge for workflows/API/folders. Renderer retries never double-charge quota. */
+  async runDurableConversion(input: {
+    operationId: string;
+    userId: string;
+    zplContent: string;
+    labelSize: string;
+    outputFormat?: OutputFormat;
+    originalFilename?: string;
+  }): Promise<{ jobId: string; status: string }> {
+    if (
+      !isUUID(input.operationId, '4') ||
+      !input.zplContent ||
+      Buffer.byteLength(input.zplContent) > 20 * 1024 * 1024
+    )
+      throw new HttpException('INVALID_DURABLE_CONVERSION', 400);
+    const outputFormat = input.outputFormat ?? OutputFormat.PDF;
+    if (
+      !Object.values(OutputFormat).includes(outputFormat) ||
+      !isKnownLabelSize(input.labelSize)
+    )
+      throw new HttpException('INVALID_DURABLE_FORMAT_OR_SIZE', 400);
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify([
+          input.userId,
+          input.zplContent,
+          input.labelSize,
+          outputFormat,
+          input.originalFilename ?? null,
+        ]),
+      )
+      .digest('hex');
+    const db = this.firestoreService.getClient();
+    const prior = (
+      await db.collection('durable_operations').doc(input.operationId).get()
+    ).data();
+    if (
+      prior &&
+      (prior.userId !== input.userId || prior.fingerprint !== fingerprint)
+    )
+      throw new HttpException('OPERATION_PAYLOAD_CONFLICT', 409);
+    if (await this.firestoreService.isAccountDeletionMarked(input.userId))
+      throw new GoneException('Account unavailable');
+    if (prior && prior.expiresAt.toMillis() <= Date.now())
+      throw new GoneException('Operation expired');
+    if (prior?.status === 'completed')
+      return { jobId: input.operationId, status: 'completed' };
+    const labelCount = (await this.countLabels(input.zplContent)).data
+      .totalLabels;
+    const permission = await this.usersService.checkCanConvert(
+      input.userId,
+      labelCount,
+      prior?.reserved ? 1 : 0,
+    );
+    if (!permission.allowed)
+      throw new HttpException(
+        { error: permission.errorCode, message: permission.error },
+        403,
+      );
+    const user = await this.usersService.getUserById(input.userId);
+    if (!user) throw new GoneException('Account unavailable');
+    const plan = this.usersService.getEffectivePlan(user);
+    const limits = this.usersService.getEffectivePlanLimits(user);
+    if (outputFormat !== OutputFormat.PDF && !limits.canDownloadImages)
+      throw new ForbiddenException('IMAGE_FORMAT_PRO_ONLY');
+    const sourcePath = `debug-zpl/${input.userId}/durable/${input.operationId}.zpl`;
+    const repository = new DurableOperationRepository(db);
+    const claim = await repository.claim({
+      operationId: input.operationId,
+      userId: input.userId,
+      fingerprint,
+      period: permission.periodInfo,
+      maxPdfs: limits.maxPdfsPerMonth,
+      userPlan: plan,
+      labelCount,
+      labelSize: input.labelSize,
+      outputFormat,
+      sourcePath,
+      originalFilename: input.originalFilename,
+    });
+    if (claim.completed)
+      return { jobId: input.operationId, status: 'completed' };
+    let leaseLost = false;
+    const heartbeat = setInterval(() => {
+      repository.renew(input.operationId, claim.token).catch(() => {
+        leaseLost = true;
+      });
+    }, 30000);
+    heartbeat.unref();
+    try {
+      await this.uploadForActiveAccount(
+        input.userId,
+        sourcePath,
+        Buffer.from(input.zplContent),
+        'text/plain',
+      );
+      this.jobs.set(input.operationId, {
+        id: input.operationId,
+        durable: true,
+        zplContent: input.zplContent,
+        labelSize: this.getLabelSize(input.labelSize),
+        outputFormat,
+        status: 'pending',
+        progress: 0,
+        createdAt: new Date(),
+        originalFilename: input.originalFilename,
+        userPlan: plan,
+      });
+      await this.firestoreService.saveConversionStatus(input.operationId, {
+        status: 'pending',
+        progress: 0,
+        userId: input.userId,
+        labelSize: input.labelSize,
+        outputFormat,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      await this.processZplConversion(
+        input.zplContent,
+        input.labelSize,
+        input.operationId,
+        outputFormat,
+        input.userId,
+        plan as UserPlan,
+      );
+      const job = this.jobs.get(input.operationId);
+      if (job?.status !== 'completed' || !job.resultUrl || !job.storagePath)
+        throw new Error('RENDER_FAILED');
+      if (leaseLost) throw new HttpException('OPERATION_LEASE_LOST', 409);
+      await repository.finish(input.operationId, claim.token, {
+        url: job.resultUrl,
+        filename: job.filename,
+        storagePath: job.storagePath,
+      });
+      this.usersService.invalidateHistoryScanCache(input.userId);
+      return { jobId: input.operationId, status: 'completed' };
+    } catch (error) {
+      await repository.fail(input.operationId, claim.token);
+      throw error;
+    } finally {
+      clearInterval(heartbeat);
+      this.jobs.delete(input.operationId);
+    }
+  }
+
+  async recoverDurableConversions() {
+    const db = this.firestoreService.getClient();
+    const rows = await db
+      .collection('durable_operations')
+      .where('leaseUntil', '>', 0)
+      .where('leaseUntil', '<=', Date.now())
+      .limit(20)
+      .get();
+    let recovered = 0,
+      failed = 0;
+    for (const doc of rows.docs) {
+      const row = doc.data();
+      if (row.status !== 'processing' || row.kind === 'pdf') continue;
+      try {
+        if (row.attempts >= 8 || row.expiresAt.toMillis() <= Date.now())
+          throw new Error('OPERATION_EXHAUSTED');
+        const [source] = await this.storage
+          .bucket(this.bucket)
+          .file(row.sourcePath)
+          .download();
+        await this.runDurableConversion({
+          operationId: doc.id,
+          userId: row.userId,
+          zplContent: source.toString('utf8'),
+          labelSize: row.labelSize,
+          outputFormat: row.outputFormat,
+          originalFilename: row.originalFilename ?? undefined,
+        });
+        recovered++;
+      } catch {
+        await new DurableOperationRepository(db).fail(doc.id, row.token);
+        failed++;
+      }
+    }
+    return { scanned: rows.size, recovered, failed };
+  }
+
   /**
    * Procesa la conversion ZPL con tracking de usuario
    */
@@ -725,16 +911,17 @@ export class ZplService {
       this.jobs.set(jobId, job);
 
       // Actualizar Firestore con resultado
-      this.firestoreService
-        .updateConversionStatus(jobId, {
-          status: 'completed',
-          progress: 100,
-          resultUrl: signedUrl,
-          filename: downloadFilename,
-        })
-        .catch((err) =>
-          this.logger.error(`Error actualizando Firestore: ${err.message}`),
-        );
+      if (!job.durable)
+        this.firestoreService
+          .updateConversionStatus(jobId, {
+            status: 'completed',
+            progress: 100,
+            resultUrl: signedUrl,
+            filename: downloadFilename,
+          })
+          .catch((err) =>
+            this.logger.error(`Error actualizando Firestore: ${err.message}`),
+          );
 
       this.logger.log(
         `Conversión completada para trabajo ${jobId} (formato: ${outputFormat})`,

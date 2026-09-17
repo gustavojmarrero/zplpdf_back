@@ -1,7 +1,8 @@
+import { enqueueAccountDriveRevocations } from '../folder-automation/drive-revocation.repository.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { Firestore, FieldValue } from '@google-cloud/firestore';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   DEFAULT_PLAN_LIMITS,
   PLAN_ORDER,
@@ -244,6 +245,11 @@ export interface ZplDebugFile extends ZplDebugFileInput {
 export class FirestoreService {
   private firestore: Firestore;
   private readonly logger = new Logger(FirestoreService.name);
+
+  /** Shared configured client for bounded domain repositories. Never creates a second project connection. */
+  getClient(): Firestore {
+    return this.firestore;
+  }
 
   private readonly collectionName = 'zpl-conversions';
   private readonly usersCollection = 'users';
@@ -3465,7 +3471,10 @@ export class FirestoreService {
 
   async getPlanDistribution(): Promise<{
     distribution: Record<string, { users: number; percentage: number }>;
+    paidAccountShare: number;
+    metricSemantics: 'current_account_stock_not_cohort_conversion';
     conversionRates: {
+      /** @deprecated Current stock share; use paidAccountShare. */
       freeToPaid: number;
       freeTrialToPro: number;
       proToEnterprise: number;
@@ -3513,6 +3522,8 @@ export class FirestoreService {
 
       return {
         distribution,
+        paidAccountShare: freeToPaid,
+        metricSemantics: 'current_account_stock_not_cohort_conversion',
         conversionRates: { freeToPaid, freeTrialToPro, proToEnterprise },
       };
     } catch (error) {
@@ -7995,6 +8006,15 @@ export class FirestoreService {
   /** Borra el documento de `users`. */
   async deleteUser(userId: string): Promise<void> {
     try {
+      while (true) {
+        const operations = await this.firestore
+          .collection('durable_operations')
+          .where('userId', '==', userId)
+          .limit(FirestoreService.DELETION_BATCH_SIZE)
+          .get();
+        if (operations.empty) break;
+        await this.deleteDocs(operations.docs);
+      }
       await this.firestore
         .collection(this.usersCollection)
         .doc(userId)
@@ -8076,6 +8096,17 @@ export class FirestoreService {
   async anonymizeUserFinancialRecords(userId: string): Promise<number> {
     const now = new Date();
     let updated = 0;
+    const account = (
+      await this.firestore.collection(this.usersCollection).doc(userId).get()
+    ).data();
+    if (account?.stripeCustomerId) {
+      await this.firestore
+        .collection('deleted_billing_customers')
+        .doc(
+          createHash('sha256').update(account.stripeCustomerId).digest('hex'),
+        )
+        .set({ deletedAt: now.toISOString() });
+    }
 
     for (const collection of [
       this.transactionsCollection,
@@ -8108,6 +8139,47 @@ export class FirestoreService {
       }
     }
 
+    const growthFacts = await this.firestore
+      .collection('billing_facts')
+      .where('accountId', '==', userId)
+      .get();
+    for (const group of this.chunk(
+      growthFacts.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const row of group)
+        batch.update(row.ref, {
+          accountId: null,
+          customerId: FieldValue.delete(),
+          attributionStatus: 'anonymized',
+          anonymizedAt: now.toISOString(),
+        });
+      await batch.commit();
+      updated += group.length;
+    }
+
+    // Retain booked manual enterprise revenue while removing its account link
+    // and operator-entered source label, which may contain personal data.
+    const enterpriseContracts = await this.firestore
+      .collection('growth_enterprise_contracts')
+      .where('accountId', '==', userId)
+      .get();
+    for (const group of this.chunk(
+      enterpriseContracts.docs,
+      FirestoreService.DELETION_BATCH_SIZE,
+    )) {
+      const batch = this.firestore.batch();
+      for (const row of group)
+        batch.update(row.ref, {
+          accountId: null,
+          source: 'anonymized-record',
+          anonymizedAt: now.toISOString(),
+        });
+      await batch.commit();
+      updated += group.length;
+    }
+
     return updated;
   }
 
@@ -8127,6 +8199,78 @@ export class FirestoreService {
   async anonymizeUserActivityRecords(userId: string): Promise<number> {
     const now = new Date();
     let updated = 0;
+
+    // Preserve an encrypted revocation job before removing OAuth connection records.
+    await enqueueAccountDriveRevocations(this.firestore, userId);
+
+    // Product analytics are deletable, unlike legally retained billing records.
+    for (const collection of [
+      'product_events',
+      'event_outbox',
+      'product_event_dedup',
+      'growth_event_facts',
+      'growth_operational_signals',
+      'growth_assignments',
+      'growth_excluded_accounts',
+      'feedback_cadence',
+      'in_app_feedback_candidates',
+      'growth_account_feature_firsts',
+      'growth_first_payments',
+      'growth_paid_inventory_members',
+      'api_keys',
+      'api_callback_endpoints',
+      'api_jobs',
+      'api_job_inputs',
+      'api_account_limits',
+      'api_callback_deliveries',
+      'drive_oauth_states',
+      'drive_connections',
+      'drive_runs',
+      'drive_retry_requests',
+      'label_event_retries',
+      'print_connections',
+      'print_jobs',
+      'label_template_versions',
+      'label_templates',
+      'label_template_runs',
+      'pdf_output_presets',
+      'pdf_output_preset_versions',
+      'pdf_preset_limits',
+      'template_regression_baselines',
+      'template_regression_runs',
+      'template_regression_operations',
+      'label_workflow_exports',
+    ]) {
+      while (true) {
+        const rows = await this.firestore
+          .collection(collection)
+          .where(
+            ['label_templates', 'label_template_versions'].includes(collection)
+              ? 'ownerId'
+              : 'accountId',
+            '==',
+            userId,
+          )
+          .limit(FirestoreService.DELETION_BATCH_SIZE)
+          .get();
+        if (rows.empty) break;
+        updated += await this.deleteDocs(rows.docs);
+      }
+    }
+
+    // Workflow labels live in subcollections and must be removed recursively.
+    while (true) {
+      const workflows = await this.firestore
+        .collection('label_workflows')
+        .where('ownerId', '==', userId)
+        .limit(FirestoreService.DELETION_BATCH_SIZE)
+        .get();
+      if (workflows.empty) break;
+      for (const row of workflows.docs) {
+        await this.firestore.recursiveDelete(row.ref);
+        updated++;
+      }
+    }
 
     const targets: Array<{ collection: string; clearMetadata: boolean }> = [
       { collection: this.emailQueueCollection, clearMetadata: true },

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { PaymentsService } from '../payments/payments.service.js';
 import { CfdiService } from '../billing/cfdi.service.js';
+import { BillingFactsService } from '../growth-metrics/billing-facts.service.js';
 
 @Injectable()
 export class WebhooksService {
@@ -14,6 +15,7 @@ export class WebhooksService {
     private readonly configService: ConfigService,
     private readonly paymentsService: PaymentsService,
     private readonly cfdiService: CfdiService,
+    private readonly billingFacts: BillingFactsService,
   ) {
     const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     this.webhookSecret = this.configService.get<string>(
@@ -49,6 +51,8 @@ export class WebhooksService {
     }
 
     this.logger.log(`Received Stripe event: ${event.type}`);
+
+    await this.billingFacts.recordVerifiedEvent(event);
 
     switch (event.type) {
       case 'checkout.session.completed':

@@ -1,0 +1,246 @@
+[
+  {
+    "job": "A08",
+    "receipt": {
+      "id": "047a2a8d-b793-4ba2-a032-7d72d960cb38",
+      "ok": true,
+      "result": {
+        "automation": {
+          "id": "eda70149-46eb-43f8-85f4-cb7f1dfdd47a",
+          "name": "ZPLPDF A08 · COE semanal",
+          "prompt": "ZPLPDF A08. Lee /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/docs/growth/coe-prompts.md y ejecuta exclusivamente su contrato común y sección A08. Lee .local/growth/current-snapshot-manifest.json para snapshots; si falta, informa missing_dependency. Escribe evidencia privada en .local/growth/reports/A08/ con ventana y checksum. No imprimas secretos ni datos personales. No publiques, no envíes mensajes, no modifiques producción/precios/suscripciones/flags. Si A08 es A11, actualiza .local/growth/market-state.json lastSuccessfulAt solo tras informe completo; no investigues más de 8 fuentes. Estos jobs siguen disabled hasta verificar datos, precheck y corrida manual.",
+          "precheck": {
+            "command": "node /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/scripts/growth/coe-precheck.mjs A08",
+            "timeoutSeconds": 30
+          },
+          "agentId": "codex",
+          "runContext": {
+            "kind": "workspace-run",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "path": "/Users/gustavomarrero/Code/backend/zpl-backend"
+          },
+          "sourceContext": {
+            "kind": "task-source",
+            "provider": "github",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "providerIdentity": {
+              "provider": "github",
+              "owner": "gustavojmarrero",
+              "repo": "zplpdf_back"
+            },
+            "accountLabel": null
+          },
+          "projectId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+          "executionTargetType": "local",
+          "executionTargetId": "local",
+          "schedulerOwner": "local_host_service",
+          "workspaceMode": "existing",
+          "workspaceId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc::/Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation",
+          "baseBranch": null,
+          "reuseSession": false,
+          "timezone": "America/Merida",
+          "rrule": "0 9 * * 1",
+          "dtstart": 1789673515899,
+          "enabled": false,
+          "nextRunAt": 1789974000000,
+          "missedRunPolicy": "run_once_within_grace",
+          "missedRunGraceMinutes": 720,
+          "createdAt": 1789673515924,
+          "updatedAt": 1789673515924
+        }
+      },
+      "_meta": {
+        "runtimeId": "59e83c90-1848-45cc-881d-49e0e79fad05"
+      }
+    }
+  },
+  {
+    "job": "A09",
+    "receipt": {
+      "id": "a563bc40-4646-4d43-86dd-39a788de70e4",
+      "ok": true,
+      "result": {
+        "automation": {
+          "id": "c0c9a0f0-b344-4b5b-b743-a45474e387ac",
+          "name": "ZPLPDF A09 · Revisión COE",
+          "prompt": "ZPLPDF A09. Lee /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/docs/growth/coe-prompts.md y ejecuta exclusivamente su contrato común y sección A09. Lee .local/growth/current-snapshot-manifest.json para snapshots; si falta, informa missing_dependency. Escribe evidencia privada en .local/growth/reports/A09/ con ventana y checksum. No imprimas secretos ni datos personales. No publiques, no envíes mensajes, no modifiques producción/precios/suscripciones/flags. Si A09 es A11, actualiza .local/growth/market-state.json lastSuccessfulAt solo tras informe completo; no investigues más de 8 fuentes. Estos jobs siguen disabled hasta verificar datos, precheck y corrida manual.",
+          "precheck": {
+            "command": "node /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/scripts/growth/coe-precheck.mjs A09",
+            "timeoutSeconds": 30
+          },
+          "agentId": "claude",
+          "runContext": {
+            "kind": "workspace-run",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "path": "/Users/gustavomarrero/Code/backend/zpl-backend"
+          },
+          "sourceContext": {
+            "kind": "task-source",
+            "provider": "github",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "providerIdentity": {
+              "provider": "github",
+              "owner": "gustavojmarrero",
+              "repo": "zplpdf_back"
+            },
+            "accountLabel": null
+          },
+          "projectId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+          "executionTargetType": "local",
+          "executionTargetId": "local",
+          "schedulerOwner": "local_host_service",
+          "workspaceMode": "existing",
+          "workspaceId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc::/Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation",
+          "baseBranch": null,
+          "reuseSession": false,
+          "timezone": "America/Merida",
+          "rrule": "0 10 * * 1",
+          "dtstart": 1789673516032,
+          "enabled": false,
+          "nextRunAt": 1789977600000,
+          "missedRunPolicy": "run_once_within_grace",
+          "missedRunGraceMinutes": 720,
+          "createdAt": 1789673516038,
+          "updatedAt": 1789673516038
+        }
+      },
+      "_meta": {
+        "runtimeId": "59e83c90-1848-45cc-881d-49e0e79fad05"
+      }
+    }
+  },
+  {
+    "job": "A10",
+    "receipt": {
+      "id": "a4bbcb4b-c2c4-49f4-b82a-d04049b7810a",
+      "ok": true,
+      "result": {
+        "automation": {
+          "id": "4a06a664-f473-4dff-9794-8f781de223cb",
+          "name": "ZPLPDF A10 · COE mensual",
+          "prompt": "ZPLPDF A10. Lee /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/docs/growth/coe-prompts.md y ejecuta exclusivamente su contrato común y sección A10. Lee .local/growth/current-snapshot-manifest.json para snapshots; si falta, informa missing_dependency. Escribe evidencia privada en .local/growth/reports/A10/ con ventana y checksum. No imprimas secretos ni datos personales. No publiques, no envíes mensajes, no modifiques producción/precios/suscripciones/flags. Si A10 es A11, actualiza .local/growth/market-state.json lastSuccessfulAt solo tras informe completo; no investigues más de 8 fuentes. Estos jobs siguen disabled hasta verificar datos, precheck y corrida manual.",
+          "precheck": {
+            "command": "node /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/scripts/growth/coe-precheck.mjs A10",
+            "timeoutSeconds": 30
+          },
+          "agentId": "codex",
+          "runContext": {
+            "kind": "workspace-run",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "path": "/Users/gustavomarrero/Code/backend/zpl-backend"
+          },
+          "sourceContext": {
+            "kind": "task-source",
+            "provider": "github",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "providerIdentity": {
+              "provider": "github",
+              "owner": "gustavojmarrero",
+              "repo": "zplpdf_back"
+            },
+            "accountLabel": null
+          },
+          "projectId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+          "executionTargetType": "local",
+          "executionTargetId": "local",
+          "schedulerOwner": "local_host_service",
+          "workspaceMode": "existing",
+          "workspaceId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc::/Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation",
+          "baseBranch": null,
+          "reuseSession": false,
+          "timezone": "America/Merida",
+          "rrule": "0 9 5 * *",
+          "dtstart": 1789673516148,
+          "enabled": false,
+          "nextRunAt": 1791183600000,
+          "missedRunPolicy": "run_once_within_grace",
+          "missedRunGraceMinutes": 720,
+          "createdAt": 1789673516154,
+          "updatedAt": 1789673516154
+        }
+      },
+      "_meta": {
+        "runtimeId": "59e83c90-1848-45cc-881d-49e0e79fad05"
+      }
+    }
+  },
+  {
+    "job": "A11",
+    "receipt": {
+      "id": "bda890fc-111a-4c1c-8797-961e7df63b14",
+      "ok": true,
+      "result": {
+        "automation": {
+          "id": "9d254366-8121-48b5-9ba3-3bb2f5377347",
+          "name": "ZPLPDF A11 · Señales de mercado",
+          "prompt": "ZPLPDF A11. Lee /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/docs/growth/coe-prompts.md y ejecuta exclusivamente su contrato común y sección A11. Lee .local/growth/current-snapshot-manifest.json para snapshots; si falta, informa missing_dependency. Escribe evidencia privada en .local/growth/reports/A11/ con ventana y checksum. No imprimas secretos ni datos personales. No publiques, no envíes mensajes, no modifiques producción/precios/suscripciones/flags. Si A11 es A11, actualiza .local/growth/market-state.json lastSuccessfulAt solo tras informe completo; no investigues más de 8 fuentes. Estos jobs siguen disabled hasta verificar datos, precheck y corrida manual.",
+          "precheck": {
+            "command": "node /Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation/scripts/growth/coe-precheck.mjs A11",
+            "timeoutSeconds": 30
+          },
+          "agentId": "grok",
+          "runContext": {
+            "kind": "workspace-run",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "path": "/Users/gustavomarrero/Code/backend/zpl-backend"
+          },
+          "sourceContext": {
+            "kind": "task-source",
+            "provider": "github",
+            "projectId": "github:gustavojmarrero/zplpdf_back",
+            "hostId": "local",
+            "projectHostSetupId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "repoId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+            "providerIdentity": {
+              "provider": "github",
+              "owner": "gustavojmarrero",
+              "repo": "zplpdf_back"
+            },
+            "accountLabel": null
+          },
+          "projectId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc",
+          "executionTargetType": "local",
+          "executionTargetId": "local",
+          "schedulerOwner": "local_host_service",
+          "workspaceMode": "existing",
+          "workspaceId": "6a4130ea-d8e6-4adc-8eba-2140d907b6dc::/Users/gustavomarrero/orca/workspaces/zpl-backend/growth-implementation",
+          "baseBranch": null,
+          "reuseSession": false,
+          "timezone": "America/Merida",
+          "rrule": "0 11 * * 1",
+          "dtstart": 1789673516263,
+          "enabled": false,
+          "nextRunAt": 1789981200000,
+          "missedRunPolicy": "run_once_within_grace",
+          "missedRunGraceMinutes": 720,
+          "createdAt": 1789673516268,
+          "updatedAt": 1789673516268
+        }
+      },
+      "_meta": {
+        "runtimeId": "59e83c90-1848-45cc-881d-49e0e79fad05"
+      }
+    }
+  }
+]

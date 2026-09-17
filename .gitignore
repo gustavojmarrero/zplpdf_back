@@ -94,6 +94,8 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 docs/*
+!docs/growth/
+.local/
 
 zplpdf-guatever-firebase-adminsdk-fbsvc-6bbd67ac4b.json.env.local
 zplpdf-guatever-firebase-adminsdk-fbsvc-6bbd67ac4b.json
@@ -103,3 +105,11 @@ firebase-credentials.json
 .codex/
 .agents/
 AGENTS.md
+
+# Local emulator diagnostics and synthetic QA output
+firestore-debug.log
+firebase-debug.log
+growth-*-results.json
+.terraform/
+*.tfstate
+*.tfstate.*

@@ -1073,7 +1073,7 @@ export class UsersService {
   }
 
   /** Invalida la caché del historial de un usuario (tras registrar una conversión). */
-  private invalidateHistoryScanCache(userId: string): void {
+  invalidateHistoryScanCache(userId: string): void {
     this.historyCacheGeneration++;
     this.historyScanCache.delete(userId);
   }
@@ -1438,6 +1438,7 @@ export class UsersService {
   async checkCanConvert(
     userId: string,
     labelCount: number,
+    reservationCredit = 0,
   ): Promise<CheckCanConvertResult> {
     if (await this.firestoreService.isAccountDeletionMarked(userId)) {
       return {
@@ -1513,7 +1514,10 @@ export class UsersService {
     }
 
     // Check monthly PDF limit
-    if (usage.pdfCount >= limits.maxPdfsPerMonth) {
+    if (
+      usage.pdfCount + (usage.reservedPdfCount || 0) - reservationCredit >=
+      limits.maxPdfsPerMonth
+    ) {
       return {
         allowed: false,
         error: "You've reached your monthly limit",
@@ -1721,7 +1725,7 @@ export class UsersService {
   /**
    * Obtiene los límites efectivos considerando simulación de plan
    */
-  private getEffectivePlanLimits(user: User): PlanLimits {
+  getEffectivePlanLimits(user: User): PlanLimits {
     // Si es admin con simulación activa, usar límites del plan simulado
     if (this.isSimulationActive(user) && user.simulatedPlan) {
       return (

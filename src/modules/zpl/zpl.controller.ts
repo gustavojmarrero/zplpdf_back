@@ -1,3 +1,4 @@
+import { GrowthSchedulerGuard } from '../../common/guards/growth-scheduler.guard.js';
 import {
   Controller,
   Post,
@@ -66,6 +67,12 @@ export class ZplController {
     private readonly zplService: ZplService,
     private readonly zplValidatorService: ZplValidatorService,
   ) {}
+
+  @Post('internal/recover-durable')
+  @UseGuards(GrowthSchedulerGuard)
+  recoverDurable() {
+    return this.zplService.recoverDurableConversions();
+  }
 
   @Post('convert')
   @HttpCode(HttpStatus.ACCEPTED)

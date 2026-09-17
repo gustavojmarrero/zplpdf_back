@@ -120,6 +120,28 @@ export class StorageService {
       .save(content, { metadata: { contentType } });
   }
 
+  /** Reads a server-owned private object with a pre-download size bound. */
+  async readFile(
+    filePath: string,
+    maxBytes = 20 * 1024 * 1024,
+  ): Promise<Buffer | null> {
+    const file = this.storage.bucket(this.bucketName).file(filePath);
+    try {
+      const [metadata] = await file.getMetadata();
+      if (
+        !Number.isFinite(Number(metadata.size)) ||
+        Number(metadata.size) > maxBytes
+      )
+        throw new Error('STORAGE_OBJECT_TOO_LARGE');
+      const [buffer] = await file.download();
+      if (buffer.length > maxBytes) throw new Error('STORAGE_OBJECT_TOO_LARGE');
+      return buffer;
+    } catch (error) {
+      if (error?.code === 404) return null;
+      throw error;
+    }
+  }
+
   /**
    * Lee un archivo de texto del bucket.
    *
