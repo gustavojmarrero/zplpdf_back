@@ -5,6 +5,7 @@ import { WorkflowsModule } from './modules/workflows/workflows.module.js';
 import { PdfPreparationModule } from './modules/pdf-preparation/pdf-preparation.module.js';
 import { Module } from '@nestjs/common';
 import { ProductObservabilityModule } from './modules/product-observability/product-observability.module.js';
+import { ProductUpdatesModule } from './modules/product-updates/product-updates.module.js';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { CustomThrottlerGuard } from './common/guards/custom-throttler.guard.js';
@@ -46,6 +47,7 @@ import { GoogleAuthProvider } from './config/google-auth.provider.js';
       },
     ]),
     ProductObservabilityModule,
+    ProductUpdatesModule,
     PdfPreparationModule,
     WorkflowsModule,
     GrowthOperationsModule,

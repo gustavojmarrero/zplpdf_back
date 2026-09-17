@@ -1,0 +1,102 @@
+{
+  "packing_workflow": {
+    "enabled": false,
+    "killSwitch": false,
+    "owner": "product",
+    "updatedAt": "2026-09-18T00:00:00.000Z",
+    "version": "2",
+    "allowedPlans": [
+      "pro",
+      "promax",
+      "enterprise"
+    ],
+    "rolloutPercent": 0,
+    "experimentId": "packing_workflow-launch",
+    "assignmentVersion": "1"
+  },
+  "data_templates": {
+    "enabled": false,
+    "killSwitch": false,
+    "owner": "product",
+    "updatedAt": "2026-09-18T00:00:00.000Z",
+    "version": "2",
+    "allowedPlans": [
+      "pro",
+      "promax",
+      "enterprise"
+    ],
+    "rolloutPercent": 0,
+    "experimentId": "data_templates-launch",
+    "assignmentVersion": "1"
+  },
+  "pdf_preparation": {
+    "enabled": false,
+    "killSwitch": false,
+    "owner": "product",
+    "updatedAt": "2026-09-18T00:00:00.000Z",
+    "version": "2",
+    "allowedPlans": [
+      "pro",
+      "promax",
+      "enterprise"
+    ],
+    "rolloutPercent": 0,
+    "experimentId": "pdf_preparation-launch",
+    "assignmentVersion": "1"
+  },
+  "folder_automation": {
+    "enabled": false,
+    "killSwitch": false,
+    "owner": "product",
+    "updatedAt": "2026-09-18T00:00:00.000Z",
+    "version": "2",
+    "allowedPlans": [
+      "promax",
+      "enterprise"
+    ],
+    "rolloutPercent": 0,
+    "experimentId": "folder_automation-launch",
+    "assignmentVersion": "1"
+  },
+  "direct_print": {
+    "enabled": false,
+    "killSwitch": false,
+    "owner": "product",
+    "updatedAt": "2026-09-18T00:00:00.000Z",
+    "version": "2",
+    "allowedPlans": [
+      "promax",
+      "enterprise"
+    ],
+    "rolloutPercent": 0,
+    "experimentId": "direct_print-launch",
+    "assignmentVersion": "1"
+  },
+  "template_regression": {
+    "enabled": false,
+    "killSwitch": false,
+    "owner": "product",
+    "updatedAt": "2026-09-18T00:00:00.000Z",
+    "version": "2",
+    "allowedPlans": [
+      "promax",
+      "enterprise"
+    ],
+    "rolloutPercent": 0,
+    "experimentId": "template_regression-launch",
+    "assignmentVersion": "1"
+  },
+  "self_service_api": {
+    "enabled": false,
+    "killSwitch": false,
+    "owner": "product",
+    "updatedAt": "2026-09-18T00:00:00.000Z",
+    "version": "2",
+    "allowedPlans": [
+      "enterprise"
+    ],
+    "rolloutPercent": 0,
+    "experimentId": "self_service_api-launch",
+    "assignmentVersion": "1"
+  }
+}

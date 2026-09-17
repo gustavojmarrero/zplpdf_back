@@ -174,6 +174,112 @@ function server(): ServerEventInput {
   };
 }
 
+describe('consented product tour events', () => {
+  function tourFixture(eventName = 'tour_started') {
+    const f = fixture();
+    f.settings.PRODUCT_FEATURE_FLAGS = JSON.stringify({
+      packing_workflow: {
+        ...enabledFlag,
+        allowedPlans: ['pro', 'promax', 'enterprise'],
+      },
+    });
+    f.settings.PRODUCT_UPDATES_RELEASE = JSON.stringify({
+      releaseId: 'growth-2026-09',
+      tourVersion: '1',
+      manifestVersion: '1',
+      environment: 'test',
+      enabled: true,
+      releasedAt: '2020-01-01T00:00:00Z',
+      releasedFeatureIds: ['packing_workflow'],
+      steps: [
+        {
+          stepId: 'packing_workflow',
+          featureId: 'packing_workflow',
+          anchorId: 'nav-packing_workflow',
+          order: 1,
+        },
+      ],
+    });
+    const old = web();
+    const body = {
+      ...old,
+      events: [
+        {
+          ...old.events[0],
+          eventName,
+          surface: 'tour',
+          releaseId: 'growth-2026-09',
+          tourVersion: '1',
+          tourStepId: 'packing_workflow',
+        },
+      ],
+    };
+    return { ...f, body };
+  }
+
+  it('deduplicates tour retries but rejects changed metadata with the same event ID', async () => {
+    const f = tourFixture();
+    await f.service.recordWebEvents('account-a', f.body);
+    const duplicate = await f.service.recordWebEvents('account-a', f.body);
+    expect(duplicate.results[0].duplicate).toBe(true);
+    const changed = structuredClone(f.body);
+    changed.events[0].eventName = 'tour_completed';
+    await expect(
+      f.service.recordWebEvents('account-a', changed),
+    ).rejects.toThrow();
+  });
+
+  it('accepts an honest upgrade click from Free only for a globally released offer', async () => {
+    const f = tourFixture('tour_upgrade_clicked');
+    f.users.getUserById.mockResolvedValue({
+      id: 'account-a',
+      plan: 'free',
+      role: 'user',
+    });
+    await expect(
+      f.service.recordWebEvents('account-a', f.body),
+    ).resolves.toBeDefined();
+    f.body.events[0].eventId = randomUUID();
+    f.body.events[0].eventName = 'tour_feature_opened';
+    await expect(
+      f.service.recordWebEvents('account-a', f.body),
+    ).rejects.toThrow('Invalid tour event context');
+    f.body.events[0].eventName = 'tour_upgrade_clicked';
+    const flags = JSON.parse(f.settings.PRODUCT_FEATURE_FLAGS);
+    flags.packing_workflow.rolloutPercent = 10;
+    f.settings.PRODUCT_FEATURE_FLAGS = JSON.stringify(flags);
+    await expect(
+      f.service.recordWebEvents('account-a', f.body),
+    ).rejects.toThrow('Feature unavailable');
+  });
+
+  it('rejects unknown releases, wrong surfaces, missing consent and non-tour metadata', async () => {
+    for (const mutate of [
+      (f: ReturnType<typeof tourFixture>) => {
+        f.body.events[0].releaseId = 'invented';
+      },
+      (f: ReturnType<typeof tourFixture>) => {
+        f.body.events[0].surface = 'workspace';
+      },
+      (f: ReturnType<typeof tourFixture>) => {
+        f.body.consent.analytics = false;
+      },
+      (f: ReturnType<typeof tourFixture>) => {
+        f.body.events[0].eventName = 'feature_exposed';
+      },
+      (f: ReturnType<typeof tourFixture>) => {
+        delete f.settings.PRODUCT_UPDATES_RELEASE;
+      },
+    ]) {
+      const f = tourFixture();
+      mutate(f);
+      await expect(
+        f.service.recordWebEvents('account-a', f.body),
+      ).rejects.toThrow();
+    }
+  });
+});
+
 describe('feature permissions', () => {
   it('returns exactly seven disabled flags by default', async () => {
     const f = fixture();

@@ -5,7 +5,10 @@ import { Timestamp } from '@google-cloud/firestore';
 import { createHash, randomUUID } from 'node:crypto';
 import { FirestoreService } from '../cache/firestore.service.js';
 import { ProductEventOutboxService } from '../product-observability/product-event-outbox.service.js';
-import { FEATURE_IDS } from '../product-observability/observability.types.js';
+import {
+  FEATURE_IDS,
+  SERVER_EVENTS,
+} from '../product-observability/observability.types.js';
 import {
   calculateFeatureCohorts,
   calculatePaid30d,
@@ -28,6 +31,7 @@ import { buildEnterpriseSegment } from './enterprise-segment.js';
 import { buildCostLedger } from './cost-ledger.js';
 import { summarizeOperationalSignals } from './operational-signals.js';
 import { GrowthRetentionService } from '../growth-operations/growth-retention.service.js';
+import { summarizeTourEvents } from './tour-metrics.js';
 import type { OperationalSignal } from './operational-signals.js';
 const DAY = 86400000;
 const CALCULATION_VERSION = 'growth-v2';
@@ -683,6 +687,12 @@ export class GrowthJobsService {
         : events.length
           ? 'observed'
           : 'insufficient_data',
+      // Tour activity depends on event ingestion, not Stripe reconciliation.
+      tour: summarizeTourEvents(
+        events,
+        { start, end: cutoff },
+        eventRows.size <= 10000 && backlog.empty && deadOutbox.empty,
+      ),
       reason: !complete
         ? (uniqueBlockers[0] ?? 'coverage_incomplete')
         : events.length
@@ -924,6 +934,8 @@ export class GrowthJobsService {
         !e.isSynthetic &&
         e.environment === environment &&
         !exclusions.isExcluded(e.accountId) &&
+        e.source !== 'web' &&
+        SERVER_EVENTS.includes(e.eventName) &&
         /(_succeeded|_acknowledged|_completed)$/.test(e.eventName)
       )
         candidates.set(e.accountId, e);

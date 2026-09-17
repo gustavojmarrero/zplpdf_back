@@ -196,6 +196,46 @@ function seedCompleteSources(
 }
 
 describe('A03 agregación — ventanas y contaminación del backfill', () => {
+  it.each([false, true])(
+    'tour coverage depends on event backlog (%s), independently of missing billing',
+    async (pending) => {
+      const store = fakeFirestore();
+      const now = Date.parse('2026-09-17T06:00:00.000Z');
+      for (const [index, eventName] of [
+        'tour_started',
+        'tour_completed',
+      ].entries()) {
+        store.bucket('growth_event_facts').set(`tour-${index}`, {
+          accountId: 'tour-account',
+          featureId: 'packing_workflow',
+          eventName,
+          source: 'web',
+          environment: 'test',
+          consent: { analytics: true },
+          releaseId: 'growth-2026-09',
+          tourVersion: '1',
+          occurredAt: new Date(now - 3600000).toISOString(),
+          receivedAt: new Date(now - 3600000).toISOString(),
+        });
+      }
+      if (pending)
+        store.bucket('event_outbox').set('pending', { state: 'pending' });
+      jest.useFakeTimers().setSystemTime(now);
+      try {
+        await buildService(store).run('aggregate', new Date(now).toISOString());
+      } finally {
+        jest.useRealTimers();
+      }
+      const latest = store.bucket('growth_snapshots').get('latest');
+      expect(latest.billingCoverage).toBe('missing_data');
+      expect(latest.tour.status).toBe(pending ? 'incomplete' : 'observed');
+      expect(latest.tour.releases[0].completionAmongObservedStarts.value).toBe(
+        pending ? null : 1,
+      );
+      expect(latest.features).toEqual([]);
+    },
+  );
+
   it('no mete el inventario de hoy en el snapshot de un día pasado', async () => {
     const store = fakeFirestore();
     const now = Date.parse('2026-09-17T06:00:00.000Z');
