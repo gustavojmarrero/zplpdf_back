@@ -28,6 +28,13 @@ export class FeedbackController {
     return this.feedbackService.getStatus(user.uid);
   }
 
+  @Post('invitations/claim')
+  @UseGuards(FirebaseAuthGuard)
+  @ApiBearerAuth()
+  claimInvitation(@CurrentUser() user: FirebaseUser) {
+    return this.feedbackService.claimInvitation(user.uid);
+  }
+
   @Post()
   @UseGuards(FirebaseAuthGuard)
   @ApiBearerAuth()

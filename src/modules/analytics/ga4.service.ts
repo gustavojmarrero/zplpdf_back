@@ -1,6 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+export interface AnalyticsContext {
+  consent: 'granted';
+  clientId: string;
+  sessionId?: number;
+}
+
 export interface TrackPurchaseParams {
   userId: string;
   transactionId: string;
@@ -8,14 +14,17 @@ export interface TrackPurchaseParams {
   planName: string;
   price: number;
   currency?: string;
+  analytics?: AnalyticsContext;
 }
 
 export interface TrackInactivityParams {
   userId: string;
-  userEmail: string;
+  /** Compatibility only: never exported or logged. */
+  userEmail?: string;
   daysInactive: 7 | 30;
   userPlan: string;
   lastActivityAt?: Date;
+  analytics?: AnalyticsContext;
 }
 
 @Injectable()
@@ -23,138 +32,104 @@ export class GA4Service {
   private readonly logger = new Logger(GA4Service.name);
   private readonly measurementId: string;
   private readonly apiSecret: string;
-  private readonly endpoint = 'https://www.google-analytics.com/mp/collect';
 
-  constructor(private readonly configService: ConfigService) {
-    this.measurementId = this.configService.get<string>('GA4_MEASUREMENT_ID');
-    this.apiSecret = this.configService.get<string>('GA4_API_SECRET');
-
-    if (!this.measurementId || !this.apiSecret) {
-      this.logger.warn(
-        'GA4 Measurement Protocol not configured. Server-side tracking disabled.',
-      );
-    } else {
-      this.logger.log('GA4 Measurement Protocol configured successfully');
-    }
+  constructor(config: ConfigService) {
+    this.measurementId = config.get<string>('GA4_MEASUREMENT_ID');
+    this.apiSecret = config.get<string>('GA4_API_SECRET');
   }
 
-  /**
-   * Tracks a purchase event in Google Analytics 4 using Measurement Protocol
-   * @param params Purchase parameters
-   * @returns true if tracking was successful, false otherwise
-   */
+  /** True means transport accepted, not verified GA4 processing or a billing fact. */
   async trackPurchase(params: TrackPurchaseParams): Promise<boolean> {
-    if (!this.measurementId || !this.apiSecret) {
-      this.logger.debug('GA4 tracking skipped: not configured');
+    const currency = params.currency || 'USD';
+    if (
+      !Number.isFinite(params.price) ||
+      params.price <= 0 ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(params.transactionId) ||
+      !/^(plan_)?(lite|pro|promax|enterprise)(_yearly)?$/.test(params.planId) ||
+      !/^[A-Z]{3}$/.test(currency)
+    )
       return false;
-    }
-
-    try {
-      const url = `${this.endpoint}?measurement_id=${this.measurementId}&api_secret=${this.apiSecret}`;
-
-      const payload = {
-        client_id: params.userId,
-        user_id: params.userId,
-        events: [
-          {
-            name: 'purchase',
-            params: {
-              transaction_id: params.transactionId,
-              value: params.price,
-              currency: params.currency || 'USD',
-              source: 'server',
-              items: [
-                {
-                  item_id: params.planId,
-                  item_name: params.planName,
-                  price: params.price,
-                  quantity: 1,
-                },
-              ],
-            },
-          },
-        ],
-      };
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        this.logger.error(
-          `GA4 tracking failed: ${response.status} ${response.statusText}`,
-        );
-        return false;
-      }
-
-      this.logger.log(
-        `GA4 purchase tracked: ${params.transactionId} (${params.planName}, ${params.price} ${params.currency || 'USD'})`,
-      );
-      return true;
-    } catch (error) {
-      this.logger.error(`GA4 tracking error: ${error.message}`);
-      return false;
-    }
+    return this.send(
+      'purchase',
+      {
+        transaction_id: params.transactionId,
+        value: params.price,
+        currency,
+        source: 'server',
+        items: [{ item_id: params.planId, price: params.price, quantity: 1 }],
+      },
+      params.analytics,
+    );
   }
 
-  /**
-   * Tracks user inactivity events in Google Analytics 4 using Measurement Protocol
-   * @param params Inactivity parameters
-   * @returns true if tracking was successful, false otherwise
-   */
   async trackInactivity(params: TrackInactivityParams): Promise<boolean> {
-    if (!this.measurementId || !this.apiSecret) {
-      this.logger.debug('GA4 tracking skipped: not configured');
+    if (
+      ![7, 30].includes(params.daysInactive) ||
+      !/^(free|lite|pro|promax|enterprise)$/.test(params.userPlan)
+    )
       return false;
-    }
+    return this.send(
+      `user_inactive_${params.daysInactive}_days`,
+      {
+        days_inactive: params.daysInactive,
+        user_plan: params.userPlan,
+        source: 'server',
+      },
+      params.analytics,
+    );
+  }
 
+  private async send(
+    name: string,
+    params: Record<string, unknown>,
+    context?: AnalyticsContext,
+  ): Promise<boolean> {
+    // A Firebase UID is not a browser client ID. Legacy callers deliberately skip export.
+    if (
+      !this.measurementId ||
+      !this.apiSecret ||
+      context?.consent !== 'granted' ||
+      !/^\d{1,20}\.\d{1,20}$/.test(context.clientId) ||
+      (context.sessionId !== undefined &&
+        (!Number.isSafeInteger(context.sessionId) || context.sessionId <= 0))
+    )
+      return false;
+    const query = new URLSearchParams({
+      measurement_id: this.measurementId,
+      api_secret: this.apiSecret,
+    });
     try {
-      const url = `${this.endpoint}?measurement_id=${this.measurementId}&api_secret=${this.apiSecret}`;
-
-      // Event name based on days inactive
-      const eventName =
-        params.daysInactive === 7
-          ? 'user_inactive_7_days'
-          : 'user_inactive_30_days';
-
-      const payload = {
-        client_id: params.userId,
-        user_id: params.userId,
-        events: [
-          {
-            name: eventName,
-            params: {
-              user_email: params.userEmail,
-              days_inactive: params.daysInactive,
-              user_plan: params.userPlan,
-              last_activity_at: params.lastActivityAt?.toISOString() || null,
-              source: 'server',
-            },
-          },
-        ],
-      };
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
+      const response = await fetch(
+        `https://www.google-analytics.com/mp/collect?${query}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: context.clientId,
+            events: [
+              {
+                name,
+                params: {
+                  ...params,
+                  ...(context.sessionId === undefined
+                    ? {}
+                    : { session_id: context.sessionId }),
+                },
+              },
+            ],
+          }),
+          signal: AbortSignal.timeout(5000),
+        },
+      );
       if (!response.ok) {
-        this.logger.error(
-          `GA4 inactivity tracking failed: ${response.status} ${response.statusText}`,
-        );
+        this.logger.warn(`GA4 transport rejected: HTTP ${response.status}`);
         return false;
       }
-
-      this.logger.log(
-        `GA4 inactivity tracked: ${eventName} for user ${params.userId} (${params.userEmail})`,
-      );
+      this.logger.debug('GA4 transport accepted; processing unverified');
       return true;
-    } catch (error) {
-      this.logger.error(`GA4 inactivity tracking error: ${error.message}`);
+    } catch {
+      // Fetch errors may contain the URL with its API secret.
+      this.logger.warn('GA4 transport unavailable');
       return false;
     }
   }

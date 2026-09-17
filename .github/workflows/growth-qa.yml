@@ -1,0 +1,84 @@
+name: Growth synthetic QA
+on:
+  pull_request:
+    branches: [main, development]
+    paths:
+      - 'src/**'
+      - 'test/growth-*'
+      - 'test/firebase-emulator.json'
+      - 'scripts/growth/**'
+      - 'infra/growth/**'
+      - 'package*.json'
+      - '.github/workflows/growth-qa.yml'
+  schedule:
+    - cron: '0 11 * * *' # 05:00 America/Merida (UTC-6)
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: growth-qa-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+      - run: terraform -chdir=infra/growth fmt -check
+      - run: terraform -chdir=infra/growth init -backend=false -input=false
+      - run: terraform -chdir=infra/growth validate
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+      PRODUCT_ENVIRONMENT: test
+      TZ: America/Merida
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Conversion, isolation, concurrency and provider fixtures
+        run: >-
+          npm test -- --runInBand --json --outputFile=growth-jest-results.json
+          --testPathPattern='(product-observability|public-api|workflows|label-templates|pdf-preparation|folder-automation|direct-print|template-regression|growth-metrics|growth-operations|durable-operation|growth-scheduler|feedback.service|app-wiring)'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Real Firestore transaction and owner-isolation tests
+        run: >-
+          npx --yes firebase-tools@15.30.1 emulators:exec --only firestore
+          --project demo-zplpdf-growth --config test/firebase-emulator.json
+          'npx jest --config test/growth-emulator.jest.json --runInBand --json --outputFile=growth-emulator-results.json'
+      - name: Real Firestore financial ledger and publication fencing
+        run: >-
+          npx --yes firebase-tools@15.30.1 emulators:exec --only firestore
+          --project demo-zplpdf-growth --config test/firebase-emulator.json
+          'npx jest --config test/growth-finance-emulator.jest.json --runInBand --json --outputFile=growth-finance-results.json'
+      - name: COE artifact and dependency checks
+        run: node --test scripts/growth/*.test.mjs
+      - name: Real Firestore retention and protected backlog
+        run: >-
+          npx --yes firebase-tools@15.30.1 emulators:exec --only firestore
+          --project demo-zplpdf-growth --config test/firebase-emulator.json
+          'npx jest --config test/growth-retention-emulator.jest.json --runInBand --json --outputFile=growth-retention-results.json'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: growth-synthetic-evidence
+          path: |
+            growth-jest-results.json
+            growth-emulator-results.json
+            growth-finance-results.json
+            growth-retention-results.json
+          retention-days: 14
+# This job uses synthetic provider fixtures and no production secrets.
+# It does not attest a staging deployment, OAuth grant, real printer or payment.

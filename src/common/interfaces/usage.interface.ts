@@ -4,5 +4,6 @@ export interface Usage {
   periodStart: Date;
   periodEnd: Date;
   pdfCount: number;
+  reservedPdfCount?: number;
   labelCount: number;
 }

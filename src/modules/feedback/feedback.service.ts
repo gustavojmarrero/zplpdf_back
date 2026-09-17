@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { GoneException, Injectable, Logger } from '@nestjs/common';
 import { FirestoreService } from '../cache/firestore.service.js';
 import type { CreateFeedbackDto } from './dto/create-feedback.dto.js';
 import type { QueryFeedbackDto } from './dto/query-feedback.dto.js';
@@ -23,6 +24,22 @@ export class FeedbackService {
    */
   async getStatus(userId: string): Promise<FeedbackStatus> {
     const last = await this.firestoreService.getLastFeedbackByUser(userId);
+    const cadence = await this.firestoreService
+      .getClient()
+      .collection('feedback_cadence')
+      .doc(userId)
+      .get();
+    const invitedAt = cadence.get('lastInvitedAt');
+    if (invitedAt && Date.now() - Date.parse(invitedAt) < ROLLING_DAYS * DAY_MS)
+      return {
+        shouldShow: false,
+        lastSubmittedAt: last ? new Date(last.createdAt).toISOString() : null,
+        daysSinceLast: last
+          ? Math.floor(
+              (Date.now() - new Date(last.createdAt).getTime()) / DAY_MS,
+            )
+          : null,
+      };
 
     if (!last) {
       return { shouldShow: true, lastSubmittedAt: null, daysSinceLast: null };
@@ -38,6 +55,56 @@ export class FeedbackService {
       lastSubmittedAt: lastDate.toISOString(),
       daysSinceLast,
     };
+  }
+
+  /** Claim immediately before rendering, shared by every survey surface. */
+  async claimInvitation(userId: string) {
+    const last = await this.firestoreService.getLastFeedbackByUser(userId);
+    const lastSubmitted = last ? new Date(last.createdAt).getTime() : 0;
+    const db = this.firestoreService.getClient();
+    return db.runTransaction(async (tx) => {
+      const ref = db.collection('feedback_cadence').doc(userId);
+      const row = (await tx.get(ref)).data();
+      const candidate = await tx.get(
+        db.collection('in_app_feedback_candidates').doc(userId),
+      );
+      const deleted = await tx.get(
+        db.collection('deleted_accounts').doc(userId),
+      );
+      if (deleted.exists) throw new GoneException('Account unavailable');
+      const latest = Math.max(
+        lastSubmitted,
+        Date.parse(row?.lastSubmittedAt ?? '') || 0,
+        Date.parse(row?.lastInvitedAt ?? '') || 0,
+      );
+      if (Date.now() - latest < ROLLING_DAYS * DAY_MS)
+        return {
+          shouldShow: false,
+          invitationId: null,
+          featureId: null,
+          nextEligibleAt: new Date(
+            latest + ROLLING_DAYS * DAY_MS,
+          ).toISOString(),
+        };
+      const now = new Date().toISOString(),
+        invitationId = randomUUID();
+      const featureId = candidate.get('featureId') ?? null;
+      tx.set(
+        ref,
+        { accountId: userId, lastInvitedAt: now, invitationId, featureId },
+        { merge: true },
+      );
+      if (candidate.exists)
+        tx.update(candidate.ref, { state: 'claimed', claimedAt: now });
+      return {
+        shouldShow: true,
+        invitationId,
+        featureId,
+        nextEligibleAt: new Date(
+          Date.now() + ROLLING_DAYS * DAY_MS,
+        ).toISOString(),
+      };
+    });
   }
 
   /**
@@ -68,14 +135,37 @@ export class FeedbackService {
 
     const user = await this.firestoreService.getUserById(userId);
 
-    await this.firestoreService.createFeedback({
-      userId,
-      userEmail: user?.email || tokenEmail || null,
-      plan: user?.plan || 'free',
-      sentiment: dto.sentiment,
-      message: dto.message?.trim() || null,
-      locale: dto.locale || null,
+    const db = this.firestoreService.getClient();
+    const saved = await db.runTransaction(async (tx) => {
+      const ref = db.collection('feedback_cadence').doc(userId);
+      const cadence = (await tx.get(ref)).data();
+      if ((await tx.get(db.collection('deleted_accounts').doc(userId))).exists)
+        throw new GoneException('Account unavailable');
+      if (
+        cadence?.lastSubmittedAt &&
+        Date.now() - Date.parse(cadence.lastSubmittedAt) < ROLLING_DAYS * DAY_MS
+      )
+        return false;
+      const createdAt = new Date();
+      tx.create(db.collection('feedback').doc(randomUUID()), {
+        userId,
+        userEmail: user?.email || tokenEmail || null,
+        plan: user?.plan || 'free',
+        sentiment: dto.sentiment,
+        message: dto.message?.trim() || null,
+        locale: dto.locale || null,
+        featureId: cadence?.featureId ?? null,
+        invitationId: cadence?.invitationId ?? null,
+        createdAt,
+      });
+      tx.set(
+        ref,
+        { accountId: userId, lastSubmittedAt: createdAt.toISOString() },
+        { merge: true },
+      );
+      return true;
     });
+    if (!saved) return { success: true, skipped: true };
 
     return { success: true };
   }
