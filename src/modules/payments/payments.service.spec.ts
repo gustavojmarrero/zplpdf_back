@@ -111,6 +111,7 @@ describe('PaymentsService — upgradeSubscription', () => {
           key: string;
           targetPlan: string;
           targetPriceId?: string;
+          targetInterval?: string;
           subscriptionId: string;
         },
         ttlMs: number,
@@ -130,10 +131,12 @@ describe('PaymentsService — upgradeSubscription', () => {
           Number.isFinite(createdAtMs) &&
           stored.subscriptionId === candidate.subscriptionId;
 
-        // El destino es el precio; una clave sin precio se compara por plan.
+        // El destino es el precio; una clave sin precio se compara por plan y
+        // solo con destinos mensuales.
         const mismoDestino = stored?.targetPriceId
           ? stored.targetPriceId === candidate.targetPriceId
-          : stored?.targetPlan === candidate.targetPlan;
+          : stored?.targetPlan === candidate.targetPlan &&
+            candidate.targetInterval !== 'yearly';
 
         if (mismoContrato && mismoDestino) {
           if (Date.now() - createdAtMs < ttlMs) {
@@ -1563,7 +1566,9 @@ describe('PaymentsService — upgradeSubscription', () => {
     });
 
     it('rechaza pedir el mismo plan y periodicidad que ya tiene', async () => {
-      const { service, update } = buildService({ subscription: proAnual });
+      const { service, update, syncTaxProfileToStripe } = buildService({
+        subscription: proAnual,
+      });
       conAnuales(service);
 
       const error = await service
@@ -1574,6 +1579,50 @@ describe('PaymentsService — upgradeSubscription', () => {
       expect(error.message).toBe(
         'Cannot upgrade from PRO (yearly) to PRO (yearly).',
       );
+      expect(update).not.toHaveBeenCalled();
+      // Se rechaza antes del sync fiscal: un fallo ahí no debe convertirlo en 503.
+      expect(syncTaxProfileToStripe).not.toHaveBeenCalled();
+    });
+
+    it('rechaza la bajada de periodicidad antes del sync fiscal y del lock', async () => {
+      const syncTaxProfileToStripe = jest
+        .fn()
+        .mockRejectedValue(new Error('Stripe caído'));
+      const { service, update } = buildService({
+        subscription: proAnual,
+        syncTaxProfileToStripe,
+        // Otro ciclo tiene el lock: dentro saldría un 409.
+        syncLockToken: null,
+      });
+      conAnuales(service);
+
+      const error = await service
+        .upgradeSubscription('uid-1', 'pro', 'monthly')
+        .catch((e: Error) => e);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toMatchObject({
+        data: { code: 'PLAN_CHANGE_VIA_PORTAL', reason: 'interval_downgrade' },
+      });
+      expect(syncTaxProfileToStripe).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('una clave anterior sin precio no se toma por un paso a anual recuperado', async () => {
+      // Las claves de antes del despliegue solo pudieron ser de cambios mensuales.
+      const { service, update, userDoc } = buildService({
+        subscription: proAnual,
+      });
+      conAnuales(service);
+      const { targetPriceId: _sinPrecio, ...legada } = claveRetenida(
+        'pro',
+        PRO_Y_MXN,
+      );
+      userDoc.upgradeIdempotency = legada;
+
+      await expect(
+        service.upgradeSubscription('uid-1', 'pro', 'yearly'),
+      ).rejects.toThrow('Cannot upgrade from PRO (yearly) to PRO (yearly).');
       expect(update).not.toHaveBeenCalled();
     });
 
@@ -1613,8 +1662,8 @@ describe('PaymentsService — upgradeSubscription', () => {
     });
 
     it('no reutiliza la clave de un intento mensual al pedir el anual del mismo plan', async () => {
-      // Con la misma clave Stripe devolvería al anual la respuesta cacheada del
-      // mensual, y el plan se daría por cambiado con otro contrato.
+      // Stripe rechaza una clave reutilizada con otros parámetros: compartirla
+      // haría fallar sin motivo el paso a anual.
       const { service, update, userDoc } = buildService({
         subscription: activeSubscription,
       });
@@ -3752,28 +3801,35 @@ describe('PaymentsService — checkout con periodicidad (#95)', () => {
         PRO_MXN,
         'yearly',
         'Use the upgrade endpoint to upgrade from PRO to PRO (yearly).',
+        'USE_UPGRADE_ENDPOINT',
       ],
       [
         'PRO anual pide PRO mensual',
         PRO_Y_MXN,
         'monthly',
         'You already have an active subscription (PRO (yearly)). To downgrade or change your plan, manage it from your account settings (customer portal).',
+        'PLAN_CHANGE_VIA_PORTAL',
       ],
       [
         'PRO anual pide PRO anual',
         PRO_Y_MXN,
         'yearly',
         'You already have an active PRO (yearly) subscription. Manage it from your account settings.',
+        'ALREADY_SUBSCRIBED',
       ],
     ])(
       '%s: no abre un segundo checkout',
-      async (_c, precio, periodo, mensaje) => {
+      async (_c, precio, periodo, mensaje, code) => {
         const { checkout, sessionsCreate } = buildService({ [origen]: precio });
 
         const error = await checkout('pro', periodo).catch((e: Error) => e);
 
         expect(error).toBeInstanceOf(BadRequestException);
         expect(error.message).toBe(mensaje);
+        // Mismo vocabulario que el upgrade para que el frontend ramifique igual.
+        expect((error as BadRequestException).getResponse()).toMatchObject({
+          data: { code },
+        });
         expect(sessionsCreate).not.toHaveBeenCalled();
       },
     );
@@ -3901,7 +3957,16 @@ describe('PaymentsService — MRR de contratos anuales (#95)', () => {
           id: 'in_1',
           currency: 'mxn',
           amount_due: 199000,
-          lines: renovacionAnual.lines,
+          // Un cargo suelto delante no debe hacer contar el año como un mes.
+          lines: {
+            data: [
+              { amount: 500, period: { start: 1758110400, end: 1758110400 } },
+              ...renovacionAnual.lines.data.map((line) => ({
+                ...line,
+                amount: 198500,
+              })),
+            ],
+          },
         },
       },
       'MX',

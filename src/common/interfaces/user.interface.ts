@@ -59,6 +59,7 @@ export interface User {
      * Ausente en claves escritas antes de la facturación anual.
      */
     targetPriceId?: string;
+    targetInterval?: 'monthly' | 'yearly';
     subscriptionId: string;
     /**
      * ISO string, no Date: `getUserById` solo convierte los Timestamp de primer

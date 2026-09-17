@@ -754,6 +754,7 @@ export class FirestoreService {
       key: string;
       targetPlan: string;
       targetPriceId: string;
+      targetInterval: 'monthly' | 'yearly';
       subscriptionId: string;
     },
     ttlMs: number,
@@ -787,10 +788,12 @@ export class FirestoreService {
 
       // El destino es el precio: Pro mensual y Pro anual no pueden compartir
       // clave. Una clave anterior a la facturación anual no guarda precio y solo
-      // pudo ser mensual, así que se compara por plan.
+      // pudo ser de un cambio mensual: se compara por plan, y solo con destinos
+      // mensuales.
       const mismoDestino = stored?.targetPriceId
         ? stored.targetPriceId === candidate.targetPriceId
-        : stored?.targetPlan === candidate.targetPlan;
+        : stored?.targetPlan === candidate.targetPlan &&
+          candidate.targetInterval !== 'yearly';
 
       if (mismoContrato && mismoDestino) {
         if (Date.now() - createdAtMs < ttlMs) {

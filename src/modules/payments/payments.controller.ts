@@ -42,9 +42,10 @@ export class PaymentsController {
   @ApiResponse({
     status: 400,
     description:
-      'Checkout not allowed. `data.code: YEARLY_BILLING_NOT_AVAILABLE` when the yearly price ' +
-      'is not configured yet. With a live subscription: same plan and period → already ' +
-      'subscribed; higher plan or period → use the upgrade endpoint; lower → customer portal.',
+      'Checkout not allowed. Branch on `data.code`: `YEARLY_BILLING_NOT_AVAILABLE` when the ' +
+      'yearly price is not configured yet. With a live subscription: `ALREADY_SUBSCRIBED` ' +
+      '(same plan and period), `USE_UPGRADE_ENDPOINT` (higher plan or period) or ' +
+      '`PLAN_CHANGE_VIA_PORTAL` (lower plan or period, or unrecognized current price).',
   })
   async createCheckout(
     @CurrentUser() user: FirebaseUser,

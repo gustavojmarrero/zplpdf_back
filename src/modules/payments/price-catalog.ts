@@ -62,14 +62,33 @@ export function priceEnvVar(
  */
 export class PriceCatalog {
   private readonly byId = new Map<string, PriceRef>();
+  private readonly refs: PriceRef[] = [];
+  private readonly conflictos: string[] = [];
 
-  constructor(private readonly refs: readonly PriceRef[] = []) {
+  constructor(refs: readonly PriceRef[] = []) {
     for (const ref of refs) {
-      // Si el mismo ID está en dos variables, gana la primera: el plan que
-      // concede es el mismo y no vale la pena tumbar el arranque por ello.
-      if (!this.byId.has(ref.priceId)) {
+      const previo = this.byId.get(ref.priceId);
+
+      if (!previo) {
         this.byId.set(ref.priceId, ref);
+        this.refs.push(ref);
+        continue;
       }
+
+      // El mismo ID en las dos monedas de un plan y periodicidad concede lo
+      // mismo: se tolera, y `resolve` se queda con la primera.
+      if (previo.plan === ref.plan && previo.interval === ref.interval) {
+        this.refs.push(ref);
+        continue;
+      }
+
+      // En otro plan o periodicidad, no. `find` devolvería el precio para un
+      // destino que no vende —el checkout anual cobrando el mensual, o un
+      // upgrade a anual que no cambia nada—. La variable posterior se descarta,
+      // así que ese destino queda sin precio y falla cerrado.
+      this.conflictos.push(
+        `${ref.envVar} repite el price ID de ${previo.envVar}`,
+      );
     }
   }
 
@@ -110,6 +129,11 @@ export class PriceCatalog {
 
   all(): readonly PriceRef[] {
     return this.refs;
+  }
+
+  /** Variables descartadas por repetir el precio de otro plan o periodicidad. */
+  conflicts(): readonly string[] {
+    return this.conflictos;
   }
 
   /** Variables de entorno de precio que no están configuradas. */

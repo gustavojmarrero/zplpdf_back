@@ -75,7 +75,7 @@ describe('price-catalog', () => {
     ]);
   });
 
-  it('con el mismo ID en dos variables se queda con la primera', () => {
+  it('tolera el mismo ID en las dos monedas de un plan y periodicidad', () => {
     const duplicado = new PriceCatalog([
       {
         plan: 'pro',
@@ -93,6 +93,38 @@ describe('price-catalog', () => {
       },
     ]);
     expect(duplicado.resolve('price_x')?.envVar).toBe('A');
+    expect(duplicado.find('pro', 'mxn', 'monthly')).toBe('price_x');
+    expect(duplicado.conflicts()).toEqual([]);
+  });
+
+  it('descarta el anual que repite el ID del mensual, en vez de cobrar mensual al que eligió anual', () => {
+    const mal = PriceCatalog.fromConfig(
+      (key) =>
+        ({
+          STRIPE_PRO_PRICE_ID: 'price_pro',
+          STRIPE_PRO_PRICE_ID_YEARLY: 'price_pro',
+        })[key],
+    );
+
+    expect(mal.find('pro', 'usd', 'yearly')).toBeUndefined();
+    expect(mal.find('pro', 'usd', 'monthly')).toBe('price_pro');
+    expect(mal.resolve('price_pro')?.interval).toBe('monthly');
+    expect(mal.conflicts()).toEqual([
+      'STRIPE_PRO_PRICE_ID_YEARLY repite el price ID de STRIPE_PRO_PRICE_ID',
+    ]);
+  });
+
+  it('descarta el ID repetido entre planes: ese plan queda sin precio', () => {
+    const mal = PriceCatalog.fromConfig(
+      (key) =>
+        ({
+          STRIPE_LITE_PRICE_ID: 'price_x',
+          STRIPE_PRO_PRICE_ID: 'price_x',
+        })[key],
+    );
+
+    expect(mal.find('pro', 'usd', 'monthly')).toBeUndefined();
+    expect(mal.resolve('price_x')?.plan).toBe('lite');
   });
 
   it('elige MXN solo para México', () => {

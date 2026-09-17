@@ -147,6 +147,11 @@ export class PaymentsService {
       this.configService.get<string>(key),
     );
 
+    for (const conflicto of this.priceCatalog.conflicts()) {
+      this.logger.error(
+        `CRITICAL: ${conflicto}; se ignora esa variable y su destino queda sin precio.`,
+      );
+    }
     for (const envVar of this.priceCatalog.missing('monthly')) {
       this.logger.warn(`${envVar} not configured`);
     }
@@ -244,18 +249,31 @@ export class PaymentsService {
     const actual = currentPriceId ? this.resolvePrice(currentPriceId) : null;
     const transicion = actual ? classifyTransition(actual, destino) : null;
 
+    // `data.code` con el mismo vocabulario que el upgrade, para que el frontend
+    // ramifique igual en los dos endpoints. El mensaje no cambia.
+    const rechazar = (message: string, data: Record<string, string>): never => {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message,
+        data,
+      });
+    };
+
     // Mismo plan y misma periodicidad: no hay nada que contratar.
     if (transicion === 'same') {
-      throw new BadRequestException(
+      rechazar(
         `You already have an active ${this.etiquetaContrato(destino)} subscription. Manage it from your account settings.`,
+        { code: 'ALREADY_SUBSCRIBED' },
       );
     }
 
     // Subida de plan, de periodicidad o de ambas: se modifica la suscripción
     // existente con proración en vez de crear una duplicada.
     if (transicion === 'upgrade') {
-      throw new BadRequestException(
+      rechazar(
         `Use the upgrade endpoint to upgrade from ${this.etiquetaContrato(actual)} to ${this.etiquetaContrato(destino)}.`,
+        { code: 'USE_UPGRADE_ENDPOINT' },
       );
     }
 
@@ -263,9 +281,12 @@ export class PaymentsService {
     // period, or an unrecognized current price) must NOT create a second
     // checkout, or Stripe would create a duplicate subscription and the webhook
     // would orphan the old one. Block and direct the user to the customer portal.
-    throw new BadRequestException(
+    return rechazar(
       `You already have an active subscription${actual ? ` (${this.etiquetaContrato(actual)})` : ''}. ` +
         `To downgrade or change your plan, manage it from your account settings (customer portal).`,
+      transicion
+        ? { code: 'PLAN_CHANGE_VIA_PORTAL', reason: transicion }
+        : { code: 'PLAN_CHANGE_VIA_PORTAL' },
     );
   }
 
@@ -694,14 +715,16 @@ export class PaymentsService {
     // acabar con claves distintas y, por tanto, con dos mutaciones en Stripe.
     //
     // El destino se identifica por el PRECIO, no solo por el plan: Pro mensual y
-    // Pro anual son mutaciones distintas, y compartir clave haría que Stripe
-    // devolviera a la segunda la respuesta cacheada de la primera.
+    // Pro anual son mutaciones distintas, y Stripe rechaza (`idempotency_error`)
+    // una clave reutilizada con otros parámetros, así que compartirla haría
+    // fallar sin motivo el segundo cambio.
     const result = await this.firestoreService.acquireUpgradeIdempotency(
       userId,
       {
         key: `upgrade_${userId}_${randomUUID()}`,
         targetPlan,
         targetPriceId: destino.priceId,
+        targetInterval: destino.interval,
         subscriptionId,
       },
       PaymentsService.IDEMPOTENCY_TTL_MS,
@@ -967,6 +990,28 @@ export class PaymentsService {
   }
 
   /**
+   * Si la clave retenida en el usuario es la de un intento hacia este destino
+   * sobre este contrato: la huella de un upgrade que pudo aplicarse sin que su
+   * respuesta llegara.
+   *
+   * Una clave anterior a la facturación anual no guarda precio y solo pudo ser
+   * de un cambio mensual, así que solo cuenta para destinos mensuales.
+   */
+  private esIntentoRecuperado(
+    user: User,
+    subscriptionId: string,
+    destino: { plan: SellablePlan; interval: BillingInterval; priceId: string },
+  ): boolean {
+    const retenida = user.upgradeIdempotency;
+    if (!retenida || retenida.subscriptionId !== subscriptionId) {
+      return false;
+    }
+    return retenida.targetPriceId
+      ? retenida.targetPriceId === destino.priceId
+      : retenida.targetPlan === destino.plan && destino.interval === 'monthly';
+  }
+
+  /**
    * Lo que se escribe en el usuario cuando el cambio ya está confirmado en
    * Stripe: el plan y, si la suscripción las trae, las fechas del periodo.
    *
@@ -1105,11 +1150,49 @@ export class PaymentsService {
     // hay nada que preparar. La moneda es la del contrato —una suscripción no
     // cambia de moneda—, y el país solo cuenta si ese precio no está mapeado, en
     // cuyo caso la revalidación dentro del lock falla cerrado de todos modos.
+    const actualPrevio = this.priceCatalog.resolve(
+      subscription.items.data[0]?.price?.id,
+    );
     const monedaDelContrato: PriceCurrency =
-      this.priceCatalog.resolve(subscription.items.data[0]?.price?.id)
-        ?.currency ?? currencyForCountry(user.country);
-    if (!this.priceCatalog.find(targetPlan, monedaDelContrato, billingPeriod)) {
+      actualPrevio?.currency ?? currencyForCountry(user.country);
+    const precioPrevio = this.priceCatalog.find(
+      targetPlan,
+      monedaDelContrato,
+      billingPeriod,
+    );
+    if (!precioPrevio) {
       this.throwBillingNotAvailable(targetPlan, billingPeriod);
+    }
+
+    // Lo que ya se ve que no es una subida se rechaza aquí, antes del sync
+    // fiscal y del lock: una bajada o un «ya lo tienes» no debe salir como 503
+    // porque falle la sincronización, ni como 409 porque otro ciclo tenga el
+    // lock. Un precio sin mapear sigue adelante y la revalidación dentro del
+    // lock, que es la que manda, falla cerrado.
+    if (actualPrevio) {
+      const transicionPrevia = classifyTransition(actualPrevio, destino);
+
+      if (
+        transicionPrevia === 'plan_downgrade' ||
+        transicionPrevia === 'interval_downgrade'
+      ) {
+        this.throwChangeViaPortal(actualPrevio, destino, transicionPrevia);
+      }
+
+      // Salvo que sea la recuperación de un cambio ya aplicado en Stripe, que
+      // se resuelve dentro del lock.
+      if (
+        transicionPrevia === 'same' &&
+        PLAN_ORDER[user.plan] >= PLAN_ORDER[targetPlan] &&
+        !this.esIntentoRecuperado(user, user.stripeSubscriptionId, {
+          ...destino,
+          priceId: precioPrevio,
+        })
+      ) {
+        throw new BadRequestException(
+          `Cannot upgrade from ${this.etiquetaContrato(actualPrevio)} to ${this.etiquetaContrato(destino)}.`,
+        );
+      }
     }
 
     // `always_invoice` emite y cobra la factura de la proración dentro del
@@ -1260,11 +1343,11 @@ export class PaymentsService {
         // ya coincide con el destino, así que lo que delata el intento recuperado
         // es la clave que dejó retenida, para este contrato y este precio.
         const recoveredIdempotency = fresh.upgradeIdempotency;
-        const intentoRecuperado =
-          recoveredIdempotency?.subscriptionId === user.stripeSubscriptionId &&
-          (recoveredIdempotency.targetPriceId
-            ? recoveredIdempotency.targetPriceId === newPriceId
-            : recoveredIdempotency.targetPlan === targetPlan);
+        const intentoRecuperado = this.esIntentoRecuperado(
+          fresh,
+          user.stripeSubscriptionId,
+          { ...destino, priceId: newPriceId },
+        );
 
         if (
           actual.priceId === newPriceId &&
@@ -1506,11 +1589,12 @@ export class PaymentsService {
       );
     }
 
-    // El precio confirmado tiene que ser el pedido. Con clave de idempotencia,
-    // Stripe devuelve la respuesta cacheada de la petición original: si esa
-    // hubiera sido hacia otro destino, escribir el plan aquí concedería un
-    // contrato que no es el que Stripe tiene. La clave sale de circulación para
-    // que el siguiente intento no vuelva a recibir la misma respuesta.
+    // El precio confirmado tiene que ser el pedido. No debería poder ser otro —la
+    // clave identifica el precio, y Stripe no reutiliza una clave con otros
+    // parámetros—, pero escribir el plan sobre una respuesta que no le
+    // corresponde concedería un contrato distinto del que Stripe tiene, y eso se
+    // comprueba en vez de suponerse. La clave sale de circulación para que el
+    // siguiente intento parta de cero.
     if (
       !updatedSubscription.items?.data?.some(
         (item) => item.price?.id === newPriceId,
@@ -1981,14 +2065,21 @@ export class PaymentsService {
   }
 
   /**
-   * Meses que cubre una factura, según el periodo de su primera línea.
+   * Meses que cubre una factura, según el periodo de su línea de mayor importe.
    *
-   * Sirve cuando no hay precio que consultar. En una renovación la primera línea
-   * es el periodo completo; un mes de 28 a 31 días redondea a 1 y un año a 12.
-   * Sin periodo legible cuenta como un mes, igual que se contaba hasta ahora.
+   * Sirve cuando no hay precio que consultar. La de mayor importe y no la
+   * primera, igual que el concepto del CFDI: la primera puede ser un cargo suelto
+   * o el crédito de una proración. Un mes de 28 a 31 días redondea a 1 y un año
+   * a 12. Sin periodo legible cuenta como un mes, igual que se contaba antes.
    */
   private mesesDeLaFactura(invoice: Stripe.Invoice): number {
-    const period = invoice.lines?.data?.[0]?.period;
+    const period = (invoice.lines?.data ?? []).reduce<
+      Stripe.InvoiceLineItem | undefined
+    >(
+      (mayor, actual) =>
+        !mayor || (actual.amount ?? 0) > (mayor.amount ?? 0) ? actual : mayor,
+      undefined,
+    )?.period;
     if (!period?.start || !period?.end || period.end <= period.start) {
       return 1;
     }

@@ -232,13 +232,17 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
   }
 
   describe('con el precio como destino (#95)', () => {
-    function conPrecio(targetPlan: string, targetPriceId: string) {
-      return { ...candidato(targetPlan), targetPriceId };
+    function conPrecio(
+      targetPlan: string,
+      targetPriceId: string,
+      targetInterval = 'monthly',
+    ) {
+      return { ...candidato(targetPlan), targetPriceId, targetInterval };
     }
 
     it('no reutiliza la clave de otro precio del mismo plan', async () => {
-      // Pro mensual y Pro anual comparten plan: con la misma clave, Stripe
-      // devolvería al segundo la respuesta cacheada del primero.
+      // Pro mensual y Pro anual comparten plan, pero Stripe rechaza una clave
+      // reutilizada con otros parámetros.
       const haceUnMinuto = hace(60 * 1000);
       const { service, docData } = buildService({
         key: 'upgrade_previo',
@@ -299,6 +303,27 @@ describe('FirestoreService — acquireUpgradeIdempotency', () => {
       );
 
       expect(result).toEqual({ status: 'ok', key: 'upgrade_previo' });
+    });
+
+    it('una clave anterior sin precio no vale para un destino anual', async () => {
+      // Solo pudo ser de un cambio mensual.
+      const haceUnMinuto = hace(60 * 1000);
+      const { service } = buildService({
+        key: 'upgrade_previo',
+        targetPlan: 'pro',
+        subscriptionId: 'sub_123',
+        createdAt: haceUnMinuto,
+        lastAttemptAt: haceUnMinuto,
+      });
+
+      const result = await service.acquireUpgradeIdempotency(
+        'uid-1',
+        conPrecio('pro', 'price_pro_anual', 'yearly'),
+        TTL_MS,
+        LEASE_MS,
+      );
+
+      expect(result).toEqual({ status: 'conflict', targetPlan: 'pro' });
     });
   });
 
