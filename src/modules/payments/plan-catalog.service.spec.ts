@@ -325,6 +325,9 @@ describe('PlanCatalogService', () => {
   });
 
   describe('caché', () => {
+    /** Deja terminar la ronda que se lanzó en segundo plano. */
+    const rondaEnFondo = () => new Promise((resolve) => setImmediate(resolve));
+
     it('lee Stripe una sola vez durante la hora de vigencia', async () => {
       const { service, retrieve } = build();
 
@@ -336,8 +339,45 @@ describe('PlanCatalogService', () => {
 
       ahora += 2 * 60 * 1000;
       await service.getPlans('MX');
+      await rondaEnFondo();
 
       expect(retrieve).toHaveBeenCalledTimes(16);
+    });
+
+    it('pasada la hora sirve la copia al instante aunque Stripe no responda', async () => {
+      // Con una sola instancia, visitas colgadas de Stripe agotarían la
+      // concurrencia del contenedor y arrastrarían al resto del API.
+      const { service, retrieve } = build();
+      const buena = await service.getPlans('MX');
+      ahora += 61 * 60 * 1000;
+      retrieve.mockImplementation(() => new Promise(() => undefined));
+
+      await expect(service.getPlans('MX')).resolves.toEqual(buena);
+      await expect(service.getPlans('US')).resolves.toMatchObject({
+        currency: 'USD',
+      });
+      // Una sola ronda en vuelo para las dos visitas.
+      expect(retrieve).toHaveBeenCalledTimes(16);
+    });
+
+    it('un refresco fallido se avisa una vez, no una por visita', async () => {
+      const { service, retrieve, logger } = build();
+      await service.getPlans('MX');
+      ahora += 61 * 60 * 1000;
+      const pendientes: Array<(error: Error) => void> = [];
+      retrieve.mockImplementation(
+        () => new Promise((_resolve, reject) => pendientes.push(reject)),
+      );
+
+      await Promise.all([
+        service.getPlans('MX'),
+        service.getPlans('US'),
+        service.getPlans('MX'),
+      ]);
+      pendientes.forEach((rechazar) => rechazar(errorStripe(500)));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(logger.warn).toHaveBeenCalledTimes(1);
     });
 
     it('las visitas simultáneas comparten una sola ronda de lecturas', async () => {
@@ -363,6 +403,7 @@ describe('PlanCatalogService', () => {
       });
 
       await expect(service.getPlans('MX')).resolves.toEqual(buena);
+      await rondaEnFondo();
       expect(logger.warn).toHaveBeenCalledWith(
         expect.stringMatching(/última lectura buena/),
       );
@@ -370,11 +411,13 @@ describe('PlanCatalogService', () => {
 
       ahora += 30 * 1000;
       await expect(service.getPlans('MX')).resolves.toEqual(buena);
+      await rondaEnFondo();
       expect(retrieve).toHaveBeenCalledTimes(llamadas);
 
       ahora += 31 * 1000;
       retrieve.mockImplementation(async (id: string) => PRECIOS_BASE[id]);
       await service.getPlans('MX');
+      await rondaEnFondo();
       expect(retrieve.mock.calls.length).toBeGreaterThan(llamadas);
     });
 
@@ -411,6 +454,28 @@ describe('PlanCatalogService', () => {
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringMatching(/CRITICAL.*HTTP 403.*permiso de lectura/),
       );
+    });
+
+    it('tras un fallo de credenciales espera diez minutos, no uno', async () => {
+      const { service, retrieve } = build();
+      retrieve.mockRejectedValue(errorStripe(403));
+
+      await expect(service.getPlans('MX')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      const llamadas = retrieve.mock.calls.length;
+
+      ahora += 9 * 60 * 1000;
+      await expect(service.getPlans('MX')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(retrieve).toHaveBeenCalledTimes(llamadas);
+
+      ahora += 2 * 60 * 1000;
+      retrieve.mockImplementation(async (id: string) => PRECIOS_BASE[id]);
+      await expect(service.getPlans('MX')).resolves.toMatchObject({
+        currency: 'MXN',
+      });
     });
   });
 

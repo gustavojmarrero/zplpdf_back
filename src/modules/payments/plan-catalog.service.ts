@@ -39,9 +39,16 @@ type ImportesValidados = ReadonlyMap<string, number>;
  * checkout va a cobrar.
  *
  * La ruta es anónima, así que Stripe no puede quedar detrás de cada visita. Los
- * importes se guardan en memoria una hora, las visitas simultáneas comparten
- * una sola ronda de lecturas, y si Stripe falla se sigue sirviendo la última
- * copia buena sin volver a intentarlo durante un minuto.
+ * importes se guardan en memoria una hora y, pasada esa hora, se siguen
+ * sirviendo al instante mientras se refrescan en segundo plano: con una sola
+ * instancia en Cloud Run, visitas colgadas de un Stripe lento agotarían la
+ * concurrencia del contenedor y arrastrarían al resto del API. Solo espera a
+ * Stripe quien no tiene copia que servir (arranque en frío). Las rondas se
+ * comparten, y tras un fallo no se reintenta durante un minuto (diez si es de
+ * credenciales, que no se arregla solo).
+ *
+ * Servir una copia vieja es seguro: el importe de un precio de Stripe no se
+ * puede editar, y cambiar de precio exige cambiar la variable y redesplegar.
  */
 @Injectable()
 export class PlanCatalogService implements OnModuleInit {
@@ -52,11 +59,17 @@ export class PlanCatalogService implements OnModuleInit {
   static readonly CACHE_TTL_MS = 60 * 60 * 1000;
   /** Sin esto, con Stripe caído cada visita volvería a lanzar la ronda completa. */
   static readonly FAILURE_BACKOFF_MS = 60 * 1000;
+  /**
+   * Un 401/403 es de configuración: reintentarlo cada minuto solo repetiría el
+   * mismo CRITICAL en los logs hasta que alguien corrija la key.
+   */
+  static readonly AUTH_FAILURE_BACKOFF_MS = 10 * 60 * 1000;
 
   private cache: { importes: ImportesValidados; fetchedAt: number } | null =
     null;
   private enVuelo: Promise<ImportesValidados> | null = null;
   private ultimoFalloAt: number | null = null;
+  private backoffMs = PlanCatalogService.FAILURE_BACKOFF_MS;
 
   constructor(private readonly configService: ConfigService) {
     this.catalog = PriceCatalog.fromConfig((key) =>
@@ -72,7 +85,12 @@ export class PlanCatalogService implements OnModuleInit {
       return;
     }
 
-    this.stripe = new Stripe(stripeSecretKey);
+    // Acotado: con los valores por defecto del SDK (80 s × 3 intentos) una
+    // visita en frío podía esperar minutos por una lectura que no llega.
+    this.stripe = new Stripe(stripeSecretKey, {
+      timeout: 10_000,
+      maxNetworkRetries: 1,
+    });
   }
 
   /**
@@ -164,31 +182,36 @@ export class PlanCatalogService implements OnModuleInit {
 
   private async cargarImportes(): Promise<ImportesValidados> {
     const ahora = Date.now();
+    const enEspera =
+      this.ultimoFalloAt !== null &&
+      ahora - this.ultimoFalloAt < this.backoffMs;
 
-    if (
-      this.cache &&
-      ahora - this.cache.fetchedAt < PlanCatalogService.CACHE_TTL_MS
-    ) {
+    if (this.cache) {
+      // Sin ronda ya en vuelo: cada visita colgaría su propio aviso de la misma
+      // promesa y un solo fallo de Stripe se registraría una vez por visitante.
+      if (
+        ahora - this.cache.fetchedAt >= PlanCatalogService.CACHE_TTL_MS &&
+        !enEspera &&
+        !this.enVuelo
+      ) {
+        // En segundo plano: la visita no espera. El fallo ya lo registra
+        // `refrescar`; aquí solo se evita el rechazo sin manejar.
+        this.refrescar().catch(() =>
+          this.logger.warn(
+            'Se siguen sirviendo los precios de la última lectura buena: Stripe no respondió al refrescarlos.',
+          ),
+        );
+      }
       return this.cache.importes;
     }
 
-    if (
-      this.ultimoFalloAt !== null &&
-      ahora - this.ultimoFalloAt < PlanCatalogService.FAILURE_BACKOFF_MS
-    ) {
-      if (this.cache) return this.cache.importes;
+    if (enEspera) {
       throw this.noDisponible();
     }
 
     try {
       return await this.refrescar();
     } catch {
-      if (this.cache) {
-        this.logger.warn(
-          'Se sirven los precios de la última lectura buena: Stripe no respondió al refrescarlos.',
-        );
-        return this.cache.importes;
-      }
       throw this.noDisponible();
     }
   }
@@ -203,7 +226,12 @@ export class PlanCatalogService implements OnModuleInit {
           return importes;
         })
         .catch((error: unknown) => {
+          const status = (error as { statusCode?: number })?.statusCode;
           this.ultimoFalloAt = Date.now();
+          this.backoffMs =
+            status === 401 || status === 403
+              ? PlanCatalogService.AUTH_FAILURE_BACKOFF_MS
+              : PlanCatalogService.FAILURE_BACKOFF_MS;
           this.registrarFallo(error);
           throw error;
         })

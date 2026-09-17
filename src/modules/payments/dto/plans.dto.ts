@@ -11,10 +11,14 @@ export class PlansQueryDto {
   @IsOptional()
   // Un `?country=` vacío se trata como ausente: la página de precios lo manda
   // así cuando aún no conoce el país, y eso no es un error del visitante.
+  //
+  // Sin pasar a mayúsculas a propósito: el checkout decide la moneda con el
+  // país tal cual llega (`MX`), y normalizar solo aquí haría que `?country=mx`
+  // pintara precios en MXN que luego se cobran en USD.
   @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim().toUpperCase() || undefined : value,
+    typeof value === 'string' ? value.trim() || undefined : value,
   )
-  @Matches(/^[A-Z]{2}$/, {
+  @Matches(/^[A-Za-z]{2}$/, {
     message: 'country must be a two-letter ISO 3166-1 alpha-2 code',
   })
   country?: string;

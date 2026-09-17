@@ -77,7 +77,9 @@ describe('PlansController — HTTP', () => {
     expect(response.headers['cache-control']).toBe(
       'public, max-age=300, stale-while-revalidate=3600',
     );
-    expect(planCatalogService.getPlans).toHaveBeenCalledWith('MX');
+    // Tal cual llega: el checkout tampoco normaliza, y la moneda publicada
+    // tiene que ser la que se cobra.
+    expect(planCatalogService.getPlans).toHaveBeenCalledWith('mx');
   });
 
   it('trata un country vacío o ausente como sin país', async () => {
