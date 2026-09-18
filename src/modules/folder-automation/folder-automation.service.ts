@@ -6,6 +6,8 @@ import {
   BadRequestException,
   ConflictException,
   GoneException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Optional,
   NotFoundException,
@@ -907,8 +909,17 @@ export class FolderAutomationService {
             .isValid
         )
           throw new BadRequestException('Invalid source ZPL');
-        const labels = (await this.zpl.countLabels(zplContent)).data
-          .totalLabels;
+        let labels: number;
+        try {
+          labels = (await this.zpl.countLabels(zplContent)).data.totalLabels;
+        } catch (error) {
+          if (
+            error instanceof HttpException &&
+            error.getStatus() === HttpStatus.BAD_REQUEST
+          )
+            throw new BadRequestException(error.getResponse());
+          throw error;
+        }
         if (!Number.isSafeInteger(labels) || labels < 1 || labels > 500)
           throw new BadRequestException('Label page limit');
         converted = await this.zpl.runDurableConversion({

@@ -24,10 +24,13 @@ import {
   retryDriveRevocation,
 } from './drive-revocation.repository.js';
 import { LabelSize } from '../zpl/enums/label-size.enum.js';
+import { HttpException, HttpStatus } from '@nestjs/common';
+import { ZplService } from '../zpl/zpl.service.js';
+import { ZplValidatorService } from '../zpl/validation/zpl-validator.service.js';
 jest.mock('axios');
 const account = 'owner';
 const labelSize = Object.values(LabelSize)[0];
-async function fixture(realRecipes = false) {
+async function fixture(realRecipes = false, realZplParsing = false) {
   const db = new MemoryDb();
   db.rows.set(`users/${account}`, { plan: 'pro' });
   const config = {
@@ -104,7 +107,13 @@ async function fixture(realRecipes = false) {
     }),
   };
   const zpl = {
-    countLabels: jest.fn().mockResolvedValue({ data: { totalLabels: 1 } }),
+    countLabels: realZplParsing
+      ? jest.fn((content: string) =>
+          (Object.create(ZplService.prototype) as ZplService).countLabels(
+            content,
+          ),
+        )
+      : jest.fn().mockResolvedValue({ data: { totalLabels: 1 } }),
     runDurableConversion: jest.fn().mockImplementation(async (input) => {
       db.rows.set(`durable_operations/${input.operationId}`, {
         userId: input.userId,
@@ -115,8 +124,13 @@ async function fixture(realRecipes = false) {
       return { jobId: input.operationId, status: 'completed' };
     }),
   };
+  const realValidator = new ZplValidatorService({
+    recordValidation: jest.fn().mockResolvedValue(undefined),
+  } as any);
   const validator = {
-    validate: jest.fn().mockResolvedValue({ isValid: true }),
+    validate: realZplParsing
+      ? jest.fn((content, options) => realValidator.validate(content, options))
+      : jest.fn().mockResolvedValue({ isValid: true }),
   };
   const store = {
     getClient: () => db,
@@ -443,6 +457,57 @@ describe('Drive automation boundaries', () => {
       'Account unavailable',
     );
     expect(f.zpl.runDurableConversion).not.toHaveBeenCalled();
+  });
+  test('plain text that yields no ZPL blocks fails once before conversion or upload', async () => {
+    const f = await fixture(false, true);
+    f.provider.revision.mockResolvedValue(
+      Buffer.from('ARCHIVO DE PRUEBA SIN ZPL VALIDO'),
+    );
+    const run = await f.run();
+
+    await f.service.processOne(run.id);
+    await f.service.processOne(run.id);
+
+    expect(f.validator.validate).toHaveBeenCalledTimes(1);
+    expect(f.zpl.countLabels).toHaveBeenCalledTimes(1);
+    expect(f.zpl.runDurableConversion).not.toHaveBeenCalled();
+    expect(f.provider.upload).not.toHaveBeenCalled();
+    expect(f.db.rows.get(`drive_runs/${run.id}`)).toMatchObject({
+      status: 'failed',
+      attempts: 1,
+    });
+  });
+  test.each([HttpStatus.TOO_MANY_REQUESTS, HttpStatus.SERVICE_UNAVAILABLE])(
+    'keeps HTTP %s label-count failures retryable after real ZPL parsing',
+    async (status) => {
+      const f = await fixture(false, true),
+        run = await f.run();
+      const realCountLabels = f.zpl.countLabels.getMockImplementation()!;
+      f.zpl.countLabels.mockImplementationOnce(async (content: string) => {
+        await realCountLabels(content);
+        throw new HttpException('Temporary label-count failure', status);
+      });
+
+      await f.service.processOne(run.id);
+
+      expect(f.zpl.countLabels).toHaveBeenCalled();
+      expect(f.zpl.runDurableConversion).not.toHaveBeenCalled();
+      expect(f.provider.upload).not.toHaveBeenCalled();
+      expect(f.db.rows.get(`drive_runs/${run.id}`)).toMatchObject({
+        status: 'queued',
+        attempts: 1,
+      });
+    },
+  );
+  test('valid ZPL still converts and uploads with real validation and counting', async () => {
+    const f = await fixture(false, true),
+      run = await f.run();
+
+    await f.service.processOne(run.id);
+
+    expect(f.zpl.runDurableConversion).toHaveBeenCalledTimes(1);
+    expect(f.provider.upload).toHaveBeenCalledTimes(1);
+    expect(f.db.rows.get(`drive_runs/${run.id}`).status).toBe('succeeded');
   });
   test('disconnect blocks all work immediately and persists retryable token revocation', async () => {
     const f = await fixture(),
