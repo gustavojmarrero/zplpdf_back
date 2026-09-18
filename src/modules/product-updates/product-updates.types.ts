@@ -253,3 +253,11 @@ export const toProgressView = (
   skippedAt: record.skippedAt,
   completedAt: record.completedAt,
 });
+
+/** Anonymous, read-only pricing catalog. Contains no account or rollout metadata. */
+export interface PublicProductCatalog {
+  schemaVersion: 1;
+  releaseId: string | null;
+  manifestVersion: string | null;
+  features: { featureId: FeatureId; minimumPlan: PlanType }[];
+}
