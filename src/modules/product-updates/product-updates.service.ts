@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -24,6 +25,7 @@ import {
 } from './product-updates.types.js';
 import type {
   InvitationReason,
+  PublicProductCatalog,
   ProductTourStep,
   ProductUpdatesReleaseView,
   ProductUpdatesResponse,
@@ -71,6 +73,35 @@ export class ProductUpdatesService {
       environment: this.environment(),
       now,
     });
+  }
+
+  getPublicCatalog(): PublicProductCatalog {
+    const empty: PublicProductCatalog = {
+      schemaVersion: 1,
+      releaseId: null,
+      manifestVersion: null,
+      features: [],
+    };
+    const approved = this.approvedRelease(new Date());
+    if (!approved.ok) return empty;
+    try {
+      const features = this.flags
+        .getGloballyReleasedFeatures()
+        .filter((feature) =>
+          approved.release.releasedFeatureIds.includes(feature.featureId),
+        );
+      if (!features.length) return empty;
+      return {
+        schemaVersion: 1,
+        releaseId: approved.release.releaseId,
+        manifestVersion: approved.release.manifestVersion,
+        features,
+      };
+    } catch (error) {
+      if (!(error instanceof ServiceUnavailableException)) throw error;
+      // A malformed flag configuration must never advertise access publicly.
+      return empty;
+    }
   }
 
   /** `createdAt` vuelve como Date convertido o como ISO en cuentas antiguas. */

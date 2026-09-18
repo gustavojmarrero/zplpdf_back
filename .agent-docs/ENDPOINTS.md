@@ -409,3 +409,10 @@ enviar.
 | **Cron** | `@UseGuards(CronAuthGuard)` | `X-Cron-Secret: <CRON_SECRET_KEY>` |
 | **Stripe Sig** | Custom validation in handler | `Stripe-Signature` header |
 | **None** | No guard | Public endpoint |
+
+## Public product catalog
+
+`GET /api/product-updates/catalog` (no auth): approved globally released features
+and minimum plans for public pricing. HTTP 200, `Cache-Control: no-store`.
+See `docs/growth/product-updates-contract.md`, section 8, for the response and
+fail-closed rules. No account reads, assignments or writes.

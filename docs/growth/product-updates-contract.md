@@ -351,3 +351,33 @@ emite eventos de analítica ni los exige para persistir progreso.
 5. `registered_before_release` usa `getUserById().createdAt`, que puede volver como `Date`
    (Timestamp convertido) o como string ISO en cuentas antiguas: acepto ambos y trato cualquier otro
    valor como desconocido (`registration_unknown`, sin invitación).
+
+## 8. Catálogo público para precios
+
+`GET /api/product-updates/catalog` no requiere sesión. Devuelve HTTP 200 y
+`Cache-Control: no-store` con:
+
+```ts
+interface PublicProductCatalog {
+  schemaVersion: 1;
+  releaseId: string | null;
+  manifestVersion: string | null;
+  features: { featureId: FeatureId; minimumPlan: PlanType }[];
+}
+```
+
+Reutiliza `loadApprovedRelease` y la misma validación de flags y condición global
+que `FeatureFlagsService.released`: enabled, sin kill switch, rollout al 100%,
+`pilotAccountIds` ausente (incluso `[]` restringe), y `allowedPlans` incluyendo
+TODOS los planes con entitlement. Intersecta con `releasedFeatureIds`; no exige
+que la función tenga un paso en el tour. Los planes mínimos proceden de
+`FEATURE_MINIMUM_PLANS`. El cliente aplica la jerarquía de planes para mostrar
+las funciones heredadas, sin interpretar el catálogo como autorización de cuenta.
+
+Release ausente/inválido/apagado/futuro/de otro entorno, flags inválidas o ninguna
+función publicable: `{schemaVersion:1,releaseId:null,manifestVersion:null,features:[]}`.
+Una flag individual válida pero no global se omite; las demás pueden aparecer.
+La lectura no consulta cuentas, progreso, conexiones ni asignaciones, no crea
+cuentas sintéticas y no escribe Firestore. No incluye IDs privados, credenciales,
+claims, información de experimentos ni datos del tour. Las rutas autenticadas
+conservan sus guards y siguen siendo la autoridad para acceso individual.

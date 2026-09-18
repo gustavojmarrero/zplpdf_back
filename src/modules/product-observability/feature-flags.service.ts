@@ -96,6 +96,29 @@ export class FeatureFlagsService {
     }
   }
 
+  private isGloballyReleased(featureId: FeatureId, flag?: FlagConfig): boolean {
+    return Boolean(
+      flag?.enabled &&
+        !flag.killSwitch &&
+        flag.pilotAccountIds === undefined &&
+        flag.rolloutPercent === 100 &&
+        PLANS.filter((plan) => isFeatureEntitled(plan, featureId)).every(
+          (plan) => flag.allowedPlans.includes(plan),
+        ),
+    );
+  }
+
+  /** Public configuration only: never resolves accounts or creates assignments. */
+  getGloballyReleasedFeatures() {
+    const flags = this.flags();
+    return FEATURE_IDS.filter((id) =>
+      this.isGloballyReleased(id, flags[id]),
+    ).map((featureId) => ({
+      featureId,
+      minimumPlan: FEATURE_MINIMUM_PLANS[featureId],
+    }));
+  }
+
   async getFeatures(accountId: string) {
     const account = await this.account(accountId);
     const flags = this.flags();
@@ -110,15 +133,7 @@ export class FeatureFlagsService {
           !f?.pilotAccountIds || f.pilotAccountIds.includes(accountId);
         // A limited pilot must not advertise an upgrade that cannot grant access.
         // This is a rollout signal; a release manifest separately verifies publication.
-        const released = Boolean(
-          f?.enabled &&
-            !f.killSwitch &&
-            f.pilotAccountIds === undefined &&
-            f.rolloutPercent === 100 &&
-            PLANS.filter((plan) => isFeatureEntitled(plan, featureId)).every(
-              (plan) => f.allowedPlans.includes(plan),
-            ),
-        );
+        const released = this.isGloballyReleased(featureId, f);
         let assignment: {
           experimentId: string;
           assignmentVersion: string;
